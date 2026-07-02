@@ -13,7 +13,7 @@ import math
 from enum import Enum
 import requests
 
-from jetbot import Robot
+from src.core.control.racer_controller import RacerController
 import onnxruntime as ort
 from pyzbar.pyzbar import decode
 import paho.mqtt.client as mqtt
@@ -35,9 +35,9 @@ class RobotState(Enum):
 class Direction(Enum):
     NORTH, EAST, SOUTH, WEST = 0, 1, 2, 3
 
-class JetBotController:
+class JetRacerController:
     def __init__(self):
-        rospy.loginfo("Đang khởi tạo JetBot Event-Driven Controller...")
+        rospy.loginfo("Đang khởi tạo JetRacer Controller...")
         self.setup_parameters()
         self.initialize_hardware()
         self.initialize_yolo()
@@ -125,17 +125,12 @@ class JetBotController:
 
     def setup_parameters(self):
         self.WIDTH, self.HEIGHT = 300, 300
-        self.BASE_SPEED = 0.27
-        self.TURN_SPEED = 0.2
-        self.TURN_DURATION_90_DEG = 0.8
         self.ROI_Y = int(self.HEIGHT * 0.85)
         self.ROI_H = int(self.HEIGHT * 0.15)
         self.ROI_CENTER_WIDTH_PERCENT = 0.5
-        self.LOOKAHEAD_ROI_Y = int(self.HEIGHT * 0.60) # Vị trí Y cao hơn
-        self.LOOKAHEAD_ROI_H = int(self.HEIGHT * 0.15) # Chiều cao tương tự
+        self.LOOKAHEAD_ROI_Y = int(self.HEIGHT * 0.60)
+        self.LOOKAHEAD_ROI_H = int(self.HEIGHT * 0.15)
 
-        self.CORRECTION_GAIN = 0.5
-        self.SAFE_ZONE_PERCENT = 0.3
         self.LINE_COLOR_LOWER = np.array([0, 0, 0])
         self.LINE_COLOR_UPPER = np.array([180, 255, 75])
         self.INTERSECTION_CLEARANCE_DURATION = 1.5
@@ -149,31 +144,24 @@ class JetBotController:
         self.PRESCRIPTIVE_SIGNS = {'N', 'E', 'W', 'S'}
         self.PROHIBITIVE_SIGNS = {'NN', 'NE', 'NW', 'NS'}
         self.DATA_ITEMS = {'qr_code', 'math_problem'}
-        self.MQTT_BROKER = "localhost" 
+        self.MQTT_BROKER = "localhost"
         self.MQTT_PORT = 1883
         self.MQTT_DATA_TOPIC = "jetbot/corrected_event_data"
         self.current_state = None
         self.DIRECTIONS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
         self.current_direction_index = 1
         self.ANGLE_TO_FACE_SIGN_MAP = {d: a for d, a in zip(self.DIRECTIONS, [45, -45, -135, 135])}
-        self.MAX_CORRECTION_ADJ = 0.12
-        self.MAP_FILE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "core", "utils", "map.json")
-        # Thời gian tối thiểu (giây) sau khi vào trạng thái DRIVING_STRAIGHT để chấp nhận tín hiệu LiDAR
+        self.MAP_FILE_PATH = os.path.join(os.path.dirname(__file__), "..", "core", "utils", "map.json")
         self.MIN_DETECTION_CONFIRM_TIME = 1.5
         self.LABEL_TO_DIRECTION_ENUM = {'N': Direction.NORTH, 'E': Direction.EAST, 'S': Direction.SOUTH, 'W': Direction.WEST}
-        self.VIDEO_OUTPUT_FILENAME = 'jetbot_run.avi'
-        self.VIDEO_FPS = 20  # Nên khớp với rospy.Rate của bạn
-        # Codec 'MJPG' rất phổ biến và tương thích tốt
+        self.VIDEO_OUTPUT_FILENAME = 'jetracer_run.avi'
+        self.VIDEO_FPS = 20
         self.VIDEO_FOURCC = cv2.VideoWriter_fourcc(*'MJPG')
 
     def initialize_hardware(self):
-        try:
-            self.robot = Robot()
-            rospy.loginfo("Phần cứng JetBot (động cơ) đã được khởi tạo.")
-        except Exception as e:
-            rospy.logwarn(f"Không tìm thấy phần cứng JetBot, sử dụng Mock object. Lỗi: {e}")
-            from unittest.mock import Mock
-            self.robot = Mock()
+        """Khởi tạo JetRacer thông qua RacerController."""
+        self.controller = RacerController()
+        rospy.loginfo("JetRacer hardware đã được khởi tạo qua RacerController.")
 
     def initialize_yolo(self):
         """Tải mô hình YOLO vào ONNX Runtime."""
@@ -336,7 +324,7 @@ class JetBotController:
                 rospy.loginfo_throttle(5, "Đang ở trạng thái chờ... Tìm kiếm vạch kẻ đường để bắt đầu.")
                 
                 # Giữ robot đứng yên
-                self.robot.stop()
+                self.controller.stop()
 
                 # Kiểm tra xem đã có ảnh chưa
                 if self.latest_image is None:
@@ -362,7 +350,7 @@ class JetBotController:
             if self.current_state == RobotState.DRIVING_STRAIGHT:
                 if self.latest_image is None:
                     rospy.logwarn_throttle(5, "Đang chờ dữ liệu hình ảnh từ topic camera...")
-                    self.robot.stop()
+                    self.controller.stop()
                     rate.sleep()
                     continue
 
@@ -373,7 +361,7 @@ class JetBotController:
                 time_since_state = rospy.get_time() - self.state_change_time
                 if time_since_state >= self.MIN_DETECTION_CONFIRM_TIME and self.detector.process_detection():
                     rospy.loginfo("SỰ KIỆN (LiDAR): Phát hiện giao lộ. Dừng ngay lập tức.")
-                    self.robot.stop()
+                    self.controller.stop()
                     time.sleep(0.5) # Chờ robot dừng hẳn
 
                     # Cập nhật vị trí hiện tại (đã đến đích) và xử lý
@@ -405,21 +393,22 @@ class JetBotController:
                 if execution_line_center is not None:
                     # An toàn để bám line, vì chúng ta biết phía trước không có giao lộ đột ngột.
                     self.correct_course(execution_line_center)
+                    self.controller.reset_pid()
                 else:
                     # Trường hợp hiếm: ROI xa thấy line nhưng ROI gần lại không. Dừng lại cho an toàn.
                     rospy.logwarn("Trạng thái không nhất quán: ROI xa thấy line, ROI gần không thấy. Tạm dừng an toàn.")
-                    self.robot.stop()
+                    self.controller.stop()
 
             # ===================================================================
             # TRẠNG THÁI 2: ĐANG TIẾN VÀO GIAO LỘ (APPROACHING_INTERSECTION)
             # ===================================================================
             elif self.current_state == RobotState.APPROACHING_INTERSECTION:
                 # Đi thẳng một đoạn ngắn để vào trung tâm giao lộ
-                self.robot.set_motors(self.BASE_SPEED, self.BASE_SPEED)
+                self.controller.forward()
                 
                 if rospy.get_time() - self.state_change_time > self.INTERSECTION_APPROACH_DURATION:
                     rospy.loginfo("Đã tiến vào trung tâm giao lộ. Dừng lại để xử lý.")
-                    self.robot.stop() 
+                    self.controller.stop()
                     time.sleep(0.5)
 
                     self.current_node_id = self.target_node_id
@@ -436,7 +425,7 @@ class JetBotController:
             # TRẠNG THÁI 3: ĐANG RỜI KHỎI GIAO LỘ (LEAVING_INTERSECTION)
             # ===================================================================
             elif self.current_state == RobotState.LEAVING_INTERSECTION:
-                self.robot.set_motors(self.BASE_SPEED, self.BASE_SPEED)
+                self.controller.forward()
                 if rospy.get_time() - self.state_change_time > self.INTERSECTION_CLEARANCE_DURATION:
                     rospy.loginfo("Đã thoát khỏi khu vực giao lộ. Bắt đầu tìm kiếm line mới.")
                     self._set_state(RobotState.REACQUIRING_LINE)
@@ -445,7 +434,7 @@ class JetBotController:
             # TRẠNG THÁI 4: ĐANG TÌM LẠI LINE (REACQUIRING_LINE)
             # ===================================================================
             elif self.current_state == RobotState.REACQUIRING_LINE:
-                self.robot.set_motors(self.BASE_SPEED, self.BASE_SPEED)
+                self.controller.forward()
                 line_center_x = self._get_line_center(self.latest_image, self.ROI_Y, self.ROI_H)
                 
                 if line_center_x is not None:
@@ -461,12 +450,12 @@ class JetBotController:
             # TRẠNG THÁI KẾT THÚC (DEAD_END, GOAL_REACHED)
             # ===================================================================
             elif self.current_state == RobotState.DEAD_END:
-                rospy.logwarn("Đã vào ngõ cụt hoặc gặp lỗi không thể phục hồi. Dừng hoạt động.") 
-                self.robot.stop() 
+                rospy.logwarn("Đã vào ngõ cụt hoặc gặp lỗi không thể phục hồi. Dừng hoạt động.")
+                self.controller.stop()
                 break
             elif self.current_state == RobotState.GOAL_REACHED: 
-                rospy.loginfo("ĐÃ HOÀN THÀNH NHIỆM VỤ. Dừng hoạt động.") 
-                self.robot.stop()
+                rospy.loginfo("ĐÃ HOÀN THÀNH NHIỆM VỤ. Dừng hoạt động.")
+                self.controller.stop()
                 break
 
             self._record_frame()
@@ -482,9 +471,9 @@ class JetBotController:
                 self.video_writer.write(debug_frame)
 
     def cleanup(self):
-        rospy.loginfo("Dừng robot và giải phóng tài nguyên...") 
-        if hasattr(self, 'robot') and self.robot is not None:
-            self.robot.stop()
+        rospy.loginfo("Dừng robot và giải phóng tài nguyên...")
+        if hasattr(self, 'controller') and self.controller is not None:
+            self.controller.stop()
 
         if hasattr(self, 'video_writer') and self.video_writer is not None:
             self.video_writer.release()
@@ -590,29 +579,15 @@ class JetBotController:
     
     def correct_course(self, line_center_x):
         """
-        Hàm bám line an toàn với cơ chế giới hạn lực bẻ lái.
+        Bám line bằng PID Controller (JetRacer Ackermann steering).
+        Thay vì chênh lệch tốc độ 2 motor (JetBot), dùng góc lái servo.
         """
         error = line_center_x - (self.WIDTH / 2)
-        
-        # Vẫn đi thẳng nếu sai số rất nhỏ
-        if abs(error) < (self.WIDTH / 2) * self.SAFE_ZONE_PERCENT:
-            self.robot.set_motors(self.BASE_SPEED, self.BASE_SPEED)
-            return
-
-        # Tính toán lực điều chỉnh
-        adj = (error / (self.WIDTH / 2)) * self.CORRECTION_GAIN
-
-        # Ngăn chặn hành vi bẻ lái quá gắt một cách tuyệt đối
-        adj = np.clip(adj, -self.MAX_CORRECTION_ADJ, self.MAX_CORRECTION_ADJ)
-        
-        # Áp dụng lực điều chỉnh đã được giới hạn
-        left_motor = self.BASE_SPEED + adj
-        right_motor = self.BASE_SPEED - adj
-        self.robot.set_motors(left_motor, right_motor)
+        self.controller.correct_course_pid(error, self.WIDTH)
         
     def handle_intersection(self):
         rospy.loginfo("\n[GIAO LỘ] Dừng lại và xử lý theo bản đồ (không quét)...")
-        self.robot.stop()
+        self.controller.stop()
         time.sleep(0.2)
 
         # Cập nhật vị trí hiện tại
@@ -708,26 +683,12 @@ class JetBotController:
         return False
     
     def turn_robot(self, degrees, update_main_direction=True):
-        duration = abs(degrees) / 90.0 * self.TURN_DURATION_90_DEG
-        if degrees > 0: 
-            self.robot.set_motors(self.TURN_SPEED, -self.TURN_SPEED)
-        elif degrees < 0: 
-            self.robot.set_motors(-self.TURN_SPEED, self.TURN_SPEED)
-        if degrees != 0: 
-            start_time = rospy.get_time()
-            while rospy.get_time() - start_time < duration:
-                # Ghi lại khung hình trong khi robot đang quay
-                self._record_frame()
-                # Thêm một khoảng nghỉ nhỏ để không làm quá tải CPU và để ROS có thời gian cập nhật
-                rospy.sleep(1.0 / self.VIDEO_FPS)
-
-        self.robot.stop()
+        """Rẽ JetRacer bằng vòng cung (KHÔNG quay tại chỗ)."""
+        self.controller.turn_angle(degrees, record_callback=self._record_frame)
         if update_main_direction and degrees % 90 == 0 and degrees != 0:
             num_turns = round(degrees / 90)
             self.current_direction_index = (self.current_direction_index + num_turns + 4) % 4
             rospy.loginfo(f"==> Hướng đi MỚI: {self.DIRECTIONS[self.current_direction_index].name}")
-        time.sleep(0.5)
-        self._record_frame()
     
     def _does_path_exist_in_frame(self, image):
         if image is None: return False
@@ -757,7 +718,7 @@ class JetBotController:
 def main():
     rospy.init_node('jetbot_controller_node', anonymous=True)
     try:
-        controller = JetBotController()
+        controller = JetRacerController()
         controller.run()
     except rospy.ROSInterruptException: rospy.loginfo("Node đã bị ngắt.")
     except Exception as e: rospy.logerr(f"Lỗi không xác định: {e}", exc_info=True)
