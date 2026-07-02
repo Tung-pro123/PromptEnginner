@@ -1,0 +1,729 @@
+Wangetal.AutonomousIntelligentSystems (2021) 1:10 Autonomous Intelligent
+https://doi.org/10.1007/s43684-021-00015-x
+Systems
+ORIGINAL ARTICLE Open Access
+Decision making framework for
+autonomous vehicles driving behavior in
+complex scenarios via hierarchical state
+machine
+Xuanyu Wang, Xudong Qi, Ping Wang* and Jingwen Yang
+Abstract
+With the development ofautonomous car, a vehicle is capable to sense its environment more precisely. That allows
+improved drving behavior decision strategyto be used for more safety and effectiveness incomplex scenarios.In
+this paper, a decision making framework based on hierarchical state machine is proposedwith a top-down
+structure of three-layer finite state machinedecision system. The upper layer classifiesthedriving scenariobased on
+relative position ofthe vehicle and itssurrounding vehicles. The middle layer judges theoptimal driving behavior
+according to the improved energy efficiency function targetedatmultiple criteria including driving efficiency, safety
+and the grid-based lane vacancy rate. The lower layer constructs thestate transition matrix combined with the
+calculation results of the previous layer to predict the optimal passway intheregion. The simulation results show
+that the proposed driving strategy can integrate multiple criteria to evaluate theenergy efficiency value of vehicle
+behavior inreal time, and realize the selection of optimal vehicle drivingstrategy. With popularity of automatic
+vehicles infuture,the driving strategy can be used as a reference to provideassistance for human drive or even the
+real-time decision-making of autonomous driving.
+Keywords: Decision making, Autonomous Car, Energy efficiency function, State machine
+1 Introduction information of vehicles, and a grid model is proposed to
+Due to the improvement of vehicle perception technol- represent the driving environment. Yang et al. [3] pro-
+ogy, the ability of vehicles to obtain the surrounding en- posed Video-based spatial distribution data of vehicles
+vironment information in complex scenarios is far more togeneratefine-grainedfusion methods.
+than human drivers, so the current auxiliary driving sys- In the actual driving process of automatic vehicles, a
+tem is considered to be an effective way to improve the decision-making system plays an important role in auto-
+driving efficiency and driving safety of vehicles. For driv- matic driving when facing the complex external environ-
+ing environment perception, many methods have been ment and changing traffic state. Therefore, scholars
+proposed, Oh et al. [1] proposed a fast occupancy grid from all walks of life have proposed a variety of methods
+filtering method using a grid state diagram, and esti- to solve the problem of autonomous decision-making of
+mated the occupancyprobability ofeachcellbyBayesian automatic vehicles, based on the current research re-
+filtering method. Sivaraman et al. [2] used lidar and sults, it can be argued that the behavioural decision-
+front camera to obtain 360-degree environment making techniques for autonomous vehicles fall into two
+main directions: rule-based decision-making and
+learning-based decisions. Decision-making models based
+*Correspondence:wang0372@e.ntu.edu.sg
+SchoolofElectronicsandControlEngineering,Chang’anUniversity,Xi’an on learning statistics are able to take full account of the
+710064,China
+©TheAuthor(s).2021OpenAccessThisarticleislicensedunderaCreativeCommonsAttribution4.0InternationalLicense,
+whichpermitsuse,sharing,adaptation,distributionandreproductioninanymediumorformat,aslongasyougive
+appropriatecredittotheoriginalauthor(s)andthesource,providealinktotheCreativeCommonslicence,andindicateif
+changesweremade.Theimagesorotherthirdpartymaterialinthisarticleareincludedinthearticle'sCreativeCommons
+licence,unlessindicatedotherwiseinacreditlinetothematerial.Ifmaterialisnotincludedinthearticle'sCreativeCommons
+licenceandyourintendeduseisnotpermittedbystatutoryregulationorexceedsthepermitteduse,youwillneedtoobtain
+permissiondirectlyfromthecopyrightholder.Toviewacopyofthislicence,visithttp://creativecommons.org/licenses/by/4.0/.
+Wangetal.AutonomousIntelligentSystems (2021) 1:10 Page2of12
+possible uncertainties of autonomous vehicle driving in vehiclefollowing,obstacleavoidance,andsoon.Thisex-
+complex environments. Yuan et al. [4] proposed a pre- pands the application scope of the finite state machine
+processing method with specified time-frequency rules is and makes the system clearer. Therefore, more scholars
+proposed for more efficient traffic control. Wang et al. applied vehicle behavior as a sub-state in the finite state
+[5] used integration of travel speed, traffic flow and rain- machine to form a hierarchical state machine [19]. In
+fall intensity through the proposed deep belief-radial addition, the layered finite state machineisusedto assist
+basis function network to predict travel speedFor ex- vehicle decision-making. Gindele [20] divided the state
+ample, Markov model is a predictive control model, machine into three layers, wherein the concurrent lay-
+which can take some uncertain factors into account, it is ered state machine online selection is used to select the
+often used to improve the accuracy of automatic vehicle operation needed to complete the task. Although the
+behavior decisions [6]. Wei et al. used Markov model to Hierarchical finite state machine can adapt to most sce-
+consider perceptual constraints and surrounding vehicle narios, due to the inevitable uncertainty in the real traf-
+behavior as attributes to make decisions, which im- fic scenarios, the state transfer between layers is very
+proved the stability of automatic vehicles in a single lane important and can be further improved [21]. While, few
+[7]. Brechtel et al. combined the continuous state hier- papers put driving efficiency, driving safety, Lane idle
+archicalBayesiantransitionmodelwithMarkovDecision rate and other factors into the condition of state transi-
+Process (MDP) model to realize that the automatic ve- tion, so we consider a variety of evaluation indexes com-
+hicle can make reasonable decisions in the multi-lane bined with a hierarchical state machine to make the
+scene [8]. Brechtel et al. took driving decision as a autonomous vehicle and make safe and effective deci-
+method to solve continuous state Partially Observable sionsontherealroad.
+Markov Decision Process (POMDP) [9]. In addition, The research focus of this paper is to design an auto-
+much progress has been made in research work on deep matic driving decision framework including driving
+reinforcement learning-based decision models, the driv- safetyanddrivingefficiencybasedontheexistingvehicle
+ing behavior decision system developed by the NVIDIA perception information and the actual road conditions.
+company uses an end-to-end neural network [10]. Intel We propose a hierarchical finite state machine model
+company uses the existing control data trainingnetwork, with a top-down structure of three-layer of vehicle be-
+taking into account the vehicle straight, left turn, right havior decisions. Firstly, the traffic state of autonomous
+turn andother control commands, realizes the execution vehicles interacting with other vehicles in urban roads is
+of vehicle behavior such as turning while maintaining divided into 30 sub-scenes. These scenes are regarded as
+the lane [11]. Wang et al. [12] used the successful pre- substates of the top layer of the state machine. The top
+diction of traffic flows for heavy, medium and small ve- layer is used to judge the scene of automatic vehicles,
+hicles contributes to safer and more efficient travel. and the state transition condition is judged according to
+However, autonomous vehicle decision-making needs to thedistribution ofsurroundingvehicles,themiddlelayer
+be real-time and accurate in complex traffic scenarios is used to evaluate the possible behaviors of automatic
+[13]. rule-based decision models are real-time in nature vehicles in the current scene. Here, we divide the behav-
+andmorefocused onachievingfunctional,eachbehavior iors of vehicles in any sub-scene into four categories:
+ofvehicle can correspondto astate, somany researchers lane changing to the left, lane changing to the right, ac-
+establish some rules to help automatic vehicles make de- celerating forward, and decelerating forward, using the
+cisions, this methodisinline withthe logical thinkingof improved energy efficiency function, the energy effi-
+the driver, at the same time, it can meet the traffic rules, ciency value of each vehicle behavior is calculated from
+omit the cumbersome calculation process, and ensure the three aspects of safety, efficiency, and lane idleness.
+real-time decision-making [14, 15]. Yang et al. [16] used The state machine set of the lower layer is composed of
+an improved reinforcement learning method to find the four kinds of vehicle behaviors, and the vehicle state
+best road trajectory. Zhao et al. designed a decision- evolution prediction matrix is introduced, Predict and
+makingsystemusingtrafficrulesandpartofthemapin- judge the most reasonable vehicle behavior in the next
+formation from the knowledge base to make real-time state, and execute the vehicle behavior. In summary, the
+decisions at intersections [17]. In addition, hierarchical maincontributions ofthisworkare:
+finite state machines are an excellent method and are
+often used to assist in vehicle decision making because Proposedahierarchical finitestatemachine decision
+of their unique hierarchical judgement structure, which frameworkwiththree-layer;
+can be transferred to pre-set sub-states. Montemerlo Proposedanimprovedmulti-indicator energyefficiency
+[18] subdivided the vehicle behavior and established a function;
+limited state mechanism into decision-making system, in Thefeasibilityoftheproposedmethodisdemonstrated
+which the states include: initial state, forward driving, through simulationexperiments;
+Wangetal.AutonomousIntelligentSystems (2021) 1:10 Page3of12
+The organizationalstructure ofthispaperisasfollows: anditsactionscanalsobeconsideredassomerulesused
+Section 2 introduces the research status of vehicle be- to change the properties of the entity. The basic actions
+havior decision-making and the innovation of research of the entity can be divided into two most basic driving
+methods. In Section 3, the vehicle behavior decision behaviors,followingandlanechanging.
+model based on a hierarchical finite state machine is de-
+signed for different scenarios. Section 4 introduces the 2.2FSMmissionplanningmodel
+construction of the simulation environment and the test The FSM model is established for autonomous vehicles
+of the decision model and then analyzes and evaluates in straight lanes and the decisions of the state machine
+theresults.Section 5summarizesthethesis. are divided into three layers. Such a decision framework
+is expressed through collaboration between the three
+2 Methodology layers, and depending on the actual traffic situation and
+The realization of autonomous decision-making for au- vehicle state, a decision is made as to which specific ve-
+tonomous vehicles is based on three decision layers [22]. hicle action to perform next, and all tasks are completed
+This paper proposes a decision-making method for au- only when the decisions at each tier are completed. The
+tonomous vehicles performance based on finite state FSMmodel hierarchy isshowninFig.1.
+machines (FSM), which enables intelligent decision- The above behavior planning is a decision-making
+making during driving and allows planning the next be- method based on a finite state machine model to decide
+havior tobe performedby the vehicle based on real-time which specific task to perform in the task framework.
+trafficdynamics. The three task layers can be specifically represented as a
+The implementation of the autonomous driving task scenario decision, an energy efficiency assessment deci-
+planning relies on the simulation of each traffic partici- sion and an execution action decision layer, which can
+pating unit in a real traffic scenario, and then a three- make intelligent decisions when performing the task and
+layer decision modelisusedto complete the final behav- can match theactual drivingsituation.
+ior planning for each autonomous vehicle. The main A key issue in behavior planning is how to decide
+problem of planning is to determinethe rulesfor driving on the next behavior based on the actual traffic situ-
+decisions and the methods for implementing the deci- ation and the change of its own vehicle state, to
+sionprocess. achieve the purpose of decision making and reason-
+ing. The different states in the above decision frame-
+2.1Vehiclemodelestablishment work are regarded as different situations of the
+To establish an autonomous driving working condition autonomous vehicle in the actual traffic scenario, and
+model and abstract a real autonomous vehicle, the basic are expressed in the specific decision method of the
+features and behavior attributes used to describe the state machine: the first layer judges the scenario of
+basic behavioral capabilities of the vehicle are extracted, the vehicle in the straight-line section by the distribu-
+and all the basic features and attributes about the entity tion of the surrounding vehicles perceived by the au-
+are described based on the vehicle dynamics structure, tonomous vehicle, the second layer evaluates and
+Fig.1Tasknetworkdiagram
+Wangetal.AutonomousIntelligentSystems (2021) 1:10 Page4of12
+judges the potential vehicle behavior according to the 2.3Toplayerscenariodecision
+divided scenario and its own vehicle state, and the Alltaskmodesinthetasknetworkrepresentdifferent fi-
+third layer manifests itself in the form of specific be- nite states in a finite state machine. In the execution of
+havior planning. This allows for real-time adjustments the task, to complete the decision, the traffic situation in
+to be made based on the traffic situation and the different scenarios needs to be judged and the energy ef-
+state of the vehicle itself, thus enabling consistent ficiency values of different vehicle behaviors during the
+control and planning of the autonomous vehicle in driving process are evaluated by the corresponding indi-
+straight sections. The quintet is defined as follows to cators in different autonomous driving scenarios to fi-
+build a finite state machine decision model at each nally plan and predict the vehicle behaviors, thus
+task level: establishing the state transition table of the FSM. Fig-
+ure 2 below shows the typical scenario division decision
+MðS;∑;f;S ;FÞ: ð1Þ of the top-layer state machine on the distribution of ve-
+0
+hicles around the perception of the self-driving vehicle.
+Here, S means the set of states, in this paper, it can Accordingto thedistribution of vehicles around the per-
+be expressed as a set of task points of all layers, at ception of the self-driving vehicle, all scenarios are di-
+any certain moment, the FSM can only be in a cer- vided into three categories: no vehicle in front, no
+tain state. Σ means the set of input events or all situ- vehicle on the side, and vehicle on the side, and subdi-
+ations, the FSM can only receive a certain input at vided into sub-scenariosagain onthis basis.
+any certain behavior. f means a mapping from S×Σ
+to Σ, in a certain state, the FSM will switch to a new 2.4Middlelayerenergyefficiencyassessment
+state determined by the state transition function after The traffic situation evaluation is performed after the
+a given input, such as
+f(S,R)=S′
+means that the completion of the first layer of tasks. The evaluation re-
+current mission is S, when the situation changed to sults are calculated by collecting the relevant attributes
+R, the mission will transfer to the next mission S′ . S and execution of itself and the surrounding vehicles. By
+0
+is the initial state and F is the final state. analyzing all sub-scenarios, the energy efficiency values
+Fig.2Scenariodecisionoftopstatemachine
+Wangetal.AutonomousIntelligentSystems (2021) 1:10 Page5of12
+for different potential behavior planning are calculated, to the moment of collision, we can establish the mini-
+taking into account the safety, efficiency and lane avail- mumsafedistancemodel.
+ability of the scenario the vehicle is in, and the vehicle According to the relationship between the positions of
+behavior with the highest energy efficiency value is se- the two vehicles inFig. 3, we can establish thesafety dis-
+lected byconditionaljudgement. tance conditiontoavoid thecollision:
+The driving state of the vehicle can be divided into
+3 kinds: the free driving state with the desired speed
+ΔSþL
+H
+þS
+H
+⩾S
+A
+þL
+H
+cosθþW
+H
+sinθ; ð2Þ
+as the target, the lane change driving state under dif- where: ΔS is the initial longitudinal relative distance
+ferent acceleration, and the following driving state. between the host vehicle and the adjacent vehicle at the
+Three driving states are required to meet the vehicle start of the lane change; S H and S A are the longitudinal
+driving stability conditions and the lane change, displacements of the host vehicle and the adjacent ve-
+and the following driving state are required to meet hicle from the start of the lanechange to the completion
+the collision safety restriction conditions. Vehicle lane of the lane change, respectively; L is the length of the
+H
+change process, the current lane change vehicle and host vehicle, W H is the width of the host vehicle, and θ
+the target lane vehicle travel trajectory in time and istheangle between thebodyofthehost vehicle andthe
+space close to each other, there will be a collision. horizontaldirection atthetimeoflanechange.
+Therefore, it is a very important part to establish a Here we consider that the automatic vehicle completes
+reasonable collision safety distance model to study the the lane change with a constant longitudinal acceleration,
+relative states of two vehicles on their respective tra- and considering the driving comfort [24], we set −2 m/
+jectories from the moment they start lane changing s2≤a M ≤2 m/s2, where the acceleration is zero and the
+to the moment they finish lane changing. Based on automaticvehiclecompletesthelanechangeataconstant
+the relative speed of the lane change vehicle and the longitudinalspeed,soEq.(2)canberewrittenasfollows:
+target lane vehicle as well as the relative distance be-
+tween the two vehicles and other parameters, the col-
+ΔS⩾S
+A
+−S
+H
+−L
+H
+þL
+H
+cosθþW
+H
+sinθ¼
+ð3Þ
+lision safety distance model is established by
+V
+A
+t−V
+H
+t−0:5a
+H
+t2−L
+H
+þL
+H
+cosθþW
+H
+sinθ:
+calculating the minimum safety distance at the critical
+FromEqs.(2)and(3),wecangetthecriticalminimum
+collision point.
+safety distance between two vehicles without collision
+When the automatic vehicle performs the lane change when lane change occurs, which we name as Min c( S
+1
+),
+behavior, it is assumed that the adjacent vehicle travels
+that is, at the initial moment of lane change, the relative
+along trajectory 1 and the host vehicle travels along tra- distance ΔS between two vehicles satisfies the following
+jectory 2 in Fig. 3. Among them, trajectory 1 is a
+equation, and the two vehicles can avoid collision during
+straight-line driving, and trajectory 2 is selected as a
+lane change.
+polynomial lane change trajectory model [23]. The body
+lengths of the two vehicles are also taken into account, MinðS Þ¼ Max½V t−V t−L þL cosθþW sinθ(cid:2):
+c 1 A H H H H
+and the collision occurs when the two vehicles travel to ð4Þ
+the position in the figure. Let point A be the collision
+point, by studying the relationship between the position Vehicles in the process of changing lanes, the mini-
+of two vehicles from the moment of starting lane change mum safe distance on the formula (3) as a judgment of
+Fig.3Sceneofvehiclelanechanging
+Wangetal.AutonomousIntelligentSystems (2021) 1:10 Page6of12
+the risk of collision between the two vehicles is not rea- In addition to the driving safety risks mentioned
+sonable, in the actual driving process will be dangerous, above, an actual vehicle behavior decision framework
+therefore, we set aside a certain safe workshop distance should also consider the following decision attributes in
+for the automatic vehicle after changing lanes. When the the context of safety: travel efficiency and lane occu-
+host vehicle changes to the target lane, as the two vehi- pancy. The travel efficiency is based on the comparison
+cles follow the driving at a smaller relative speed, we of the current travel speed of the autonomous vehicle
+consider here that the distance between the two vehicles with the desired travel speed of the vehicle. To achieve
+is linearly related to the speed of the lane-changing ve- the optimal choice of automatic vehicle behavior under
+hicle, thus establishing the safe distance model after lane different vehicle interaction scenarios, this paper intro-
+changing: duces an energy efficiency function U based on the
+evaluation of safety, efficiency and lane availability,
+Min c ðS 2 Þ¼V A t d þD 0 : ð5Þ whereU 1 reflectstheassessmentofvehicledrivingsafety
+risk, and U and U are judged from driving efficiency
+Where: Min c(S
+2
+) is the safety distance after lane
+and lane oc
+2
+cupancy
+3
+. Through the analysis of the above
+change; t d is the braking delay time of F A vehicle, gener- three indicators, an assessment of the rationality of the
+ally take 1.2~2 s; D is the psychological safety distance
+0 automated vehicle behavior can beachieved,andwe set:
+of the front vehicle completely stop, generally
+(cid:1)
+take2~5m. V =V ; if V <V ;
+U ¼ H set H set ð8Þ
+The minimum safety distance model established by 1 1; if V ≥V :
+H set
+the integrated vehicle lane change critical collision point
+and the post-lane change safety distance model is used Where: V H indicates the actual speed of the vehicle
+to obtain the minimum safety distance model required and V set indicates the set ideal speed of the automatic
+forsafe lanechange: vehicle.
+The closeness of the distance between the automatic
+Min
+c
+ðSÞ¼ Min
+c
+ðS
+1
+Þþ Min
+c
+ðS
+2
+Þ: ð6Þ
+vehicle and the target vehicle can reflect the degree of
+danger in the process of driving the vehicle, here, the
+In the case where the automatic vehicle maintains the safety distance model Min(s) is chosen as Min c(S) and
+lane without changing lanes (the vehicle performs the Min f(S) respectively according to the vehicle behavior,
+following behavior), we establish the following model,
+lane-changingorlane-keeping.
+and the automatic vehicle needs to maintain a safe fol- 8
+lowing distance with the vehicle ahead, and the distance < MinðSÞ−ΔX;
+between the two vehicles should be greater than the U ¼ ΔX; if ΔX < MinðSÞ; ð9Þ
+2 :
+minimum safe distance of the vehicle ahead under 1 if ΔX≥ MinðSÞ:
+normal braking and emergency braking. Normal brak-
+ing distance refers to the braking distance of the ve- Equipped with on-board GPS and front/rear/left/right
+hicle ahead under non-emergency conditions in the radar and high-performance sensors, the autonomous
+following process. Emergency braking distance refers vehicle can detect the driving speed of neighbouring ve-
+to the displacement of the vehicle in front of you hicles within 360 degrees of the vehicle and the relative
+when you need to brake urgently. The safe distance position information with its own vehicle. Using the
+for a vehicle to follow the vehicle ahead to avoid col- sensing ability ofthe automatic vehicle,the externaltraf-
+lision can be defined as: fic environment information is extracted, combined with
+the lane line information to limit the effective travelling
+Minf ðSÞ¼V2 A =ð2a m Þ−V2 H =ð2a m ÞþTV A þL M : ð7Þ area, and the potential passing path is planned based on
+the virtual drawn cross grid, dividing the adjacent lane
+Where T is the braking reaction time of the driver as well as its own lane into nine areas, which are left,
+under the braking situation of the front vehicle, V A is right, front and rear, left front, right front, left rear and
+the current speed of the automatic vehicle, V M is the right rear eight potential driving directions of the auto-
+speed of the nearest vehicle ahead, and a m is the braking matic vehicle, under the premise of ensuring that each
+deceleration speed of the front vehicle. For the braking grid (called driving cell) obtained by equal division can
+capacity of most vehicles, the maximum deceleration accommodate the driving vehicles, the longitudinal
+speed of the vehicle is generally 7.5∼8m/s2, and the or- length of the grid is set to 9m and the transverse length
+dinary braking deceleration speed is generally 3∼4m/s2. is the lane width (3.5m). Each cell obtained after the
+The ideal state of the vehicle after following the stable equipartition of the straight lane is shown in Fig. 4.
+vehicle is that the front and rear vehicles keep a safe Using the estimation method of cell probability, assum-
+shop distanceat alltimes. ing that each vehicle can fall in a cell, two states of busy
+Wangetal.AutonomousIntelligentSystems (2021) 1:10 Page7of12
+Fig.4Situationdistributionoflanesaroundvehicles
+and idle are assigned to the cell according to whether fourpotentialbehaviorsarerepresentedbyU A,U B,U C,U D
+the vehicle falls in the cell or not, and the busy/idle state respectively. By comparing the energy efficiency values
+of three cells of each lane is used to calculate the whole of different vehicle behaviors, the current optimal driv-
+lane idlerate asfollows: ingdecision can bejudgedinreal-time.
+8
+<n
+if Laneisbusy; 2.5Lowerlayeractiondecision
+U ¼ 3 ð10Þ
+3 : The following FSM state transfer table can be created
+1 if Laneisfree:
+based on the evaluation results of the mid-layer state
+machine and the potential behavior nodes in the subse-
+Here nisthenumber offreecells inthelane. quent stages. The table defines the rules for vehicle be-
+havior transfer, i.e., all potential vehicle behaviors in the
+So far, energy efficiency functions based on efficiency,
+current state of the vehicle and the next state under dif-
+safety and lane availability have been constructed. In the
+ferent scenarios and different risk situations. To avoid
+process of solving multi-attribute decision problems, we
+confusion, the energy efficiency value U obtained from
+use weight values to quantify the relative importance be-
+theevaluationofpotential vehiclebehaviorsintheprevi-
+tween attributes, which also allows both traffic safety
+ous section is represented in this table by R. Each poten-
+and access efficiency considerations to be considered to-
+tial state corresponds to an evaluation value R. For
+gether to create a multi-dimensional evaluation method.
+example, a scenario is randomly selected to build a be-
+The hierarchical analysis is a multi-objective decision
+havior transition table that contains three stages after
+analysis method that combines qualitative and quantita-
+the initial moment, each with four potential behavior
+tive analysis methods. The main idea of this method is
+nodes, asshowninTable1.
+that by decomposing a complex problem into several
+Where S represents the initial behavior node,
+levels and factors, making a comparative judgement on 0
+A , B , C , D represent the four potential behavior
+the importance between two indicators, establishing a 1 1 1 1
+nodes in the first stage (t1) after the initial moment,
+judgement matrix, and by calculating the maximum
+A , B , C , D represent the four potential behavior
+eigenvalue of the judgement matrix and the correspond- 2 2 2 2
+nodes in the second stage (t2), etc. The specific behavior
+ing eigenvector, the weights of the importance of differ-
+ent solutions can be derived, providing a basis for the
+Table1StaticconversiontableofFSM
+selection of the best solution [25], we used classicalhier-
+archical analysis to determine the decision matrix, giving AssessedValue R A R B R C R D
+higher subjective weights to the safety indicators of the PotentialNodes
+vehicle, In order to integrate the three indicators more Currentnode
+intuitively, with a maximum energy efficiency value of 1 t S A B C D
+0 0 1 1 1 1
+for each indicator, we multiplied the final weight value t A A B C D
+1 1 2 2 2 2
+by a scale factor of 3 to obtain the coefficient ω=
+B A B C D
+1 2 2 2 2
+[0.61.680.72].
+C A B C D
+1 2 2 2 2
+X3
+D A B C D
+U ¼ ω
+i
+U
+i
+: ð11Þ 1 2 2 2 2
+t A A B C D
+i¼1 2 2 3 3 3 3
+B A B C D
+2 3 3 3 3
+The energy efficiency function can be used to reflect
+C A B C D
+the evaluation of each potential behavior of the auto- 2 3 3 3 3
+D A B C D
+matic vehicle, and the energy efficiency values of the 2 3 3 3 3
+Wangetal.AutonomousIntelligentSystems (2021) 1:10 Page8of12
+implementation is in the order of vehicle acceleration, visual effect and the sensor authenticity of automatic
+right lane change, left lane change and deceleration. If driving vehicles in complex weather, trees and buildings
+the vehicle is currently in one of the identified nodes, elements are added on both sides of the road to make
+the value of this node is set to 1 and the others are set the scene more like the urban road environment. Ac-
+to 0. For example, if A =1, then the vehicleperforms an cording to the four consecutive typical lane changing
+1
+acceleration behavior at the current moment and B = scenarios randomly selected in Fig. 2 above, eight dy-
+1
+C =D =0. R , R , R and R represent the results of the namic and free driving automatic vehicles are placed in
+1 1 1 2 3 4
+evaluation of the vehicle behavior in the next phase. If the traffic scene as the research vehicles, in which the
+the highest energy efficiency value for the next phase is prescan’sownvehicledynamicsmodel isadded toallve-
+R according to the evaluation of the middle-layer state hicles, in addition, sensors are added to the front of the
+2
+machine, then R =1, R =R =R =0, and the vehicle simulation model to detect the position and speed of the
+2 2 3 4
+behaviorperformedisarightlane change. vehicle infront.
+The state transition table can be expressed by matrix. Figure 5 is a total traffic scene composed of four con-
+According to Table 1, the matrix can be expressed as tinuous static sub-scenes. Due to the changes of sur-
+follows: rounding vehicles, the scene of the research vehicle
+2 3 changes dynamically. Furthermore, to analyze the ro-
+A B C D
+1 1 1 1 bustness of our proposed decision model in dynamic
+6A B C D 7
+6 2 2 2 27 and complex scenes, we set up autonomous vehicles
+6A B C D 7
+6 6A 2 B 2 C 2 D 27 7 with different penetration rates, this can make the ve-
+P¼ 6 6
+6 6
+A
+A
+2
+2
+B
+B
+2
+2
+C
+C
+2
+2
+D
+D
+2
+2
+7 7
+7 7
+: ð12Þ h
+de
+ic
+c
+l
+i
+e
+sio
+d
+n
+rivi
+m
+ng
+od
+m
+el
+or
+b
+e
+et
+r
+t
+a
+e
+n
+r
+do
+d
+m
+eal
+in
+w
+t
+i
+h
+th
+e s
+t
+c
+h
+e
+e
+ne
+c
+,
+o
+a
+m
+nd
+ple
+m
+x
+ak
+t
+e
+ra
+t
+ff
+h
+ic
+e
+6 6A 3 B 3 C 3 D 37 7 scene.
+6 4A 3 B 3 C 3 D 37 5 After the traffic scenario is built, a hierarchical finite
+3 3 3 3 state machine model can be constructed by running
+A B C D
+3 3 3 3 MATLAB/Simulink directly through prescan. The finite
+Let the current state, i.e., the current behavior node, state machine is divided into three layers, the top layer,
+be S′ and the energy efficiency evaluation matrix be R i. themiddlelayerandthebottomlayer,thetoplayerstate
+The nextstateScanbecalculated by: machineisused tojudge the scene it isin, itsstateis the
+sub-scene divided above, the state transfer condition is
+S ¼S0 (cid:3)P(cid:3)RT: ð13Þ judgedaccordingtothesurroundingvehicledistribution,
+i
+and this scene information is passed to the middle layer
+For example, if the current task is at the second node
+state machine as the output. The state transfer condition
+of the first phase, i.e., C , the current state can be
+1 is determined according to the surrounding vehicle dis-
+expressedas:
+tribution, and this scene information is passed to the
+S′ ¼½000100000(cid:2): ð14Þ intermediate layer state machine as output. Each top-
+level state machine outputs a scene corresponding to an
+And assume that the current scenario under the best intermediate level state machine, which is used to filter
+risk assessment conforms to the R , the situation can be out the vehicle potential behaviors with the highest en-
+3
+expressedas: ergy efficiency value based on the energy efficiency value
+calculated from the relative speed and relative distance
+R
+3
+¼½0010(cid:2): ð15Þ
+of the surrounding vehicles, and whose state is the best
+energy efficiency value of the vehicle potential behaviors
+So,the nexttask is:
+for each sub-scene. The mid-layer state machine passes
+S ¼S0 (cid:3)P(cid:3)RT ¼C : ð16Þ the filtering results as output to the behavior matrix der-
+3 2
+ivation module. For the underlying state machine, the
+We can see from the above that the next task is trans- state information is straight ahead acceleration, straight-
+ferred to C , which is the second node of the second ahead deceleration, lane change to the left, lane change
+2
+layer. The specific planning task is to change the lane to the right, and the state transfer condition is the result
+leftatthenextmoment. of the state matrix deduction above, which is converted
+into aspecific vehicleactionafter judgement, and finally,
+3 Simulation evaluation in typical scenarios the decision information is output to the vehicle dynam-
+Prescan is used to build a simulation traffic scene, and a ics model. The self-driving vehicle behavior decision
+three-lane road with a width of 3.5m and a length of model is thus basically built, as shown in Fig. 6a of the
+300m is designed. At the same time, to increase the decision framework execution process. The whole
+Wangetal.AutonomousIntelligentSystems (2021) 1:10 Page9of12
+Fig.5Prescansimulationexperimentscene
+simulation model includes the traffic environment mod- lanes in the same direction; (b) The energy efficiency as-
+ule, vehicle dynamics module, vehicle state output mod- sessmentchartoftheegovehicleunderdifferentaccelera-
+ule, GPS inertial navigation radar module, control tions in different lanes and the optimal point obtained by
+strategy execution module and speed control module. thedecisionmethod(d)Path-speedplanningresultsbased
+The simulation model framework shown in Fig. 6b is onthe optimal point,c-1,c-2,c-3,c-4arethe lateralpos-
+obtained. ition, longitudinal position, speed and acceleration
+According to the above-built simulation traffic scene, respectively.
+the driving results of the automatic vehicle based on the Figure 8 shows that the main vehicle runs normally in
+finite state machine decision are verified, as shown in three lanes in the same direction, and the initial speed is
+Fig. 7 below. During the driving process, the vehicle en- 21m/s.frontvehicle aand right-frontvehicle Bdrive ata
+suresitsownsafetyandstabilitythroughaseriesofdeci- constant speed of 18m/s without acceleration. Consider-
+sionssuch aslane change, acceleration,deceleration,etc. ing the large relative speed between the main vehicle
+Two typical scenarios in Fig. 2 above are selected for and the vehicle in front, the main vehicle attempts to
+analysis,andthesimulationresultsshowninFigs.8and9 change the current state to ensure the expected speed of
+areobtained,andmainlyinclude:(a)Trafficsceneofthree 23m/s. It can be seen from Fig. 6 that the vehicle
+Fig.6Schematicdiagramofthesimulationestablishment.aFSMmodelarchitecture.bSimulationmodelframework
+Wangetal.AutonomousIntelligentSystems (2021) 1:10 Page10of12
+Fig.7SimulationresultofVehiclebehaviouraldecisions.aAutomaticvehicletrajectory.bAutomaticvehicledecisionpoint
+generates decision point 1. According to the energy effi- speed of 18m/s without acceleration signs. Considering
+ciency assessment diagram in Fig. 8b, the main vehicle therelativespeed andrelative position betweenthe main
+can turn left to achieve the highest energy efficiency in- vehicle and the vehicle in front, the main vehicle should
+come. The planning results are shown in Fig. 8c, the change the current state to reduce risks and ensure
+host vehicle completes lane change with an acceleration safety. Ascanbeseenfrom Fig.7above,thevehiclegen-
+of 2 m/s2. After lane change, the driving speed reaches erates decision point 5. According to the energy effi-
+24.5m/s. The results of longitudinal displacement and ciency assessment diagram in Fig. 9b, the main vehicle
+transversedisplacementareshowninthefigure. can achieve the maximum energy efficiency benefits by
+Figure 9 shows that the main vehicle runs normally in taking appropriate deceleration. The planning results are
+three lanes in the same direction, and the initial speed is shown in Fig. 9c, the main vehicle decelerates and fol-
+21m/s. vehicle A in front of the left, vehicle B in front lows the vehicle with an acceleration of −2 m/s2. After
+and vehicle C in front of the right drive at a constant the following behavior is completed, the driving speed
+Fig.8Simulationresultofnormaldrivingscenario.aRoadscene.bEnergyefficiencyassessmentmap.cTrajectoryplan
+Wangetal.AutonomousIntelligentSystems (2021) 1:10 Page11of12
+Fig.9Simulationresultofnormaldrivingscenario.aRoadscene.bEnergyefficiencyassessmentmap.cTrajectoryplan
+reaches 18 m/s. The results of longitudinal displacement decision-making considering only the safe distance, the
+andtransversedisplacementareshown inthefigure. transmission efficiency is improved by 16.7%. This paper
+focuses on the analysis of optimal decisions made by au-
+4 Conclusion tomated vehiclesinthefaceofcomplextrafficsituations,
+This paper presents an automatic decision-making sys- but the current approach has certainlimitations that will
+temetic framework for vehicle behaviour based on hier- be addressed in future work: 1) the specific trajectory
+archical finite state machines. The entire state machine and speed planning of vehicle lane changes are not ana-
+decision framework is divided into three layers. The top lyzed and calculated; 2) the weight distribution of the in-
+layer state machinedeterminesthe scenario inwhich the dicators needs to be more reasonable. In future work,
+main vehicle is located based on information about the we will further study vehicle trajectory prediction as well
+surrounding vehicles. The middle layer state machine as trajectory tracking, and more in-depth research on
+uses an improved energy efficiency function to evaluate the weight selection of indicators, and consider using
+the energy efficiency values of potential vehicle behav- game theory to analyze each indicator to improve our
+iour and determine the optimal energy efficiency value. decision and planning framework, so that the framework
+The lower layer state machine combines the state trans- decision is more accurate, safe and efficient, and it is
+fer matrix to derive the optimal driving strategy for the more in line with the thinking logic of drivers in actual
+autonomous vehicle at the next point in time. The deci- driving.
+sion framework proposed in this paper is based on au-
+Abbreviations
+tonomous vehicles equipped with high performance
+MDP:MarkovDecisionProcess;POMDP:PartiallyObservableMarkovDecision
+sensors that can flexibly adapt the vehicle driving strat- Process;FSM:Finitestatemachine
+egy to the surrounding environment to cope with chan-
+Acknowledgements
+ging traffic conditions in real driving situations. The
+TheauthorswouldliketoappreciateMr.LonghaoYanforhiswritingadvice
+simulation results show that the proposed self driving andMr.TongtongShifortheguidetoimprovethequalityoffigures.
+vehicle behavior decision-making framework can achieve
+Codeavailability
+correct decision-making in complex road scenes, com-
+Thesoftwareapplicationinformationandcodethatsupportthefindingsof
+prehensivelyconsiderdrivingsafetyandtrafficefficiency, thisstudyareavailablefromthecorrespondingauthoruponreasonable
+and select the best driving strategy. When the main ve- request.Correspondingauthors:PingWang(wang0372@e.ntu.edu.sg).
+hicle is in the speed position with the surrounding vehi- Authors’contributions
+cles to ensure safe driving and the main vehicle does not XuanyuWangcontributedtotheresearchconception,designedthepaper
+reach the expected passing speed, in our decision- structureandcompletedthemanuscript;XudongQiperformedthePrescan
+andMATLABexperimentandparticipatedinwritingthepartoftheanalysis
+making process, we can select the path and speed most
+oftheexperimentalresults;PingWanghelpedperformedthemethod
+in line with the expected speed. Compared with the design,paperstructureplanningandlanguagewritingformwith
+Wangetal.AutonomousIntelligentSystems (2021) 1:10 Page12of12
+constructivediscussions;JingwenYangperformedthemanuscript 13. S.Ulbrich,M.Maurer,inIntelligentTransportationSystems-(ITSC),201316th
+preparationandcharting,helptocalculateanddeducethepartofthe internationalIEEEconferenceon,IEEE.ProbabilisticonlinePOMDPdecision
+energyefficiencyfunctionmodel.Theauthor(s)readandapprovedthefinal makingforlanechangesinfullyautomateddriving(2013),pp.2063–2067
+manuscript. 14. B.Vanholme,D.Gruyer,B.Lusetti,S.Glaser,S.Mammar,Highlyautomated
+drivingonhighwaysbasedonlegalsafety.Intell.TransportationSyst.IEEE
+Funding Trans.14(1),333–347(2013)
+ThisworkwassupportedbytheNationalKeyResearchandDevelopment 15. L.Fletcher,S.Teller,E.Olson,D.Moore,Y.Kuwata,J.How,etal.,TheMIT–
+ProgramofChina(2020YFB1600400),KeyResearchandDevelopment Cornellcollisionandwhyithappened.J.FieldRobot.25(10),775–807
+ProgramofShaanxiProvince(2020GY-020)andSupportedbythe (2008)
+FundamentalResearchFundsfortheCentralUniversities,CHD 16. J.Yang,P.Wang,W.Yuan,etal.,Automaticgenerationofoptimalroad
+(300102320305). trajectoryfortherescuevehicleincaseofemergencyonmountainfreeway
+usingreinforcementlearningapproach.IETIntell.Transp.Syst.15,1142–
+Availabilityofdataandmaterials 1152(2021)
+Thedatathatsupportthefindingsofthisstudyareavailablefromthe 17. L.Zhao,R.Ichise,Y.Sasaki,L.Zheng,T.Yoshikawa,inIntelligentvehicles
+correspondingauthoruponreasonablerequest. symposium,IEEE.Fastdecisionmakingusingontology-basedknowledge
+base(2016),pp.173–178
+Declarations 18. M.Montemerlo,J.Becker,S.BhatJr.,TheStanfordentryintheurban
+challenge.J.FieldRobot.25(9),569–597(2008)
+19. J.Ziegler,P.Bender,M.Schreiber,Makingberthadrive—Anautonomous
+Ethicsapprovalandconsenttoparticipate
+journeyonahistoricroute.Intell.TransportationSyst.Mag.IEEE6(2),8–20
+Notapplicable.
+(2014)
+20. T.Gindele,D.Jagszent,B.Pitzer,R.Dillmann,inIntelligentvehicles
+Consentforpublication
+symposium,IEEE.DesignoftheplannerofTeamAnnieWAY’sautonomous
+Notapplicable.
+vehicleusedintheDARPAUrbanChallenge2007(2008),pp.1131–1136
+21. A.Kurt,U.Ozguner,Hierarchicalfinitestatemachinesforautonomous
+Competinginterests mobilesystems.Control.Eng.Pract.21(2),184–194(2013)
+Theauthorsdeclaredthattheyhavenoconflictsofinterestinthiswork.
+22. S.Ma,G.Gong,L.Han,X.Song,in2008Asiasimulationconference-7th
+internationalconferenceonsystemsimulationandscientificcomputing.
+Received:3June2021Accepted:22October2021
+Militarytaskprogrammingbasedonfinitestatemachine(FSM)decision-
+makingmodel(2008),pp.1416–1420
+23. Q.H.Do,H.Tehrani,S.Mita,M.Egawa,K.Muto,K.Y.Oneda,Humandrivers
+References
+basedactive-passivemodelforautomatedlanechange.IEEEIntell.Transp.
+1. S.I.Oh,H.B.Kang,Fastoccupancygridfilteringusinggridcellclustersfrom Syst.Mag.9(1),42–56(2017)
+LIDARandstereovisionsensordata.IEEESensorsJ.16(19),7258–7266
+24. L.Jin,V.Bart,S.Yang,etal.,Safetylanechangemodelofvehicleassistant
+(2016) drivingonhighway.J.JilinUniv.Eng.Technol.39(3),582–586(2009)
+2. S.Sivaraman,M.M.Trivedi,Dynamicprobabilisticdrivabilitymapsforlane
+25. S.Wu,Researchontheriskassessmentalgorithmforaccountinginformation
+changeandmergedriverassistance.IEEETrans.Intell.Transp.Syst.15(5),
+systembasedonanalytichierarchyprocess,SeventhInternationalConference
+2063–2073(2014)
+onMeasuringTechnologyandMechatronicsAutomation(2015)pp.934-
+3. G.Yang,P.Wang,W.Han,etal.Automaticgenerationoffine-grainedtraffic
+937.https://doi.org/10.1109/ICMTMA.2015.346.
+loadspectrumviafusionofweigh-in-motionandvehiclespatial–temporal
+information.Computer-AidedCivilandInfrastructureEngineering.
+4. W.Yuan,P.Wang,J.Yang,Y.Meng,Analternativereliabilitymethodto Publisher’s Note
+evaluatetheregionaltrafficcongestionfromGPSdataobtainedfrom SpringerNatureremainsneutralwithregardtojurisdictionalclaimsin
+floatingcars.IETSmartCities.3(2),79–90(2021) publishedmapsandinstitutionalaffiliations.
+5. P.Wang,Y.Zhang,S.Wang,L.Li,X.Li,Forecastingtravelspeedinthe
+rainfalldaystodevelopsuitablevariablespeedlimitscontrolstrategyfor
+lessdrivingrisk.J.Adv.Transp.2021,ArticleID6639559,13pages(2021)
+6. S.Brechtel,T.Gindele,R.Dillmann,inProceedingsofthe30thinternational
+conferenceonmachinelearning.SolvingcontinuousPOMDPs:Valueiteration
+withincrementallearningofanefficientspacerepresentation(2013),pp.
+370–378
+7. J.Wei,J.M.Dolan,J.M.Snider,B.Litkouhi,inRoboticsandAutomation(ICRA),
+2011IEEEinternationalconferenceon,IEEE.Apoint-basedMDPforrobust
+single-laneautonomousdrivingbehaviorunderuncertainties(2011),pp.
+2586–2592
+8. S.Brechtel,T.Gindele,R.Dillmann,inIntelligentTransportationSystems
+(ITSC),2014IEEE17thinternationalconferenceon,IEEE.Probabilisticdecision-
+makingunderuncertaintyforautonomousdrivingusingcontinuous
+POMDPs(2014),pp.392–399
+9. S.Brechtel,T.Gindele,inProceedingsofthe30thInternationalconference
+onmachinelearning.SolvingcontinuousPOMDPs:Valueiterationwith
+incrementallearningofanefficientspacerepresentation(2013),pp.
+370–378
+10. M.Bojarski,D.D.Testa,D.Dworakowski,Endtoendlearningforself-driving
+cars.arXiv:ComputerVisionandPatternRecognition(2016)
+11. F.Codevilla,M.Müller,A.López,V.Koltun,A.Dosovitskiy,End-to-enddriving
+viaconditionalimitationlearning.2018IEEEInternationalConferenceon
+RoboticsandAutomation(ICRA),(2018)
+12. P.Wang,W.Hao,Y.Jin,inIEEEtransactionsonintelligenttransportation
+systems.Fine-grainedtrafficflowpredictionofvariousvehicletypesvia
+fusisonofmultisourcedataanddeeplearningapproaches.https://doi.org/1
+0.1109/TITS.2020.2997412

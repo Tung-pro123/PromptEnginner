@@ -1,2 +1,2 @@
-# Control module - Motor control, PID, line following
-# TODO: Tách logic correct_course(), turn_robot() từ main_*.py vào đây
+# Control module - PID controller for lane following
+from src.core.control.pid_controller import PIDController

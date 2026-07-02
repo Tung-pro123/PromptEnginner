@@ -1,2 +1,4 @@
 # Perception module - Camera & LiDAR processing
-# TODO: Tách logic xử lý ảnh (HSV filter, Dual ROI) từ main_*.py vào đây
+from src.core.perception.lane_detector import LaneDetector
+from src.core.perception.obstacle_detector import ObstacleDetector
+from src.core.perception.checkpoint_tracker import CheckpointTracker
