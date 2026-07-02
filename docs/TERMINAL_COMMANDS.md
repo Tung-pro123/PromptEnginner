@@ -81,7 +81,8 @@ source ~/catkin_ws/devel/setup.bash
 
 | Nhiệm vụ | Cú pháp lệnh | Ghi chú |
 | :--- | :--- | :--- |
-| **Test Né Vật Cản** | `python3 tests/test_obstacle_avoidance.py` | Xe chạy bám làn thẳng và tự động bẻ lái né hộp giấy |
+| **Test Né Vật Cản LQR** | `python3 tests/test_obstacle_avoidance.py` | Xe chạy bám làn thẳng và tự động bẻ lái né hộp giấy bằng LQR |
+| **Test Thuật Toán Biên** | `python3 tests/test_speed_track_concept.py` | Xe chạy bám biên trắng an toàn & chuyển trạng thái FSM né hộp giấy |
 
 ---
 
