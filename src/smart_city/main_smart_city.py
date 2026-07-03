@@ -16,7 +16,7 @@ import requests
 import importlib.util
 from datetime import datetime, timezone
 
-from jetbot import Robot
+from src.core.control.racer_controller import RacerController
 import onnxruntime as ort
 from pyzbar.pyzbar import decode
 import paho.mqtt.client as mqtt
@@ -190,10 +190,10 @@ class JetBotController:
 
     def initialize_hardware(self):
         try:
-            self.robot = Robot()
-            rospy.loginfo("Phần cứng JetBot (động cơ) đã được khởi tạo.")
+            self.robot = RacerController()
+            rospy.loginfo("Phần cứng JetRacer (RacerController) đã được khởi tạo.")
         except Exception as e:
-            rospy.logwarn(f"Không tìm thấy phần cứng JetBot, sử dụng Mock object. Lỗi: {e}")
+            rospy.logwarn(f"Không thể khởi tạo RacerController, sử dụng Mock object. Lỗi: {e}")
             from unittest.mock import Mock
             self.robot = Mock()
 
@@ -427,7 +427,7 @@ class JetBotController:
             # ===================================================================
             elif self.current_state == RobotState.APPROACHING_INTERSECTION:
                 # Đi thẳng một đoạn ngắn để vào trung tâm giao lộ
-                self.robot.set_motors(self.BASE_SPEED, self.BASE_SPEED)
+                self.robot.forward(self.BASE_SPEED)
                 
                 if rospy.get_time() - self.state_change_time > self.INTERSECTION_APPROACH_DURATION:
                     rospy.loginfo("Đã tiến vào trung tâm giao lộ. Dừng lại để xử lý.")
@@ -448,7 +448,7 @@ class JetBotController:
             # TRẠNG THÁI 3: ĐANG RỜI KHỎI GIAO LỘ (LEAVING_INTERSECTION)
             # ===================================================================
             elif self.current_state == RobotState.LEAVING_INTERSECTION:
-                self.robot.set_motors(self.BASE_SPEED, self.BASE_SPEED)
+                self.robot.forward(self.BASE_SPEED)
                 if rospy.get_time() - self.state_change_time > self.INTERSECTION_CLEARANCE_DURATION:
                     rospy.loginfo("Đã thoát khỏi khu vực giao lộ. Bắt đầu tìm kiếm line mới.")
                     self._set_state(RobotState.REACQUIRING_LINE)
@@ -457,7 +457,7 @@ class JetBotController:
             # TRẠNG THÁI 4: ĐANG TÌM LẠI LINE (REACQUIRING_LINE)
             # ===================================================================
             elif self.current_state == RobotState.REACQUIRING_LINE:
-                self.robot.set_motors(self.BASE_SPEED, self.BASE_SPEED)
+                self.robot.forward(self.BASE_SPEED)
                 line_center_x = self._get_line_center(self.latest_image, self.ROI_Y, self.ROI_H)
                 
                 if line_center_x is not None:
@@ -602,7 +602,7 @@ class JetBotController:
         
         # Vẫn đi thẳng nếu sai số rất nhỏ
         if abs(error) < (self.WIDTH / 2) * self.SAFE_ZONE_PERCENT:
-            self.robot.set_motors(self.BASE_SPEED, self.BASE_SPEED)
+            self.robot.forward(self.BASE_SPEED)
             return
 
         # Tính toán lực điều chỉnh
@@ -611,10 +611,8 @@ class JetBotController:
         # Ngăn chặn hành vi bẻ lái quá gắt một cách tuyệt đối
         adj = np.clip(adj, -self.MAX_CORRECTION_ADJ, self.MAX_CORRECTION_ADJ)
         
-        # Áp dụng lực điều chỉnh đã được giới hạn
-        left_motor = self.BASE_SPEED + adj
-        right_motor = self.BASE_SPEED - adj
-        self.robot.set_motors(left_motor, right_motor)
+        # Áp dụng lực điều chỉnh đã được giới hạn (steer và chạy)
+        self.robot.steer(adj, self.BASE_SPEED)
         
     def _submit_payload(self, payload):
         """
@@ -824,20 +822,10 @@ class JetBotController:
         self._set_state(RobotState.LEAVING_INTERSECTION)
     
     def turn_robot(self, degrees, update_main_direction=True):
-        duration = abs(degrees) / 90.0 * self.TURN_DURATION_90_DEG
-        if degrees > 0: 
-            self.robot.set_motors(self.TURN_SPEED, -self.TURN_SPEED)
-        elif degrees < 0: 
-            self.robot.set_motors(-self.TURN_SPEED, self.TURN_SPEED)
-        if degrees != 0: 
-            start_time = rospy.get_time()
-            while rospy.get_time() - start_time < duration:
-                # Ghi lại khung hình trong khi robot đang quay
-                self._record_frame()
-                # Thêm một khoảng nghỉ nhỏ để không làm quá tải CPU và để ROS có thời gian cập nhật
-                rospy.sleep(1.0 / self.VIDEO_FPS)
+        # Trên JetRacer (Ackermann), ta rẽ theo cung tròn thông qua turn_angle
+        # Hàm record_frame được truyền vào để tiếp tục ghi video trong khi rẽ
+        self.robot.turn_angle(degrees, record_callback=self._record_frame)
 
-        self.robot.stop()
         if update_main_direction and degrees % 90 == 0 and degrees != 0:
             num_turns = round(degrees / 90)
             self.current_direction_index = (self.current_direction_index + num_turns + 4) % 4

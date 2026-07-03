@@ -35,25 +35,27 @@ class SpeedTrackController:
         # --- Params ---
         self.W, self.H = 300, 300
         self.BASE_SPEED = 0.22
-        self.AVOID_SPEED = 0.18
+        self.AVOID_SPEED = 0.13
         self.RECOVER_SPEED = 0.15
-        self.AVOID_TIMEOUT = 2.5
+        self.AVOID_TIMEOUT = 3.5
         self.RECOVER_TIMEOUT = 3.0
         self.CP_COOLDOWN = 2.0
         self.WAIT_TIMEOUT = 30.0
         self.LOOP_RATE = 20
         # PID (steering output)
-        self.Kp = 0.007; self.Ki = 0.0; self.Kd = 0.002
+        self.Kp = 0.011; self.Ki = 0.0; self.Kd = 0.003
         self._pid_integral = 0.0; self._pid_prev_err = 0.0; self._pid_last_t = None
         # Obstacle FSM
-        self.TRIGGER_DIST = 0.70
+        self.TRIGGER_DIST = 0.85
         self.SIDE_CLEAR_DIST = 0.45
-        self.DODGE_OFFSET_PX = 55
-        self.RAMP_STEP_PX = 4
+        self.DODGE_OFFSET_PX = 95
+        self.RAMP_STEP_PX = 12
         self.LIDAR_OFFSET_DEG = 180.0
         self.avoid_state = AvoidState.NORMAL
         self.target_offset = 0.0; self.current_offset = 0.0
         self.avoid_dir = 'right'
+        self.MIN_DODGE_TIME = 1.5
+        self.avoid_state_time = rospy.get_time()
         # Checkpoint
         self.CP_WHITE_RATIO = 0.45
         self.CP_ROI_Y = int(self.H * 0.88)
@@ -62,7 +64,7 @@ class SpeedTrackController:
         self.CP_COOLDOWN_SEC = 3.0
         # Lane detection params
         self.GRAY_THRESH = 180
-        self.BORDER_SAFETY_MARGIN = 0.30  # Giữ 30% khoảng cách tới biên
+        self.BORDER_SAFETY_MARGIN = 0.15  # Giữ 15% khoảng cách tới biên
         # --- Hardware ---
         self.racer = RacerController(); self.racer.stop()
         # --- ROS ---
@@ -82,6 +84,12 @@ class SpeedTrackController:
         self._csv.writerow(['timestamp','state','steer','speed','front_dist','offset','event'])
         self._frame_count = 0; self._fps_start = time.time()
         rospy.loginfo(f"Log: {self.log_path}")
+
+        # --- Video Logger ---
+        self.video_path = os.path.join(log_dir, f'speed_{ts}.avi')
+        self.video_writer = None
+        self.initialize_video_writer()
+
         rospy.loginfo("=== SAN SANG ===")
 
     # ============================================================
@@ -100,6 +108,31 @@ class SpeedTrackController:
     def _lidar_cb(self, msg):
         self.latest_scan = msg
 
+    def initialize_video_writer(self):
+        """Khởi tạo VideoWriter để ghi log video."""
+        try:
+            fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+            self.video_writer = cv2.VideoWriter(self.video_path, fourcc, self.LOOP_RATE, (self.W, self.H))
+            if self.video_writer.isOpened():
+                rospy.loginfo(f"Ghi video debug vào file: {self.video_path}")
+            else:
+                rospy.logerr("Không thể mở file video để ghi.")
+                self.video_writer = None
+        except Exception as e:
+            rospy.logerr(f"Lỗi khởi tạo VideoWriter: {e}")
+            self.video_writer = None
+
+    def _record_frame(self, frame):
+        """Ghi một khung hình vào video log."""
+        if self.video_writer is not None and frame is not None:
+            try:
+                # Đảm bảo kích thước khớp với cấu hình VideoWriter
+                if frame.shape[0] != self.H or frame.shape[1] != self.W:
+                    frame = cv2.resize(frame, (self.W, self.H))
+                self.video_writer.write(frame)
+            except Exception as e:
+                rospy.logerr_throttle(5, f"Lỗi ghi video: {e}")
+
     # ============================================================
     # HYBRID LANE DETECTION (Cách B)
     # Tìm 2 biên trắng + vạch trắng đứt khúc giữa
@@ -108,7 +141,8 @@ class SpeedTrackController:
         """Returns (target_x, left_border, right_border, has_center_line, debug_img)"""
         resized = cv2.resize(frame, (self.W, self.H))
         gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, self.GRAY_THRESH, 255, cv2.THRESH_BINARY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        _, thresh = cv2.threshold(blurred, self.GRAY_THRESH, 255, cv2.THRESH_BINARY)
 
         y_near = int(self.H * 0.85)
         y_far = int(self.H * 0.55)
@@ -116,9 +150,11 @@ class SpeedTrackController:
         def find_borders(y):
             mid = self.W // 2
             L, R = 0, self.W - 1
-            for x in range(mid, 0, -1):
+            # Tìm biên trái: đi từ 0 sang phải đến mid
+            for x in range(0, mid):
                 if thresh[y, x] == 255: L = x; break
-            for x in range(mid, self.W):
+            # Tìm biên phải: đi từ W-1 sang trái đến mid
+            for x in range(self.W - 1, mid, -1):
                 if thresh[y, x] == 255: R = x; break
             return L, R, (L + R) // 2
 
@@ -153,21 +189,44 @@ class SpeedTrackController:
 
         # Debug image
         dbg = resized.copy()
-        cv2.line(dbg, (0, y_near), (self.W, y_near), (0, 255, 255), 1)
-        cv2.circle(dbg, (L_n, y_near), 4, (0, 0, 255), -1)
-        cv2.circle(dbg, (R_n, y_near), 4, (0, 0, 255), -1)
-        cv2.circle(dbg, (mid_n, y_near), 5, (255, 0, 0), -1)
+        
+        # Vẽ các vùng quét ROI bằng các đường nét đứt hoặc nét mảnh
+        cv2.line(dbg, (0, y_near), (self.W, y_near), (255, 255, 0), 1)
+        cv2.line(dbg, (0, y_far), (self.W, y_far), (255, 255, 0), 1)
+        
+        # Vẽ viền trái (Màu Đỏ)
+        cv2.circle(dbg, (L_n, y_near), 5, (0, 0, 255), -1)
+        cv2.putText(dbg, "L", (L_n + 5, y_near - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+        
+        # Vẽ viền phải (Màu Đỏ)
+        cv2.circle(dbg, (R_n, y_near), 5, (0, 0, 255), -1)
+        cv2.putText(dbg, "R", (R_n - 15, y_near - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+        
+        # Vẽ vạch giữa đứt khúc (Màu Xanh Lá) nếu tìm thấy
         if has_center:
-            cv2.circle(dbg, (center_line_x, roi_y + roi_h//2), 5, (0, 255, 0), -1)
+            cv2.circle(dbg, (center_line_x, roi_y + roi_h//2), 6, (0, 255, 0), -1)
+            cv2.putText(dbg, "Center", (center_line_x - 20, roi_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+        else:
+            # Vẽ trung điểm hình học (Màu Vàng) làm fallback
+            cv2.circle(dbg, (mid_n, y_near), 4, (0, 255, 255), -1)
+            cv2.putText(dbg, "Mid", (mid_n - 10, y_near - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+
+        # Vẽ Target lái hiện tại (Màu Xanh Dương lớn hơn)
+        cv2.circle(dbg, (int(target_x), y_near - 20), 8, (255, 0, 0), 2)
+        cv2.line(dbg, (self.W//2, self.H), (int(target_x), y_near - 20), (255, 0, 0), 2)
+        cv2.putText(dbg, "Target", (int(target_x) - 20, y_near - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
 
         return target_x, L_n, R_n, has_center, dbg
 
     def is_line_visible(self, frame):
         """Check nhanh xem có thấy đường không."""
         try:
-            _, L, R, _, _ = self.detect_lane(frame)
+            _, L, R, has_center, _ = self.detect_lane(frame)
+            if L == 0 and R == self.W - 1 and not has_center:
+                return False
             return (R - L) > 30  # Có khoảng cách hợp lý giữa 2 biên
-        except:
+        except Exception as e:
+            rospy.logerr_throttle(2, f"is_line_visible error: {e}")
             return False
 
     # ============================================================
@@ -177,37 +236,86 @@ class SpeedTrackController:
         deg = deg + self.LIDAR_OFFSET_DEG
         return (deg + 180) % 360 - 180
 
-    def _scan_sector(self, a_min, a_max):
+    def _scan_sector_with_offset(self, a_min, a_max, offset):
         if self.latest_scan is None: return []
         dists = []
         msg = self.latest_scan
         for i, d in enumerate(msg.ranges):
-            a = self._norm_angle(math.degrees(msg.angle_min + i * msg.angle_increment))
+            deg = math.degrees(msg.angle_min + i * msg.angle_increment) + offset
+            a = (deg + 180) % 360 - 180
             if a_min <= a <= a_max and msg.range_min < d < msg.range_max:
                 dists.append(d)
         return dists
 
+    def _scan_sector(self, a_min, a_max):
+        return self._scan_sector_with_offset(a_min, a_max, self.LIDAR_OFFSET_DEG)
+
+    def log_lidar_diagnostics(self):
+        if self.latest_scan is None:
+            rospy.loginfo_throttle(3, "[LIDAR] Chưa nhận được dữ liệu scan từ topic /scan!")
+            return
+        
+        # Thử quét hướng thẳng với các offset góc khác nhau để dò hướng thật
+        d_0 = self._scan_sector_with_offset(-15, 15, offset=0.0)
+        d_180 = self._scan_sector_with_offset(-15, 15, offset=180.0)
+        d_90 = self._scan_sector_with_offset(-15, 15, offset=90.0)
+        d_270 = self._scan_sector_with_offset(-15, 15, offset=270.0)
+        
+        min_0 = min(d_0) if d_0 else float('inf')
+        min_180 = min(d_180) if d_180 else float('inf')
+        min_90 = min(d_90) if d_90 else float('inf')
+        min_270 = min(d_270) if d_270 else float('inf')
+        
+        rospy.loginfo_throttle(3, 
+            f"\n[LIDAR DIAGNOSTICS] Khoảng cách phía trước vật lý ứng với các Offset:\n"
+            f"  - Nếu đầu Lidar hướng thẳng (Offset 0.0): {min_0:.2f}m\n"
+            f"  - Nếu Lidar quay ngược 180 độ (Offset 180.0): {min_180:.2f}m\n"
+            f"  - Nếu Lidar lệch trái 90 độ (Offset 90.0): {min_90:.2f}m\n"
+            f"  - Nếu Lidar lệch phải 90 độ (Offset 270.0): {min_270:.2f}m\n"
+            f"  => Đang cấu hình LIDAR_OFFSET_DEG = {self.LIDAR_OFFSET_DEG}"
+        )
+
+    def get_filtered_min_dist(self, dists):
+        """Lọc nhiễu cảm biến bằng phân vị (percentile filter) tránh nhiễu điểm đơn độc."""
+        if not dists: return float('inf')
+        sorted_d = sorted(dists)
+        # Bỏ qua 10% số điểm nhỏ nhất (tối thiểu bỏ 1 điểm) để chống nhiễu hạt bụi/nhiễu xung
+        idx = min(len(sorted_d) - 1, max(1, len(sorted_d) // 10))
+        return sorted_d[idx]
+
     def get_front_dist(self):
+        self.log_lidar_diagnostics()
         d = self._scan_sector(-15, 15)
-        return min(d) if d else float('inf')
+        return self.get_filtered_min_dist(d)
 
     def is_side_clear(self, side='left'):
         if side == 'left':
             d = self._scan_sector(70, 110)
         else:
             d = self._scan_sector(-110, -70)
-        return min(d) > self.SIDE_CLEAR_DIST if d else True
+        return self.get_filtered_min_dist(d) > self.SIDE_CLEAR_DIST
+
+    def is_obstacle_side_clear(self):
+        """Kiểm tra toàn bộ nửa mặt trước + sườn của phía có vật cản để chắc chắn đã vượt qua."""
+        if self.avoid_dir == 'right':
+            # Vật cản bên trái: quét từ -15 độ (thẳng) sang 110 độ (sườn trái)
+            d = self._scan_sector(-15, 110)
+        else:
+            # Vật cản bên phải: quét từ -110 độ (sườn phải) sang 15 độ (thẳng)
+            d = self._scan_sector(-110, 15)
+        return self.get_filtered_min_dist(d) > 0.55  # Khoảng cách sườn an toàn để quay lại làn
 
     def choose_avoid_dir(self):
         ld = self._scan_sector(30, 70)
         rd = self._scan_sector(-70, -30)
-        lc = min(ld) if ld else float('inf')
-        rc = min(rd) if rd else float('inf')
+        lc = self.get_filtered_min_dist(ld)
+        rc = self.get_filtered_min_dist(rd)
         return 'left' if (rc < 0.30 and lc > rc) else 'right'
 
     def update_obstacle_fsm(self):
         """Cập nhật FSM né + S-Curve ramp. Returns offset_px."""
         front = self.get_front_dist()
+        now = rospy.get_time()
 
         if self.avoid_state == AvoidState.NORMAL:
             self.target_offset = 0.0
@@ -215,20 +323,24 @@ class SpeedTrackController:
                 self.avoid_dir = self.choose_avoid_dir()
                 self.target_offset = self.DODGE_OFFSET_PX if self.avoid_dir == 'right' else -self.DODGE_OFFSET_PX
                 self.avoid_state = AvoidState.DODGING
+                self.avoid_state_time = now
                 rospy.loginfo(f"VẬT CẢN {front:.2f}m! Né {self.avoid_dir}")
 
         elif self.avoid_state == AvoidState.DODGING:
             self.target_offset = self.DODGE_OFFSET_PX if self.avoid_dir == 'right' else -self.DODGE_OFFSET_PX
-            check = 'left' if self.avoid_dir == 'right' else 'right'
-            if self.is_side_clear(check):
+            time_in_dodge = now - self.avoid_state_time
+            # Chỉ vượt khi hết thời gian né tối thiểu VÀ sườn phía có vật cản hoàn toàn sạch bóng
+            if time_in_dodge > self.MIN_DODGE_TIME and self.is_obstacle_side_clear():
                 self.avoid_state = AvoidState.REENTERING
+                self.avoid_state_time = now
                 self.target_offset = 0.0
-                rospy.loginfo("Đã vượt vật cản, quay lại lane")
+                rospy.loginfo("Đã vượt vật cản hoàn toàn, quay lại lane")
 
         elif self.avoid_state == AvoidState.REENTERING:
             self.target_offset = 0.0
-            if abs(self.current_offset) < 1.0:
+            if abs(self.current_offset) < 2.0:
                 self.avoid_state = AvoidState.NORMAL
+                self.avoid_state_time = now
                 rospy.loginfo("Về lane thành công")
 
         # S-Curve ramp
@@ -314,10 +426,28 @@ class SpeedTrackController:
         rate = rospy.Rate(self.LOOP_RATE)
 
         while not rospy.is_shutdown():
+            debug_frame = self.latest_image
+
+            # --- PHANH KHẨN CẤP AN TOÀN (LIDAR Failsafe) ---
+            if self.state not in [TrackState.WAITING, TrackState.E_STOP, TrackState.FINISHED]:
+                front_dist = self.get_front_dist()
+                if front_dist < 0.32:
+                    rospy.logerr(f"!!! QUÁ NGUY HIỂM: Vật cản trước mặt cách {front_dist:.2f}m !!! PHANH KHẨN CẤP")
+                    self.log_row(event='E_STOP_LIDAR')
+                    self.set_state(TrackState.E_STOP)
+
             # --- WAITING ---
             if self.state == TrackState.WAITING:
                 self.racer.stop()
-                if self.latest_image is not None and self.is_line_visible(self.latest_image):
+                img_ok = self.latest_image is not None
+                vis = self.is_line_visible(self.latest_image) if img_ok else False
+                rospy.loginfo_throttle(2, f"[WAITING] Image received: {img_ok}, Line visible: {vis}")
+                
+                if img_ok and vis:
+                    try:
+                        _, _, _, _, debug_frame = self.detect_lane(self.latest_image)
+                    except:
+                        pass
                     self.log_row(event='LINE_FOUND')
                     self.set_state(TrackState.KEEP_LANE)
                 elif self.time_in_state() > self.WAIT_TIMEOUT:
@@ -328,7 +458,12 @@ class SpeedTrackController:
                 if self.latest_image is None:
                     self.racer.stop(); rate.sleep(); continue
 
-                target_x, L, R, has_center, _ = self.detect_lane(self.latest_image)
+                if not self.is_line_visible(self.latest_image):
+                    self.log_row(event='LANE_LOST')
+                    self.set_state(TrackState.RECOVERING)
+                    rate.sleep(); continue
+
+                target_x, L, R, has_center, debug_frame = self.detect_lane(self.latest_image)
                 offset, front = self.update_obstacle_fsm()
 
                 # Checkpoint
@@ -336,6 +471,7 @@ class SpeedTrackController:
                     if self.try_checkpoint():
                         self.log_row(event=f'CP{self.cp_count}')
                         self.set_state(TrackState.CHECKPOINT_CD)
+                        self._record_frame(debug_frame)
                         rate.sleep(); continue
 
                 # Chuyển sang AVOID nếu obstacle FSM đang né
@@ -354,7 +490,7 @@ class SpeedTrackController:
                 target_x, L, R = self.W // 2, 0, self.W - 1
                 has_center = False
                 if self.latest_image is not None:
-                    target_x, L, R, has_center, _ = self.detect_lane(self.latest_image)
+                    target_x, L, R, has_center, debug_frame = self.detect_lane(self.latest_image)
 
                 safe_offset = self.clamp_offset_by_borders(offset, L, R)
                 final_target = target_x + safe_offset
@@ -372,8 +508,13 @@ class SpeedTrackController:
             # --- RECOVERING ---
             elif self.state == TrackState.RECOVERING:
                 if self.latest_image is not None and self.is_line_visible(self.latest_image):
+                    try:
+                        _, _, _, _, debug_frame = self.detect_lane(self.latest_image)
+                    except:
+                        pass
                     self.log_row(event='LANE_FOUND')
                     self.set_state(TrackState.KEEP_LANE)
+                    self._record_frame(debug_frame)
                     rate.sleep(); continue
                 self.racer.steer(0.0, self.RECOVER_SPEED)
                 if self.time_in_state() > self.RECOVER_TIMEOUT:
@@ -381,8 +522,16 @@ class SpeedTrackController:
 
             # --- CHECKPOINT COOLDOWN ---
             elif self.state == TrackState.CHECKPOINT_CD:
+                if self.latest_image is None:
+                    self.racer.stop(); rate.sleep(); continue
+
+                if not self.is_line_visible(self.latest_image):
+                    self.log_row(event='LANE_LOST')
+                    self.set_state(TrackState.RECOVERING)
+                    rate.sleep(); continue
+
                 if self.latest_image is not None:
-                    target_x, L, R, _, _ = self.detect_lane(self.latest_image)
+                    target_x, L, R, _, debug_frame = self.detect_lane(self.latest_image)
                     self.steer_to(target_x, self.BASE_SPEED)
                 if self.time_in_state() > self.CP_COOLDOWN:
                     self.set_state(TrackState.KEEP_LANE)
@@ -393,6 +542,9 @@ class SpeedTrackController:
             elif self.state == TrackState.FINISHED:
                 self.racer.stop(); self.log_row(event='FINISHED'); break
 
+            if debug_frame is not None:
+                self._record_frame(debug_frame)
+
             rate.sleep()
 
         self.racer.stop()
@@ -400,6 +552,9 @@ class SpeedTrackController:
         fps = self._frame_count / elapsed if elapsed > 0 else 0
         rospy.loginfo(f"FPS: {fps:.1f}, CP: {self.cp_count}/3")
         self._log_file.close()
+        if self.video_writer is not None:
+            self.video_writer.release()
+            rospy.loginfo("Đã lưu và đóng file video.")
         rospy.loginfo("Kết thúc.")
 
 def main():
