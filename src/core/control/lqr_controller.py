@@ -175,6 +175,8 @@ class ObstacleDetector:
             angle = scan_msg.angle_min + i * scan_msg.angle_increment
             angle_deg = math.degrees(angle)
             
+            # Bù 180 độ do góc xoay lắp đặt LiDAR ngược trên xe JetRacer
+            angle_deg = angle_deg + 180.0
             # Chuẩn hóa góc về [-180, 180]
             angle_deg = (angle_deg + 180) % 360 - 180
             

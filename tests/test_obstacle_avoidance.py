@@ -56,8 +56,9 @@ class SpeedTrackTestNode:
         
         # 4. Đăng ký ROS Topics
         rospy.Subscriber('/scan', LaserScan, self.lidar_callback)
-        # CSI Camera Topic trên Jetson (hoặc thay đổi cho đúng với camera của xe bạn)
+        # CSI Camera Topic trên Jetson
         rospy.Subscriber('/csi_cam_0/image_raw', Image, self.camera_callback)
+        rospy.Subscriber('/camera/image_raw', Image, self.camera_callback)
         
         rospy.loginfo("Đã kết nối với LiDAR và Camera. Sẵn sàng chạy!")
 
@@ -121,6 +122,8 @@ class SpeedTrackTestNode:
         for i, dist in enumerate(scan_msg.ranges):
             angle = scan_msg.angle_min + i * scan_msg.angle_increment
             angle_deg = math.degrees(angle)
+            # Bù 180 độ do góc xoay lắp đặt LiDAR ngược trên xe JetRacer
+            angle_deg = angle_deg + 180.0
             angle_deg = (angle_deg + 180) % 360 - 180
             
             if 70.0 <= angle_deg <= 110.0:

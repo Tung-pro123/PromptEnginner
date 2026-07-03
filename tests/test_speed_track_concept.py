@@ -61,6 +61,7 @@ class SpeedTrackConcept:
         # 5. Đăng ký ROS Topics
         rospy.Subscriber('/scan', LaserScan, self.lidar_callback)
         rospy.Subscriber('/csi_cam_0/image_raw', Image, self.camera_callback)
+        rospy.Subscriber('/camera/image_raw', Image, self.camera_callback)
         
         rospy.loginfo("Hệ thống đã sẵn sàng. Chờ nhận dữ liệu cảm biến...")
 

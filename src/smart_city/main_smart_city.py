@@ -46,6 +46,7 @@ class RobotState(Enum):
 
 class SmartCityController:
     def __init__(self):
+        rospy.init_node('smart_city_node', anonymous=True)
         rospy.loginfo("=== KHỞI TẠO BỘ ĐIỀU KHIỂN SMART CITY (KHÔNG DÙNG MAP) ===")
         self.setup_parameters()
         self.initialize_hardware()
@@ -64,6 +65,7 @@ class SmartCityController:
         # Đăng ký ROS Topics
         rospy.Subscriber('/scan', LaserScan, self.lidar_callback)
         rospy.Subscriber('/csi_cam_0/image_raw', Image, self.camera_callback)
+        rospy.Subscriber('/camera/image_raw', Image, self.camera_callback)
         rospy.loginfo("Đăng ký nhận dữ liệu từ LiDAR và Camera thành công.")
 
     def setup_parameters(self):
@@ -76,10 +78,10 @@ class SmartCityController:
         self.INTERSECTION_APPROACH_DURATION = 0.6  # Thời gian bò thêm vào giữa giao lộ (giây)
         self.LINE_REACQUIRE_TIMEOUT = 3.0          # Quá thời gian này không tìm thấy vạch -> Dừng xe
 
-        # Tọa độ quét vạch Camera
-        self.ROI_Y = int(self.HEIGHT * 0.85)
+        # Tọa độ quét vạch Camera (Nâng cao lên để tránh quét đè lên cản trước màu xanh lá của xe)
+        self.ROI_Y = int(self.HEIGHT * 0.73)
         self.ROI_H = int(self.HEIGHT * 0.15)
-        self.LOOKAHEAD_ROI_Y = int(self.HEIGHT * 0.55)
+        self.LOOKAHEAD_ROI_Y = int(self.HEIGHT * 0.50)
         self.LOOKAHEAD_ROI_H = int(self.HEIGHT * 0.15)
 
         # File video debug
@@ -160,7 +162,9 @@ class SmartCityController:
         y_far = self.LOOKAHEAD_ROI_Y
 
         gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+        # Lọc ngưỡng xám động (Adaptive Thresholding bằng phân vị để thích ứng ánh sáng thay đổi)
+        dynamic_thresh_val = max(110, min(220, int(np.percentile(gray, 92))))
+        _, thresh = cv2.threshold(gray, dynamic_thresh_val, 255, cv2.THRESH_BINARY)
 
         def find_borders(y_line):
             mid_x = int(self.WIDTH / 2)
