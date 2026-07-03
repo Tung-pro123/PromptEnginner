@@ -49,10 +49,12 @@ class SpeedTrackConcept:
         # STATE_DODGING: 2 - Phát hiện vật cản, đang đánh lái dịch phải để lách qua
         # STATE_REENTERING: 3 - Đã vượt qua vật cản, đang lái mượt mà quay về làn cũ
         self.state = 1
+        self.clear_counter = 0
         
-        # Biến dịch vạch ảo hiện tại (bằng pixel)
+        # Biến dịch vạch ảo hiện tại (bằng pixel) và chiều rộng làn đường ước lượng
         self.current_offset_px = 0.0
         self.target_offset_px = 0.0
+        self.estimated_lane_width = 240.0
 
         # 4. Lưu dữ liệu cảm biến
         self.latest_scan = None
@@ -97,24 +99,44 @@ class SpeedTrackConcept:
         _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
 
         def find_borders_at_y(y_line):
-            mid_x = int(w / 2)
             left_border = 0
             right_border = w - 1
+            found_left = False
+            found_right = False
 
-            # Quét từ giữa ảnh sang bên TRÁI để tìm vạch trắng biên trái
-            for x in range(mid_x, 0, -1):
+            # Quét từ mép TRÁI ảnh (x = 0) đi vào trong để tìm biên trái
+            for x in range(0, int(w / 2)):
                 if thresh[y_line, x] == 255:
                     left_border = x
+                    found_left = True
                     break
             
-            # Quét từ giữa ảnh sang bên PHẢI để tìm vạch trắng biên phải
-            for x in range(mid_x, w):
+            # Quét từ mép PHẢI ảnh (x = w - 1) đi vào trong để tìm biên phải
+            for x in range(w - 1, int(w / 2), -1):
                 if thresh[y_line, x] == 255:
                     right_border = x
+                    found_right = True
                     break
             
-            # Tâm đường là trung điểm của biên trái và biên phải
-            center_x = int((left_border + right_border) / 2)
+            # Khôi phục biên đơn nếu mất một bên:
+            if found_left and found_right:
+                width = right_border - left_border
+                if 160 < width < 280:
+                    self.estimated_lane_width = 0.9 * self.estimated_lane_width + 0.1 * width
+                center_x = int((left_border + right_border) / 2)
+            elif found_left:
+                right_border = int(left_border + self.estimated_lane_width)
+                center_x = int(left_border + self.estimated_lane_width / 2)
+            elif found_right:
+                left_border = int(right_border - self.estimated_lane_width)
+                center_x = int(right_border - self.estimated_lane_width / 2)
+            else:
+                center_x = int(w / 2)
+                
+            left_border = max(0, min(w - 1, left_border))
+            right_border = max(0, min(w - 1, right_border))
+            center_x = max(0, min(w - 1, center_x))
+            
             return center_x, left_border, right_border
 
         # Tính toán cho cả 2 vùng quét
@@ -138,7 +160,7 @@ class SpeedTrackConcept:
     # GIẢI QUYẾT VẤN ĐỀ 2: QUY TRÌNH CHUYỂN TRẠNG THÁI NÉ VẬT CẢN (FSM)
     # =========================================================================
     def get_front_distance(self):
-        """Đọc khoảng cách từ LiDAR ở cung trước mặt (-15 độ đến +15 độ)."""
+        """Đọc khoảng cách từ LiDAR ở cung trước mặt (±35 độ)."""
         if self.latest_scan is None:
             return float('inf')
         
@@ -151,35 +173,35 @@ class SpeedTrackConcept:
             angle_deg = angle_deg + 180.0
             angle_deg = (angle_deg + 180) % 360 - 180
             
-            # Lọc trong khoảng phía trước xe (±15 độ)
-            if -15.0 <= angle_deg <= 15.0:
+            # Lọc trong khoảng phía trước xe (±35 độ)
+            if -35.0 <= angle_deg <= 35.0:
                 if msg.range_min < dist < msg.range_max:
                     distances.append(dist)
         
         return min(distances) if distances else float('inf')
 
-    def is_side_clear(self):
-        """Kiểm tra LiDAR bên sườn trái xe (70 đến 110 độ) để biết đã qua vật cản chưa."""
+    def get_closest_obstacle_angle_in_range(self, min_angle_deg, max_angle_deg, max_dist=0.80):
+        """Tìm góc và khoảng cách của vật cản gần nhất trong một dải quét cụ thể."""
         if self.latest_scan is None:
-            return True
+            return None, float('inf')
         
-        side_distances = []
+        min_dist = float('inf')
+        closest_angle = None
         msg = self.latest_scan
+        
         for i, dist in enumerate(msg.ranges):
             angle = msg.angle_min + i * msg.angle_increment
             angle_deg = math.degrees(angle)
             angle_deg = angle_deg + 180.0
             angle_deg = (angle_deg + 180) % 360 - 180
             
-            # Quét vùng sườn bên trái xe (70 đến 110 độ)
-            if 70.0 <= angle_deg <= 110.0:
-                if msg.range_min < dist < msg.range_max:
-                    side_distances.append(dist)
-        
-        if side_distances:
-            # Nếu vật cản gần nhất bên hông trái xa hơn 40cm -> Coi như đã vượt qua an toàn
-            return min(side_distances) > 0.40
-        return True
+            if min_angle_deg <= angle_deg <= max_angle_deg:
+                if msg.range_min < dist < max_dist:
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_angle = angle_deg
+                        
+        return closest_angle, min_dist
 
     def update_fsm_and_offset(self, front_dist):
         """Quản lý các trạng thái né vật cản và điều chỉnh vạch ảo."""
@@ -187,21 +209,51 @@ class SpeedTrackConcept:
         # --- STATE 1: ĐI THẲNG BÌNH THƯỜNG ---
         if self.state == 1:
             self.target_offset_px = 0.0  # Không dịch làn
+            self.clear_counter = 0
+            
+            # Quét tìm vật cản trước mặt
+            closest_angle, closest_dist = self.get_closest_obstacle_angle_in_range(-35.0, 35.0, max_dist=0.80)
             
             # Nếu phát hiện vật cản phía trước gần hơn cự ly kích hoạt
             if front_dist < self.TRIGGER_DIST:
-                rospy.loginfo(f"⚠️ [FSM] PHÁT HIỆN VẬT CẢN: {front_dist:.2f}m. Chuyển sang TRẠNG THÁI NÉ!")
+                # Quyết định hướng né tránh động dựa trên góc của vật cản
+                if closest_angle is not None and closest_angle < 0.0:
+                    self.dodge_direction = -1.0
+                    direction_str = "TRÁI"
+                else:
+                    self.dodge_direction = 1.0
+                    direction_str = "PHẢI"
+                
+                rospy.loginfo(f"⚠️ [FSM] PHÁT HIỆN VẬT CẢN: {front_dist:.2f}m ở góc {closest_angle:.1f} độ. LÁCH SANG {direction_str}!")
                 self.state = 2  # Chuyển sang trạng thái 2 (Né)
-                self.target_offset_px = self.DODGE_OFFSET_PX  # Yêu cầu dịch vạch ảo sang phải
+                self.state_change_time = rospy.get_time()
+                self.target_offset_px = self.dodge_direction * self.DODGE_OFFSET_PX  # Yêu cầu dịch vạch ảo
 
         # --- STATE 2: ĐANG NÉ VẬT CẢN ---
         elif self.state == 2:
-            self.target_offset_px = self.DODGE_OFFSET_PX
+            self.target_offset_px = self.dodge_direction * self.DODGE_OFFSET_PX
             
-            # Kiểm tra sườn trái xe, nếu đã vượt qua hẳn vật cản
-            if self.is_side_clear():
-                rospy.loginfo("✅ [FSM] Đã vượt qua vật cản. Chuyển sang TRẠNG THÁI NHẬP LÀN CŨ!")
+            # Lọc góc dựa theo hướng đang né
+            if self.dodge_direction == 1.0:
+                closest_angle, closest_dist = self.get_closest_obstacle_angle_in_range(-30.0, 150.0, max_dist=0.80)
+                is_clear = (closest_angle is None or closest_angle > 110.0)
+            else:
+                closest_angle, closest_dist = self.get_closest_obstacle_angle_in_range(-150.0, 30.0, max_dist=0.80)
+                is_clear = (closest_angle is None or closest_angle < -110.0)
+            
+            # Kiểm tra bộ đếm lọc nhiễu trước khi xác nhận đã vượt qua hẳn
+            if is_clear:
+                self.clear_counter += 1
+            else:
+                self.clear_counter = 0
+                
+            time_in_state = rospy.get_time() - self.state_change_time
+            is_timeout = time_in_state > 3.5
+            
+            if (time_in_state > 0.5 and self.clear_counter >= 8) or is_timeout:
+                rospy.loginfo(f"✅ [FSM] Đã vượt qua vật cản. Chuyển sang TRẠNG THÁI NHẬP LÀN CŨ!")
                 self.state = 3  # Chuyển sang trạng thái 3 (Nhập làn)
+                self.state_change_time = rospy.get_time()
                 self.target_offset_px = 0.0  # Yêu cầu đưa vạch ảo về lại trung tâm
 
         # --- STATE 3: ĐANG NHẬP LẠI LÀN CŨ ---

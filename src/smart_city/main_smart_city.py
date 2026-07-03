@@ -46,6 +46,7 @@ class RobotState(Enum):
 
 class SmartCityController:
     def __init__(self):
+        rospy.init_node('smart_city_controller_node', anonymous=True)
         rospy.loginfo("=== KHỞI TẠO BỘ ĐIỀU KHIỂN SMART CITY (KHÔNG DÙNG MAP) ===")
         self.setup_parameters()
         self.initialize_hardware()
@@ -163,22 +164,24 @@ class SmartCityController:
         _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
 
         def find_borders(y_line):
-            mid_x = int(self.WIDTH / 2)
             left_border = 0
             right_border = self.WIDTH - 1
 
-            for x in range(mid_x, 0, -1):
+            # Quét từ mép TRÁI ảnh (x = 0) đi vào trong để tìm biên trái
+            for x in range(0, int(self.WIDTH / 2)):
                 if thresh[y_line, x] == 255:
                     left_border = x
                     break
-            for x in range(mid_x, self.WIDTH):
+            
+            # Quét từ mép PHẢI ảnh (x = w - 1) đi vào trong để tìm biên phải
+            for x in range(self.WIDTH - 1, int(self.WIDTH / 2), -1):
                 if thresh[y_line, x] == 255:
                     right_border = x
                     break
             
             center_x = int((left_border + right_border) / 2)
             # Kiểm tra xem có thực sự thấy vạch kẻ ở dòng quét này không
-            has_line = (left_border > 5 or right_border < self.WIDTH - 6)
+            has_line = (left_border > 0 or right_border < self.WIDTH - 1)
             return center_x, left_border, right_border, has_line
 
         C_near, L_near, R_near, has_near = find_borders(y_near)
