@@ -1,460 +1,417 @@
 #!/usr/bin/env python3
 """
-Speed Track Controller - JetRacer ROS AI Kit
-Cuộc thi Jetson AI Racer Challenge 2026
-
-Kiến trúc HFSM 3 tầng (Hierarchical Finite State Machine):
-  Tầng 1 (Perception): LaneDetector + ObstacleDetector + CheckpointTracker
-  Tầng 2 (Decision):   HighLevelState FSM chọn hành vi tối ưu
-  Tầng 3 (Execution):  PID Controller + Motor output + CSV Logger
-
-Tham chiếu:
-  - Bài báo: s43684-021-00015-x.pdf (HFSM + Energy Efficiency Function)
-  - Đề bài: docs/Đề bài chi tiết.docx.pdf (Speed Track rules)
-  - Phần cứng: JetRacer ROS AI Kit (Waveshare) - JetBot compatible I2C control
+Speed Track Controller - JetRacer (Ackermann Steering) - Single File
+Hybrid lane detection: Tìm 2 biên trắng + vạch giữa đứt khúc
 """
-
 import sys
-import os
+py3 = [p for p in sys.path if 'python2.7' not in p]
+py2 = [p for p in sys.path if 'python2.7' in p]
+sys.path = py3 + py2
+
+import os, time, math, csv
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
-import rospy
-import cv2
-import numpy as np
-import time
+import rospy, cv2, numpy as np
 from enum import Enum
-
 from sensor_msgs.msg import LaserScan, Image
-
-# === CÁC MODULE ĐÃ TÁCH ===
-from src.core.control.pid_controller import PIDController
-from src.core.perception.lane_detector import LaneDetector
-from src.core.perception.obstacle_detector import ObstacleDetector
-from src.core.perception.checkpoint_tracker import CheckpointTracker
-from src.core.utils.csv_logger import CSVLogger
-
+from src.core.control.racer_controller import RacerController
 
 # ============================================================
-# TẦNG 2: HFSM - Các trạng thái hành vi (Behavior States)
-# Áp dụng từ bài báo Section 2.1 & 2.5 (Upper + Lower Layer)
+# ENUMS
 # ============================================================
-class SpeedTrackState(Enum):
-    """Máy trạng thái cho bài Speed Track.
-    
-    Đơn giản hóa từ HFSM 3 tầng trong bài báo:
-    - Upper layer scenario → WAITING / RACING / FINISHED
-    - Middle layer behavior → KEEP_LANE / AVOID_OBSTACLE
-    - Lower layer action → handled by PID controller
-    """
-    WAITING_FOR_START = 0   # Chờ hiệu lệnh / tìm line
-    KEEP_LANE = 1           # Bám lane bình thường (Free driving state)
-    AVOID_OBSTACLE = 2      # Né vật cản (Lane change behavior)
-    RECOVERING_LANE = 3     # Tìm lại lane sau khi né
-    CHECKPOINT_COOLDOWN = 4 # Vừa qua checkpoint, tiếp tục chạy
-    EMERGENCY_STOP = 5      # Lỗi nghiêm trọng, dừng xe
-    FINISHED = 6            # Hoàn thành lượt chạy
+class TrackState(Enum):
+    WAITING = 0; KEEP_LANE = 1; AVOID_OBSTACLE = 2
+    RECOVERING = 3; CHECKPOINT_CD = 4; E_STOP = 5; FINISHED = 6
 
+class AvoidState(Enum):
+    NORMAL = 0; DODGING = 1; REENTERING = 2
 
+# ============================================================
+# MAIN CONTROLLER
+# ============================================================
 class SpeedTrackController:
-    """Controller chính cho bài Speed Track.
-    
-    Phần cứng: JetRacer ROS AI Kit (Waveshare)
-    - Tương thích JetBot I2C (address 0x60)
-    - DC encoded motors with PID speed control (RP2040 sub-controller)
-    - Điều khiển: robot.set_motors(left_speed, right_speed)
-    """
-
     def __init__(self):
-        rospy.loginfo("=== KHỞI TẠO SPEED TRACK CONTROLLER (HFSM) ===")
-
-        self._setup_parameters()
-        self._init_hardware()
-        self._init_perception()
-        self._init_control()
-        self._init_logging()
-
-        # === ROS Subscribers ===
-        self.latest_image = None
-        self.latest_scan = None
-        rospy.Subscriber('/csi_cam_0/image_raw', Image, self._camera_cb)
+        rospy.loginfo("=== KHOI TAO SPEED TRACK (Hybrid Lane + Ackermann) ===")
+        # --- Params ---
+        self.W, self.H = 300, 300
+        self.BASE_SPEED = 0.22
+        self.AVOID_SPEED = 0.18
+        self.RECOVER_SPEED = 0.15
+        self.AVOID_TIMEOUT = 2.5
+        self.RECOVER_TIMEOUT = 3.0
+        self.CP_COOLDOWN = 2.0
+        self.WAIT_TIMEOUT = 30.0
+        self.LOOP_RATE = 20
+        # PID (steering output)
+        self.Kp = 0.007; self.Ki = 0.0; self.Kd = 0.002
+        self._pid_integral = 0.0; self._pid_prev_err = 0.0; self._pid_last_t = None
+        # Obstacle FSM
+        self.TRIGGER_DIST = 0.70
+        self.SIDE_CLEAR_DIST = 0.45
+        self.DODGE_OFFSET_PX = 55
+        self.RAMP_STEP_PX = 4
+        self.LIDAR_OFFSET_DEG = 180.0
+        self.avoid_state = AvoidState.NORMAL
+        self.target_offset = 0.0; self.current_offset = 0.0
+        self.avoid_dir = 'right'
+        # Checkpoint
+        self.CP_WHITE_RATIO = 0.45
+        self.CP_ROI_Y = int(self.H * 0.88)
+        self.CP_ROI_H = int(self.H * 0.10)
+        self.cp_count = 0; self.cp_last_time = 0.0
+        self.CP_COOLDOWN_SEC = 3.0
+        # Lane detection params
+        self.GRAY_THRESH = 180
+        self.BORDER_SAFETY_MARGIN = 0.30  # Giữ 30% khoảng cách tới biên
+        # --- Hardware ---
+        self.racer = RacerController(); self.racer.stop()
+        # --- ROS ---
+        self.latest_image = None; self.latest_scan = None
+        rospy.Subscriber('/csi_cam_0/image_raw', Image, self._cam_cb)
         rospy.Subscriber('/scan', LaserScan, self._lidar_cb)
-
-        # === HFSM State ===
-        self.current_state = None
-        self.state_change_time = rospy.get_time()
-        self._set_state(SpeedTrackState.WAITING_FOR_START, initial=True)
-
-        rospy.loginfo("=== KHỞI TẠO HOÀN TẤT. SẴN SÀNG. ===")
-
-    # ----------------------------------------------------------
-    # CẤU HÌNH
-    # ----------------------------------------------------------
-    def _setup_parameters(self):
-        """Tham số điều chỉnh được (calibrate trên xe thật)."""
-        # Kích thước ảnh xử lý
-        self.WIDTH, self.HEIGHT = 300, 300
-
-        # Tốc độ motor
-        self.BASE_SPEED = 0.28        # Tốc độ bám lane
-        self.AVOID_SPEED = 0.22       # Tốc độ khi né vật cản
-        self.RECOVER_SPEED = 0.20     # Tốc độ khi tìm lại lane
-
-        # Thời gian (giây)
-        self.AVOID_DURATION = 1.2       # Thời gian tối đa né vật cản
-        self.RECOVER_TIMEOUT = 3.0      # Timeout tìm lại lane
-        self.CHECKPOINT_COOLDOWN = 2.0  # Cooldown sau checkpoint
-        self.WAIT_TIMEOUT = 30.0        # Timeout chờ line ban đầu
-
-        # PID parameters (tune trên xe thật)
-        self.PID_KP = 0.45
-        self.PID_KI = 0.0
-        self.PID_KD = 0.08
-        self.PID_OUTPUT_LIMIT = 0.15   # Max motor speed adjustment
-
-        # Avoid offset: khi né vật cản, dịch target sang trái/phải bao nhiêu pixel
-        self.AVOID_OFFSET_PIXELS = 80
-
-        # Checkpoint detection: ngưỡng phát hiện vạch checkpoint
-        # (vạch ngang sáng chiếm phần lớn chiều rộng ROI)
-        self.CHECKPOINT_WHITE_RATIO = 0.45  # 45% ROI là trắng = checkpoint
-        self.CHECKPOINT_ROI_Y = None  # Sẽ tính trong _init_perception
-
-        # Vòng lặp
-        self.LOOP_RATE = 25  # Hz (target > 20 FPS theo đề bài)
-
-    def _init_hardware(self):
-        """Khởi tạo phần cứng JetRacer (JetBot compatible)."""
-        try:
-            from jetbot import Robot
-            self.robot = Robot()
-            rospy.loginfo("JetBot Robot hardware initialized.")
-        except Exception as e:
-            rospy.logwarn(f"JetBot hardware not found, using Mock. Error: {e}")
-            from unittest.mock import Mock
-            self.robot = Mock()
-
-    def _init_perception(self):
-        """Khởi tạo các module nhận thức (Tầng 1 HFSM)."""
-        self.lane_detector = LaneDetector(self.WIDTH, self.HEIGHT)
-        self.obstacle_detector = ObstacleDetector(
-            safety_distance=0.35,
-            warning_distance=0.55,
-            min_obstacle_points=5
-        )
-        self.checkpoint_tracker = CheckpointTracker(cooldown_seconds=3.0)
-
-        # ROI cho checkpoint detection (vùng dưới cùng ảnh)
-        self.CHECKPOINT_ROI_Y = int(self.HEIGHT * 0.88)
-        self.CHECKPOINT_ROI_H = int(self.HEIGHT * 0.10)
-
-    def _init_control(self):
-        """Khởi tạo bộ điều khiển (Tầng 3 HFSM)."""
-        self.pid = PIDController(
-            kp=self.PID_KP, ki=self.PID_KI, kd=self.PID_KD,
-            output_min=-self.PID_OUTPUT_LIMIT,
-            output_max=self.PID_OUTPUT_LIMIT
-        )
-        # Biến theo dõi hướng né
-        self.avoid_direction = 'none'
-
-    def _init_logging(self):
-        """Khởi tạo hệ thống log CSV (theo đề bài Section 7)."""
+        # --- State ---
+        self.state = TrackState.WAITING
+        self.state_time = rospy.get_time()
+        # --- CSV Logger ---
         log_dir = os.path.join(os.path.dirname(__file__), 'logs')
-        self.logger = CSVLogger(log_dir=log_dir, prefix='speed_track')
-        rospy.loginfo(f"CSV Logger: {self.logger.log_path}")
+        os.makedirs(log_dir, exist_ok=True)
+        ts = time.strftime('%Y%m%d_%H%M%S')
+        self.log_path = os.path.join(log_dir, f'speed_{ts}.csv')
+        self._log_file = open(self.log_path, 'w', newline='')
+        self._csv = csv.writer(self._log_file)
+        self._csv.writerow(['timestamp','state','steer','speed','front_dist','offset','event'])
+        self._frame_count = 0; self._fps_start = time.time()
+        rospy.loginfo(f"Log: {self.log_path}")
+        rospy.loginfo("=== SAN SANG ===")
 
-    # ----------------------------------------------------------
+    # ============================================================
     # ROS CALLBACKS
-    # ----------------------------------------------------------
-    def _camera_cb(self, msg):
-        """Callback xử lý ảnh từ camera CSI."""
+    # ============================================================
+    def _cam_cb(self, msg):
         try:
             if 'compressed' in msg.encoding:
-                np_arr = np.frombuffer(msg.data, np.uint8)
-                cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                self.latest_image = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
             else:
-                cv_image = np.frombuffer(msg.data, dtype=np.uint8).reshape(
-                    msg.height, msg.width, -1)
-            if 'rgb' in msg.encoding:
-                cv_image = cv2.cvtColor(cv_image, cv2.COLOR_RGB2BGR)
-            self.latest_image = cv2.resize(cv_image, (self.WIDTH, self.HEIGHT))
+                img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
+                self.latest_image = cv2.cvtColor(img, cv2.COLOR_RGB2BGR) if 'rgb' in msg.encoding else img
         except Exception as e:
-            rospy.logerr_throttle(5, f"Camera error: {e}")
+            rospy.logerr_throttle(5, f"Cam err: {e}")
 
     def _lidar_cb(self, msg):
-        """Callback lưu dữ liệu LiDAR."""
         self.latest_scan = msg
 
-    # ----------------------------------------------------------
-    # HFSM STATE MANAGEMENT
-    # ----------------------------------------------------------
-    def _set_state(self, new_state, initial=False):
-        """Chuyển trạng thái FSM (có log).
-        
-        Áp dụng từ bài báo Section 2.5: State Transition Matrix.
-        """
-        if self.current_state != new_state:
-            if not initial:
-                rospy.loginfo(f"STATE: {self.current_state.name} -> {new_state.name}")
-            self.current_state = new_state
-            self.state_change_time = rospy.get_time()
+    # ============================================================
+    # HYBRID LANE DETECTION (Cách B)
+    # Tìm 2 biên trắng + vạch trắng đứt khúc giữa
+    # ============================================================
+    def detect_lane(self, frame):
+        """Returns (target_x, left_border, right_border, has_center_line, debug_img)"""
+        resized = cv2.resize(frame, (self.W, self.H))
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, self.GRAY_THRESH, 255, cv2.THRESH_BINARY)
 
-            # Reset PID khi chuyển trạng thái để tránh tích lũy sai số cũ
-            self.pid.reset()
+        y_near = int(self.H * 0.85)
+        y_far = int(self.H * 0.55)
 
-    def _time_in_state(self):
-        """Thời gian (giây) đã ở trong trạng thái hiện tại."""
-        return rospy.get_time() - self.state_change_time
+        def find_borders(y):
+            mid = self.W // 2
+            L, R = 0, self.W - 1
+            for x in range(mid, 0, -1):
+                if thresh[y, x] == 255: L = x; break
+            for x in range(mid, self.W):
+                if thresh[y, x] == 255: R = x; break
+            return L, R, (L + R) // 2
 
-    # ----------------------------------------------------------
-    # TẦNG 1: PERCEPTION HELPERS
-    # ----------------------------------------------------------
-    def _detect_checkpoint(self, image):
-        """Phát hiện vạch checkpoint bằng camera.
-        
-        Checkpoint trên sa bàn: vạch ngang trắng/sáng chiếm phần lớn chiều rộng lane.
-        """
-        if image is None:
+        L_n, R_n, mid_n = find_borders(y_near)
+        L_f, R_f, mid_f = find_borders(y_far)
+
+        # Tìm vạch trắng đứt khúc giữa bằng contour trong vùng giữa 2 biên
+        roi_y = int(self.H * 0.70)
+        roi_h = int(self.H * 0.25)
+        roi = thresh[roi_y:roi_y+roi_h, :]
+        # Mask chỉ giữ vùng giữa 2 biên (loại bỏ biên)
+        margin = 15  # pixel margin tránh biên
+        mask_roi = np.zeros_like(roi)
+        left_safe = min(L_n, L_f) + margin
+        right_safe = max(R_n, R_f) - margin
+        if left_safe < right_safe:
+            mask_roi[:, left_safe:right_safe] = roi[:, left_safe:right_safe]
+        contours, _ = cv2.findContours(mask_roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        center_line_x = None
+        has_center = False
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            if cv2.contourArea(largest) > 60:
+                M = cv2.moments(largest)
+                if M["m00"] > 0:
+                    center_line_x = int(M["m10"] / M["m00"])
+                    has_center = True
+
+        # Target: ưu tiên vạch giữa, fallback = trung điểm 2 biên
+        target_x = center_line_x if has_center else mid_n
+
+        # Debug image
+        dbg = resized.copy()
+        cv2.line(dbg, (0, y_near), (self.W, y_near), (0, 255, 255), 1)
+        cv2.circle(dbg, (L_n, y_near), 4, (0, 0, 255), -1)
+        cv2.circle(dbg, (R_n, y_near), 4, (0, 0, 255), -1)
+        cv2.circle(dbg, (mid_n, y_near), 5, (255, 0, 0), -1)
+        if has_center:
+            cv2.circle(dbg, (center_line_x, roi_y + roi_h//2), 5, (0, 255, 0), -1)
+
+        return target_x, L_n, R_n, has_center, dbg
+
+    def is_line_visible(self, frame):
+        """Check nhanh xem có thấy đường không."""
+        try:
+            _, L, R, _, _ = self.detect_lane(frame)
+            return (R - L) > 30  # Có khoảng cách hợp lý giữa 2 biên
+        except:
             return False
 
-        roi = image[self.CHECKPOINT_ROI_Y:self.CHECKPOINT_ROI_Y + self.CHECKPOINT_ROI_H, :]
-        # Chuyển sang grayscale và threshold
+    # ============================================================
+    # OBSTACLE DETECTION (LiDAR)
+    # ============================================================
+    def _norm_angle(self, deg):
+        deg = deg + self.LIDAR_OFFSET_DEG
+        return (deg + 180) % 360 - 180
+
+    def _scan_sector(self, a_min, a_max):
+        if self.latest_scan is None: return []
+        dists = []
+        msg = self.latest_scan
+        for i, d in enumerate(msg.ranges):
+            a = self._norm_angle(math.degrees(msg.angle_min + i * msg.angle_increment))
+            if a_min <= a <= a_max and msg.range_min < d < msg.range_max:
+                dists.append(d)
+        return dists
+
+    def get_front_dist(self):
+        d = self._scan_sector(-15, 15)
+        return min(d) if d else float('inf')
+
+    def is_side_clear(self, side='left'):
+        if side == 'left':
+            d = self._scan_sector(70, 110)
+        else:
+            d = self._scan_sector(-110, -70)
+        return min(d) > self.SIDE_CLEAR_DIST if d else True
+
+    def choose_avoid_dir(self):
+        ld = self._scan_sector(30, 70)
+        rd = self._scan_sector(-70, -30)
+        lc = min(ld) if ld else float('inf')
+        rc = min(rd) if rd else float('inf')
+        return 'left' if (rc < 0.30 and lc > rc) else 'right'
+
+    def update_obstacle_fsm(self):
+        """Cập nhật FSM né + S-Curve ramp. Returns offset_px."""
+        front = self.get_front_dist()
+
+        if self.avoid_state == AvoidState.NORMAL:
+            self.target_offset = 0.0
+            if front < self.TRIGGER_DIST:
+                self.avoid_dir = self.choose_avoid_dir()
+                self.target_offset = self.DODGE_OFFSET_PX if self.avoid_dir == 'right' else -self.DODGE_OFFSET_PX
+                self.avoid_state = AvoidState.DODGING
+                rospy.loginfo(f"VẬT CẢN {front:.2f}m! Né {self.avoid_dir}")
+
+        elif self.avoid_state == AvoidState.DODGING:
+            self.target_offset = self.DODGE_OFFSET_PX if self.avoid_dir == 'right' else -self.DODGE_OFFSET_PX
+            check = 'left' if self.avoid_dir == 'right' else 'right'
+            if self.is_side_clear(check):
+                self.avoid_state = AvoidState.REENTERING
+                self.target_offset = 0.0
+                rospy.loginfo("Đã vượt vật cản, quay lại lane")
+
+        elif self.avoid_state == AvoidState.REENTERING:
+            self.target_offset = 0.0
+            if abs(self.current_offset) < 1.0:
+                self.avoid_state = AvoidState.NORMAL
+                rospy.loginfo("Về lane thành công")
+
+        # S-Curve ramp
+        diff = self.target_offset - self.current_offset
+        if abs(diff) > 0.1:
+            step = np.sign(diff) * self.RAMP_STEP_PX
+            self.current_offset = self.target_offset if abs(step) > abs(diff) else self.current_offset + step
+        else:
+            self.current_offset = self.target_offset
+
+        return self.current_offset, front
+
+    def clamp_offset_by_borders(self, offset, left_b, right_b):
+        """Giới hạn offset để bánh không ra khỏi vùng đen."""
+        center = self.W / 2.0
+        max_right = (right_b - center) * (1.0 - self.BORDER_SAFETY_MARGIN)
+        max_left = (left_b - center) * (1.0 - self.BORDER_SAFETY_MARGIN)
+        return max(max_left, min(max_right, offset))
+
+    # ============================================================
+    # PID STEERING
+    # ============================================================
+    def pid_reset(self):
+        self._pid_integral = 0.0; self._pid_prev_err = 0.0; self._pid_last_t = None
+
+    def pid_compute(self, error_px):
+        now = time.time()
+        dt = 0.05 if self._pid_last_t is None else max(now - self._pid_last_t, 0.01)
+        p = self.Kp * error_px
+        self._pid_integral = max(-1.0, min(1.0, self._pid_integral + error_px * dt))
+        i = self.Ki * self._pid_integral
+        d = self.Kd * (error_px - self._pid_prev_err) / dt
+        self._pid_prev_err = error_px; self._pid_last_t = now
+        return max(-1.0, min(1.0, p + i + d))
+
+    def steer_to(self, target_x, speed=None):
+        speed = speed or self.BASE_SPEED
+        steering = self.pid_compute(target_x - self.W / 2.0)
+        self.racer.steer(steering, speed)
+        return steering
+
+    # ============================================================
+    # CHECKPOINT
+    # ============================================================
+    def detect_checkpoint(self, image):
+        if image is None: return False
+        roi = image[self.CP_ROI_Y:self.CP_ROI_Y+self.CP_ROI_H, :]
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        _, binary = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+        _, b = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+        return (np.sum(b > 0) / b.size) >= self.CP_WHITE_RATIO
 
-        white_ratio = np.sum(binary > 0) / binary.size
-        return white_ratio >= self.CHECKPOINT_WHITE_RATIO
+    def try_checkpoint(self):
+        now = time.time()
+        if now - self.cp_last_time < self.CP_COOLDOWN_SEC: return False
+        self.cp_count += 1; self.cp_last_time = now
+        rospy.loginfo(f"*** CHECKPOINT {self.cp_count} ***")
+        return True
 
-    # ----------------------------------------------------------
-    # TẦNG 3: MOTOR CONTROL
-    # ----------------------------------------------------------
-    def _drive_with_pid(self, line_center_x, base_speed=None):
-        """Điều khiển bám lane bằng PID.
-        
-        Args:
-            line_center_x: Tọa độ X trọng tâm line (pixels)
-            base_speed: Tốc độ nền (None = dùng BASE_SPEED)
-        """
-        if base_speed is None:
-            base_speed = self.BASE_SPEED
+    # ============================================================
+    # STATE MANAGEMENT
+    # ============================================================
+    def set_state(self, s):
+        if self.state != s:
+            rospy.loginfo(f"STATE: {self.state.name} -> {s.name}")
+            self.state = s; self.state_time = rospy.get_time(); self.pid_reset()
 
-        # Error: dương = line lệch phải, âm = line lệch trái
-        error = (line_center_x - self.WIDTH / 2) / (self.WIDTH / 2)  # Normalize to [-1, 1]
-        adjustment = self.pid.compute(error)
+    def time_in_state(self):
+        return rospy.get_time() - self.state_time
 
-        left_speed = base_speed + adjustment
-        right_speed = base_speed - adjustment
+    def log_row(self, steer=0, speed=0, front=0, offset=0, event=''):
+        self._csv.writerow([f'{time.time():.3f}', self.state.name,
+            f'{steer:.3f}', f'{speed:.2f}', f'{front:.2f}', f'{offset:.1f}', event])
+        self._frame_count += 1
+        if self._frame_count % 20 == 0: self._log_file.flush()
 
-        self.robot.set_motors(left_speed, right_speed)
-        return left_speed, right_speed
-
-    def _drive_avoid(self, line_center_x, direction):
-        """Điều khiển né vật cản bằng offset tạm thời.
-        
-        Áp dụng từ bài báo Section 2.3: Lane change behavior.
-        Thay vì chuyển làn thực sự, ta dịch target point sang bên.
-        """
-        offset = -self.AVOID_OFFSET_PIXELS if direction == 'left' else self.AVOID_OFFSET_PIXELS
-        target_x = (line_center_x + offset) if line_center_x is not None else (self.WIDTH / 2 + offset)
-
-        error = (target_x - self.WIDTH / 2) / (self.WIDTH / 2)
-        adjustment = self.pid.compute(error)
-
-        left_speed = self.AVOID_SPEED + adjustment
-        right_speed = self.AVOID_SPEED - adjustment
-
-        self.robot.set_motors(left_speed, right_speed)
-        return left_speed, right_speed
-
-    def _stop(self):
-        """Dừng motor."""
-        self.robot.stop()
-
-    # ----------------------------------------------------------
-    # VÒNG LẶP CHÍNH (Main Loop)
-    # ----------------------------------------------------------
+    # ============================================================
+    # MAIN LOOP
+    # ============================================================
     def run(self):
-        """Vòng lặp chính của Speed Track Controller."""
-        rospy.loginfo("Đợi 3 giây trước khi bắt đầu...")
-        time.sleep(3)
-        rospy.loginfo("=== BẮT ĐẦU LƯỢT CHẠY SPEED TRACK ===")
-        self.logger.log_event('RUN_START')
-
+        rospy.loginfo("Đợi 3s..."); time.sleep(3)
+        rospy.loginfo("=== BẮT ĐẦU SPEED TRACK ===")
+        self.log_row(event='RUN_START')
         rate = rospy.Rate(self.LOOP_RATE)
 
         while not rospy.is_shutdown():
-            frame_start = time.time()
+            # --- WAITING ---
+            if self.state == TrackState.WAITING:
+                self.racer.stop()
+                if self.latest_image is not None and self.is_line_visible(self.latest_image):
+                    self.log_row(event='LINE_FOUND')
+                    self.set_state(TrackState.KEEP_LANE)
+                elif self.time_in_state() > self.WAIT_TIMEOUT:
+                    self.set_state(TrackState.E_STOP)
 
-            # ============================================
-            # STATE 0: CHỜ TÌM LINE ĐỂ BẮT ĐẦU
-            # ============================================
-            if self.current_state == SpeedTrackState.WAITING_FOR_START:
-                self._stop()
-                if self.latest_image is not None and self.lane_detector.is_line_visible(self.latest_image):
-                    rospy.loginfo("Đã tìm thấy line! Bắt đầu chạy.")
-                    self.logger.log_event('LINE_FOUND')
-                    self._set_state(SpeedTrackState.KEEP_LANE)
-                elif self._time_in_state() > self.WAIT_TIMEOUT:
-                    rospy.logerr("Timeout: không tìm thấy line.")
-                    self._set_state(SpeedTrackState.EMERGENCY_STOP)
-
-            # ============================================
-            # STATE 1: BÁM LANE (Free Driving - bài báo)
-            # ============================================
-            elif self.current_state == SpeedTrackState.KEEP_LANE:
+            # --- KEEP LANE ---
+            elif self.state == TrackState.KEEP_LANE:
                 if self.latest_image is None:
-                    self._stop()
-                    rate.sleep()
-                    continue
+                    self.racer.stop(); rate.sleep(); continue
 
-                # --- Tầng 1: Perception ---
-                line_cx = self.lane_detector.get_execution_center(self.latest_image)
-                obs_result = self.obstacle_detector.analyze(self.latest_scan)
-                is_checkpoint = self._detect_checkpoint(self.latest_image)
+                target_x, L, R, has_center, _ = self.detect_lane(self.latest_image)
+                offset, front = self.update_obstacle_fsm()
 
-                # --- Tầng 2: Decision (Energy Efficiency Evaluation) ---
-                # Ưu tiên 1: Checkpoint
-                if is_checkpoint:
-                    cp = self.checkpoint_tracker.try_register_checkpoint()
-                    if cp['registered']:
-                        rospy.loginfo(f"*** CHECKPOINT {cp['checkpoint_number']} PASSED! ***")
-                        self.logger.log_event('CHECKPOINT_PASSED', f"CP{cp['checkpoint_number']}")
-                        if cp['all_passed']:
-                            rospy.loginfo("=== TẤT CẢ CHECKPOINT ĐÃ VƯỢT ===")
-                            self.logger.log_event('ALL_CHECKPOINTS_PASSED')
-                        self._set_state(SpeedTrackState.CHECKPOINT_COOLDOWN)
-                        rate.sleep()
-                        continue
+                # Checkpoint
+                if self.detect_checkpoint(self.latest_image):
+                    if self.try_checkpoint():
+                        self.log_row(event=f'CP{self.cp_count}')
+                        self.set_state(TrackState.CHECKPOINT_CD)
+                        rate.sleep(); continue
 
-                # Ưu tiên 2: Vật cản (Safety U2 evaluation)
-                if obs_result['obstacle_detected'] and obs_result['danger_level'] in ('warning', 'danger'):
-                    self.avoid_direction = obs_result['avoid_direction']
-                    rospy.loginfo(f"VẬT CẢN! D={obs_result['front_distance']:.2f}m, né {self.avoid_direction}")
-                    self.logger.log_event('OBSTACLE_DETECTED',
-                                         f"dist={obs_result['front_distance']:.2f},dir={self.avoid_direction}")
-                    self._set_state(SpeedTrackState.AVOID_OBSTACLE)
-                    rate.sleep()
-                    continue
+                # Chuyển sang AVOID nếu obstacle FSM đang né
+                if self.avoid_state != AvoidState.NORMAL:
+                    self.set_state(TrackState.AVOID_OBSTACLE)
 
-                # Ưu tiên 3: Bám lane bình thường
-                if line_cx is not None:
-                    ls, rs = self._drive_with_pid(line_cx)
-                    latency = (time.time() - frame_start) * 1000
-                    self.logger.log(detected_object='lane', decision='keep_lane',
-                                   latency_ms=latency, control_output=f'L={ls:.3f},R={rs:.3f}')
-                else:
-                    # Mất line: kiểm tra ROI xa
-                    look_cx = self.lane_detector.get_lookahead_center(self.latest_image)
-                    if look_cx is not None:
-                        self._drive_with_pid(look_cx, base_speed=self.RECOVER_SPEED)
-                    else:
-                        rospy.logwarn("Mất line cả 2 ROI! Chuyển sang RECOVERING.")
-                        self.logger.log_event('LANE_LOST')
-                        self._set_state(SpeedTrackState.RECOVERING_LANE)
+                # Giới hạn offset theo biên
+                safe_offset = self.clamp_offset_by_borders(offset, L, R)
+                final_target = target_x + safe_offset
+                steer = self.steer_to(final_target, self.BASE_SPEED)
+                self.log_row(steer=steer, speed=self.BASE_SPEED, front=front, offset=safe_offset)
 
-            # ============================================
-            # STATE 2: NÉ VẬT CẢN (Lane Change - bài báo)
-            # ============================================
-            elif self.current_state == SpeedTrackState.AVOID_OBSTACLE:
-                line_cx = self.lane_detector.get_execution_center(self.latest_image) if self.latest_image is not None else None
-                ls, rs = self._drive_avoid(line_cx, self.avoid_direction)
-
-                latency = (time.time() - frame_start) * 1000
-                self.logger.log(detected_object='obstacle', decision=f'avoid_{self.avoid_direction}',
-                               latency_ms=latency, control_output=f'L={ls:.3f},R={rs:.3f}')
-
-                # Kiểm tra vật cản đã qua chưa
-                obs_result = self.obstacle_detector.analyze(self.latest_scan)
-                if not obs_result['obstacle_detected'] or obs_result['danger_level'] == 'safe':
-                    rospy.loginfo("Đã né qua vật cản. Tìm lại lane.")
-                    self.logger.log_event('OBSTACLE_CLEARED')
-                    self._set_state(SpeedTrackState.RECOVERING_LANE)
-                elif self._time_in_state() > self.AVOID_DURATION:
-                    rospy.logwarn("Timeout né vật cản. Thử tìm lại lane.")
-                    self._set_state(SpeedTrackState.RECOVERING_LANE)
-
-            # ============================================
-            # STATE 3: TÌM LẠI LANE
-            # ============================================
-            elif self.current_state == SpeedTrackState.RECOVERING_LANE:
+            # --- AVOID OBSTACLE ---
+            elif self.state == TrackState.AVOID_OBSTACLE:
+                offset, front = self.update_obstacle_fsm()
+                target_x, L, R = self.W // 2, 0, self.W - 1
+                has_center = False
                 if self.latest_image is not None:
-                    line_cx = self.lane_detector.get_execution_center(self.latest_image)
-                    if line_cx is not None:
-                        rospy.loginfo("Đã tìm lại lane!")
-                        self.logger.log_event('LANE_REACQUIRED')
-                        self._set_state(SpeedTrackState.KEEP_LANE)
-                        rate.sleep()
-                        continue
+                    target_x, L, R, has_center, _ = self.detect_lane(self.latest_image)
 
-                # Đi thẳng chậm trong khi tìm line
-                self.robot.set_motors(self.RECOVER_SPEED, self.RECOVER_SPEED)
+                safe_offset = self.clamp_offset_by_borders(offset, L, R)
+                final_target = target_x + safe_offset
+                steer = self.steer_to(final_target, self.AVOID_SPEED)
+                self.log_row(steer=steer, speed=self.AVOID_SPEED, front=front, offset=safe_offset)
 
-                if self._time_in_state() > self.RECOVER_TIMEOUT:
-                    rospy.logerr("Timeout tìm lane! Dừng khẩn cấp.")
-                    self._set_state(SpeedTrackState.EMERGENCY_STOP)
+                if self.avoid_state == AvoidState.NORMAL:
+                    self.log_row(event='OBSTACLE_CLEARED')
+                    self.set_state(TrackState.KEEP_LANE)
+                elif self.time_in_state() > self.AVOID_TIMEOUT:
+                    self.avoid_state = AvoidState.NORMAL
+                    self.current_offset = 0.0; self.target_offset = 0.0
+                    self.set_state(TrackState.RECOVERING)
 
-            # ============================================
-            # STATE 4: COOLDOWN SAU CHECKPOINT
-            # ============================================
-            elif self.current_state == SpeedTrackState.CHECKPOINT_COOLDOWN:
-                # Tiếp tục bám lane bình thường trong thời gian cooldown
+            # --- RECOVERING ---
+            elif self.state == TrackState.RECOVERING:
+                if self.latest_image is not None and self.is_line_visible(self.latest_image):
+                    self.log_row(event='LANE_FOUND')
+                    self.set_state(TrackState.KEEP_LANE)
+                    rate.sleep(); continue
+                self.racer.steer(0.0, self.RECOVER_SPEED)
+                if self.time_in_state() > self.RECOVER_TIMEOUT:
+                    self.set_state(TrackState.E_STOP)
+
+            # --- CHECKPOINT COOLDOWN ---
+            elif self.state == TrackState.CHECKPOINT_CD:
                 if self.latest_image is not None:
-                    line_cx = self.lane_detector.get_execution_center(self.latest_image)
-                    if line_cx is not None:
-                        self._drive_with_pid(line_cx)
+                    target_x, L, R, _, _ = self.detect_lane(self.latest_image)
+                    self.steer_to(target_x, self.BASE_SPEED)
+                if self.time_in_state() > self.CP_COOLDOWN:
+                    self.set_state(TrackState.KEEP_LANE)
 
-                if self._time_in_state() > self.CHECKPOINT_COOLDOWN:
-                    self._set_state(SpeedTrackState.KEEP_LANE)
-
-            # ============================================
-            # STATE 5 & 6: KẾT THÚC
-            # ============================================
-            elif self.current_state == SpeedTrackState.EMERGENCY_STOP:
-                rospy.logerr("EMERGENCY STOP!")
-                self._stop()
-                self.logger.log_event('EMERGENCY_STOP')
-                break
-
-            elif self.current_state == SpeedTrackState.FINISHED:
-                rospy.loginfo("=== HOÀN THÀNH LƯỢT CHẠY ===")
-                self._stop()
-                cp_status = self.checkpoint_tracker.get_status()
-                avg_fps = self.logger.get_average_fps()
-                rospy.loginfo(f"Checkpoint: {cp_status['passed']}/{cp_status['total']} ({cp_status['score']} điểm)")
-                rospy.loginfo(f"FPS trung bình: {avg_fps:.1f}")
-                self.logger.log_event('FINISHED', f"CP={cp_status['score']},FPS={avg_fps:.1f}")
-                break
+            # --- E_STOP / FINISHED ---
+            elif self.state == TrackState.E_STOP:
+                self.racer.stop(); self.log_row(event='E_STOP'); break
+            elif self.state == TrackState.FINISHED:
+                self.racer.stop(); self.log_row(event='FINISHED'); break
 
             rate.sleep()
 
-        self._cleanup()
-
-    def _cleanup(self):
-        """Giải phóng tài nguyên."""
-        rospy.loginfo("Dừng robot và giải phóng tài nguyên...")
-        self._stop()
-
-        if hasattr(self, 'logger'):
-            avg_fps = self.logger.get_average_fps()
-            rospy.loginfo(f"FPS trung bình pipeline: {avg_fps:.1f}")
-            fps_bonus = "ĐẠT (10 điểm)" if avg_fps >= 20 else "KHÔNG ĐẠT (0 điểm)"
-            rospy.loginfo(f"Tiêu chí FPS >= 20: {fps_bonus}")
-            self.logger.close()
-            rospy.loginfo(f"Log đã lưu: {self.logger.log_path}")
-
-        rospy.loginfo("Chương trình kết thúc.")
-
+        self.racer.stop()
+        elapsed = time.time() - self._fps_start
+        fps = self._frame_count / elapsed if elapsed > 0 else 0
+        rospy.loginfo(f"FPS: {fps:.1f}, CP: {self.cp_count}/3")
+        self._log_file.close()
+        rospy.loginfo("Kết thúc.")
 
 def main():
     rospy.init_node('speed_track_controller', anonymous=True)
     try:
-        controller = SpeedTrackController()
-        controller.run()
+        SpeedTrackController().run()
     except rospy.ROSInterruptException:
-        rospy.loginfo("Node bị ngắt.")
+        pass
     except Exception as e:
-        rospy.logerr(f"Lỗi không xác định: {e}", exc_info=True)
-
+        rospy.logerr(f"Lỗi: {e}", exc_info=True)
+        try: RacerController().stop()
+        except: pass
 
 if __name__ == '__main__':
     main()

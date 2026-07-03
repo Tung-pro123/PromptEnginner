@@ -1,162 +1,249 @@
 #!/usr/bin/env python3
 """
-Module Phát hiện Vật cản (Obstacle Detector) cho Speed Track.
+Module Phát hiện & Né tránh Vật cản (Obstacle Detector) cho Speed Track.
 
-Áp dụng từ bài báo s43684-021-00015-x (Section 2.3):
+Thiết kế cho xe JetRacer (Ackermann steering) trên sa bàn Speed Track:
+- Quét LiDAR 3 sector: FRONT, LEFT-SIDE, RIGHT-SIDE
+- FSM 3 bước: NORMAL → DODGING → REENTERING  
+- S-Curve ramp offset mượt mà khi chuyển làn ảo
+- Quét sườn trái để xác nhận đã vượt qua vật cản
+
+Áp dụng từ bài báo s43684-021-00015-x:
 - Mô hình khoảng cách an toàn tối thiểu Min(S) = V_A * t_d + D_0
-- Đánh giá an toàn U2: so sánh ΔX (khoảng cách thực tế) với Min(S)
-- Grid-based phân vùng: quét LiDAR theo sector trái/giữa/phải
-
-Thiết kế cho sa bàn Speed Track:
-- Quét vùng phía trước [-45°, +45°] để phát hiện vật cản
-- Quét vùng trái/phải để quyết định hướng né
+- Grid-based phân vùng sector scanning
 """
 
 import numpy as np
 import math
+from enum import Enum
+
+
+class AvoidState(Enum):
+    """Trạng thái máy FSM né vật cản."""
+    NORMAL = 0        # Bám lane bình thường, offset = 0
+    DODGING = 1       # Đang lách né (dịch offset sang phải)
+    REENTERING = 2    # Đang quay trở lại làn chính
 
 
 class ObstacleDetector:
-    """Phát hiện vật cản từ dữ liệu LiDAR LaserScan.
+    """Phát hiện vật cản + FSM né tránh với S-Curve ramp cho Ackermann steering.
     
-    Tham chiếu bài báo:
-    - Section 2.3: Min_c(S) = V_A * t_d + D_0 (khoảng cách an toàn)
-    - Section 2.4: U3 - Lane vacancy rate (tỷ lệ trống bên trái/phải)
+    Kết hợp:
+    - Sector scanning (FRONT ±15°, SIDE 70°-110°) từ bản main
+    - S-Curve ramp offset mượt mà (4px/frame)
+    - Quét sườn trái để xác nhận đã vượt hộp cản
+    - Tự chọn hướng né trái/phải dựa trên khoảng trống
     """
 
     def __init__(self,
-                 safety_distance=0.35,
-                 warning_distance=0.55,
-                 min_valid_range=0.10,
-                 max_valid_range=1.5,
-                 front_angle_range=45.0,
-                 side_angle_range=30.0,
-                 min_obstacle_points=5):
+                 trigger_distance=0.70,
+                 side_clear_distance=0.45,
+                 dodge_offset_px=55,
+                 ramp_step_px=4,
+                 front_scan_half_angle=15.0,
+                 side_scan_start=70.0,
+                 side_scan_end=110.0,
+                 lidar_angle_offset=180.0):
         """
         Args:
-            safety_distance: Khoảng cách an toàn tối thiểu Min(S) (mét).
-                            Ánh xạ từ công thức Min(S) = V_A * t_d + D_0.
-                            Với tốc độ JetRacer ~0.3 m/s, t_d ~0.5s, D_0 ~0.2m → ~0.35m
-            warning_distance: Khoảng cách bắt đầu cảnh báo (mét)
-            min_valid_range: Khoảng cách LiDAR tối thiểu hợp lệ (mét)
-            max_valid_range: Khoảng cách LiDAR tối đa xem xét (mét)
-            front_angle_range: Nửa góc quét phía trước (độ). ±45° = quét tổng 90°
-            side_angle_range: Nửa góc quét bên trái/phải (độ)
-            min_obstacle_points: Số điểm LiDAR tối thiểu để xác nhận vật cản
+            trigger_distance: Khoảng cách kích hoạt né (m). 
+                             Min(S) = V_A * t_d + D_0 ≈ 0.70m
+            side_clear_distance: Khoảng cách sườn trái an toàn trước khi 
+                                nhập lại làn (m)
+            dodge_offset_px: Số pixel dịch tâm bám khi né (dương = sang phải)
+            ramp_step_px: Tốc độ dịch S-Curve mỗi frame (px/frame)
+            front_scan_half_angle: Nửa góc quét phía trước (độ)
+            side_scan_start: Góc bắt đầu quét sườn (độ)
+            side_scan_end: Góc kết thúc quét sườn (độ)
+            lidar_angle_offset: Góc bù lắp đặt LiDAR (180° nếu ngược)
         """
-        self.safety_distance = safety_distance
-        self.warning_distance = warning_distance
-        self.min_valid_range = min_valid_range
-        self.max_valid_range = max_valid_range
-        self.front_angle_range = front_angle_range
-        self.side_angle_range = side_angle_range
-        self.min_obstacle_points = min_obstacle_points
+        # Tham số LiDAR
+        self.trigger_distance = trigger_distance
+        self.side_clear_distance = side_clear_distance
+        self.front_scan_half_angle = front_scan_half_angle
+        self.side_scan_start = side_scan_start
+        self.side_scan_end = side_scan_end
+        self.lidar_angle_offset = lidar_angle_offset
 
-        # Kết quả phân tích gần nhất
-        self.last_result = None
+        # Tham số dịch làn ảo
+        self.dodge_offset_px = dodge_offset_px
+        self.ramp_step_px = ramp_step_px
 
-    def analyze(self, scan_msg):
-        """Phân tích dữ liệu LiDAR LaserScan và trả về kết quả phát hiện.
-        
-        Áp dụng Grid-based sector scanning từ bài báo (Section 2.4, Fig. 4):
-        Chia vùng quét thành 3 sector: FRONT, LEFT, RIGHT.
+        # Trạng thái FSM
+        self.state = AvoidState.NORMAL
+        self.target_offset_px = 0.0
+        self.current_offset_px = 0.0
+        self.avoid_direction = 'right'  # Mặc định né sang phải
+
+    def _normalize_angle(self, angle_deg):
+        """Chuẩn hóa góc LiDAR về [-180, 180] có bù offset lắp đặt."""
+        angle_deg = angle_deg + self.lidar_angle_offset
+        angle_deg = (angle_deg + 180) % 360 - 180
+        return angle_deg
+
+    def _scan_sector(self, scan_msg, angle_min_deg, angle_max_deg):
+        """Quét các tia LiDAR trong một sector góc cho trước.
         
         Args:
             scan_msg: ROS LaserScan message
+            angle_min_deg: Góc bắt đầu sector (độ, đã chuẩn hóa)
+            angle_max_deg: Góc kết thúc sector (độ, đã chuẩn hóa)
+            
+        Returns:
+            list[float]: Danh sách khoảng cách hợp lệ trong sector
+        """
+        if scan_msg is None:
+            return []
+
+        distances = []
+        for i, dist in enumerate(scan_msg.ranges):
+            angle = scan_msg.angle_min + i * scan_msg.angle_increment
+            angle_deg = self._normalize_angle(math.degrees(angle))
+
+            if angle_min_deg <= angle_deg <= angle_max_deg:
+                if scan_msg.range_min < dist < scan_msg.range_max:
+                    distances.append(dist)
+
+        return distances
+
+    def get_front_distance(self, scan_msg):
+        """Đo khoảng cách vật cản trước mặt bằng LiDAR.
+        
+        Quét vùng [-front_scan_half_angle, +front_scan_half_angle] (mặc định ±15°).
+        
+        Returns:
+            float: Khoảng cách tối thiểu (m), inf nếu không có vật cản
+        """
+        distances = self._scan_sector(
+            scan_msg,
+            -self.front_scan_half_angle,
+            self.front_scan_half_angle
+        )
+        return min(distances) if distances else float('inf')
+
+    def is_side_clear(self, scan_msg, side='left'):
+        """Kiểm tra sườn bên xe đã thoát khỏi vật cản chưa.
+        
+        Quét sườn trái (70°-110°) hoặc sườn phải (-110° đến -70°).
+        Nếu khoảng cách tối thiểu > side_clear_distance → đã vượt qua hộp cản.
+        
+        Args:
+            scan_msg: ROS LaserScan message
+            side: 'left' hoặc 'right'
+            
+        Returns:
+            bool: True nếu sườn đã clear
+        """
+        if side == 'left':
+            distances = self._scan_sector(
+                scan_msg, self.side_scan_start, self.side_scan_end
+            )
+        else:
+            distances = self._scan_sector(
+                scan_msg, -self.side_scan_end, -self.side_scan_start
+            )
+
+        if distances:
+            return min(distances) > self.side_clear_distance
+        return True  # Không có dữ liệu → coi như clear
+
+    def _choose_avoid_direction(self, scan_msg):
+        """Chọn hướng né dựa trên khoảng trống bên nào lớn hơn.
+        
+        Quét sector trái (30°-70°) và sector phải (-70° đến -30°) để so sánh.
+        
+        Returns:
+            str: 'left' hoặc 'right'
+        """
+        left_distances = self._scan_sector(scan_msg, 30.0, 70.0)
+        right_distances = self._scan_sector(scan_msg, -70.0, -30.0)
+
+        left_clearance = min(left_distances) if left_distances else float('inf')
+        right_clearance = min(right_distances) if right_distances else float('inf')
+
+        # Trên sa bàn Speed Track, vật cản thường đặt ở giữa lane
+        # → mặc định né sang PHẢI (theo quy tắc giao thông)
+        # Chỉ né trái nếu bên phải bị chặn rõ ràng
+        if right_clearance < 0.30 and left_clearance > right_clearance:
+            return 'left'
+        return 'right'
+
+    def update(self, scan_msg):
+        """Cập nhật FSM né vật cản và tính offset S-Curve.
+        
+        Gọi hàm này mỗi frame trong vòng lặp chính.
+        
+        Args:
+            scan_msg: ROS LaserScan message (hoặc None)
             
         Returns:
             dict: {
-                'obstacle_detected': bool,
+                'state': AvoidState,
+                'offset_px': float (offset pixel hiện tại để cộng vào tâm bám),
                 'front_distance': float (khoảng cách vật cản phía trước),
-                'left_clear': float (khoảng cách trống bên trái),
-                'right_clear': float (khoảng cách trống bên phải),
-                'avoid_direction': str ('left' | 'right' | 'none'),
-                'danger_level': str ('safe' | 'warning' | 'danger')
+                'avoid_direction': str ('left'/'right'/'none'),
             }
         """
-        if scan_msg is None:
-            return self._default_result()
+        front_dist = self.get_front_distance(scan_msg)
 
-        ranges = np.array(scan_msg.ranges)
-        n = len(ranges)
-        if n == 0:
-            return self._default_result()
+        # === STATE 1: BÁM LÀN BÌNH THƯỜNG ===
+        if self.state == AvoidState.NORMAL:
+            self.target_offset_px = 0.0
 
-        angle_min = scan_msg.angle_min
-        angle_increment = scan_msg.angle_increment
+            # Kích hoạt né khi vật cản quá gần
+            if front_dist < self.trigger_distance:
+                self.avoid_direction = self._choose_avoid_direction(scan_msg)
+                # Dịch offset: phải = dương, trái = âm
+                if self.avoid_direction == 'right':
+                    self.target_offset_px = self.dodge_offset_px
+                else:
+                    self.target_offset_px = -self.dodge_offset_px
+                self.state = AvoidState.DODGING
 
-        # Tạo mảng góc (radians) cho mỗi điểm LiDAR
-        angles_rad = angle_min + np.arange(n) * angle_increment
-        angles_deg = np.degrees(angles_rad)
-
-        # Lọc giá trị hợp lệ
-        valid_mask = np.isfinite(ranges) & (ranges >= self.min_valid_range) & (ranges <= self.max_valid_range)
-
-        # === SECTOR SCANNING (Grid-based từ bài báo Section 2.4) ===
-        
-        # Sector FRONT: [-front_angle_range, +front_angle_range] quanh 0°
-        front_mask = valid_mask & (np.abs(angles_deg) <= self.front_angle_range)
-        front_ranges = ranges[front_mask]
-        
-        # Sector LEFT: [front_angle_range, front_angle_range + side_angle_range*2] 
-        left_start = self.front_angle_range
-        left_end = self.front_angle_range + self.side_angle_range * 2
-        left_mask = valid_mask & (angles_deg >= left_start) & (angles_deg <= left_end)
-        left_ranges = ranges[left_mask]
-        
-        # Sector RIGHT: [-front_angle_range - side_angle_range*2, -front_angle_range]
-        right_start = -(self.front_angle_range + self.side_angle_range * 2)
-        right_end = -self.front_angle_range
-        right_mask = valid_mask & (angles_deg >= right_start) & (angles_deg <= right_end)
-        right_ranges = ranges[right_mask]
-
-        # === TÍNH KHOẢNG CÁCH TỐI THIỂU TỪNG SECTOR ===
-        front_distance = float(np.min(front_ranges)) if len(front_ranges) >= self.min_obstacle_points else float('inf')
-        left_clearance = float(np.min(left_ranges)) if len(left_ranges) > 0 else float('inf')
-        right_clearance = float(np.min(right_ranges)) if len(right_ranges) > 0 else float('inf')
-
-        # === ĐÁNH GIÁ AN TOÀN (từ bài báo Section 2.3, Eq. 9) ===
-        # U2 = Min(S) - ΔX / ΔX  nếu ΔX < Min(S)
-        # U2 = 1                  nếu ΔX >= Min(S) (an toàn)
-        obstacle_detected = front_distance <= self.warning_distance and len(front_ranges) >= self.min_obstacle_points
-
-        if front_distance <= self.safety_distance:
-            danger_level = 'danger'
-        elif front_distance <= self.warning_distance:
-            danger_level = 'warning'
-        else:
-            danger_level = 'safe'
-
-        # === QUYẾT ĐỊNH HƯỚNG NÉ (áp dụng U3 - Lane vacancy rate) ===
-        # Chọn hướng né dựa trên khoảng trống bên nào lớn hơn
-        if obstacle_detected:
-            if left_clearance >= right_clearance:
-                avoid_direction = 'left'
+        # === STATE 2: ĐANG LÁCH NÉ VẬT CẢN ===
+        elif self.state == AvoidState.DODGING:
+            # Giữ offset né
+            if self.avoid_direction == 'right':
+                self.target_offset_px = self.dodge_offset_px
             else:
-                avoid_direction = 'right'
+                self.target_offset_px = -self.dodge_offset_px
+
+            # Kiểm tra sườn phía ngược hướng né đã clear chưa
+            # Nếu né sang phải → check sườn trái (vật cản đã ở phía sau bên trái)
+            check_side = 'left' if self.avoid_direction == 'right' else 'right'
+            if self.is_side_clear(scan_msg, side=check_side):
+                self.state = AvoidState.REENTERING
+                self.target_offset_px = 0.0
+
+        # === STATE 3: NHẬP LẠI LÀN CŨ ===
+        elif self.state == AvoidState.REENTERING:
+            self.target_offset_px = 0.0
+
+            # Khi offset đã gần bằng 0 → về bình thường
+            if abs(self.current_offset_px) < 1.0:
+                self.state = AvoidState.NORMAL
+
+        # === S-CURVE RAMP (dịch dần, không giật) ===
+        diff = self.target_offset_px - self.current_offset_px
+        if abs(diff) > 0.1:
+            step = np.sign(diff) * self.ramp_step_px
+            if abs(step) > abs(diff):
+                self.current_offset_px = self.target_offset_px
+            else:
+                self.current_offset_px += step
         else:
-            avoid_direction = 'none'
+            self.current_offset_px = self.target_offset_px
 
-        result = {
-            'obstacle_detected': obstacle_detected,
-            'front_distance': front_distance,
-            'left_clearance': left_clearance,
-            'right_clearance': right_clearance,
-            'avoid_direction': avoid_direction,
-            'danger_level': danger_level,
-            'front_points': len(front_ranges),
-        }
-        self.last_result = result
-        return result
-
-    def _default_result(self):
-        """Trả về kết quả mặc định khi không có dữ liệu."""
         return {
-            'obstacle_detected': False,
-            'front_distance': float('inf'),
-            'left_clearance': float('inf'),
-            'right_clearance': float('inf'),
-            'avoid_direction': 'none',
-            'danger_level': 'safe',
-            'front_points': 0,
+            'state': self.state,
+            'offset_px': self.current_offset_px,
+            'front_distance': front_dist,
+            'avoid_direction': self.avoid_direction if self.state != AvoidState.NORMAL else 'none',
         }
+
+    def reset(self):
+        """Reset FSM về trạng thái ban đầu."""
+        self.state = AvoidState.NORMAL
+        self.target_offset_px = 0.0
+        self.current_offset_px = 0.0
+        self.avoid_direction = 'right'
