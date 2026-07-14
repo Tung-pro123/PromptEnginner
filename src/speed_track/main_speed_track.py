@@ -43,12 +43,12 @@ class SpeedTrackController:
         self.WAIT_TIMEOUT = 30.0
         self.LOOP_RATE = 20
         # PID (steering output)
-        self.Kp = 0.011; self.Ki = 0.0; self.Kd = 0.003
+        self.Kp = 0.015; self.Ki = 0.0; self.Kd = 0.003
         self._pid_integral = 0.0; self._pid_prev_err = 0.0; self._pid_last_t = None
         # Obstacle FSM
         self.TRIGGER_DIST = 0.85
         self.SIDE_CLEAR_DIST = 0.45
-        self.DODGE_OFFSET_PX = 95
+        self.DODGE_OFFSET_PX = 110
         self.RAMP_STEP_PX = 12
         self.LIDAR_OFFSET_DEG = 180.0
         self.avoid_state = AvoidState.NORMAL
@@ -535,6 +535,10 @@ class SpeedTrackController:
                 has_center = False
                 if self.latest_image is not None:
                     target_x, L, R, has_center, debug_frame = self.detect_lane(self.latest_image)
+                    
+                    # FIX: Khi đang né, xe bẻ góc lớn khiến camera dễ bắt nhầm lề đường thành center line.
+                    # Bỏ qua center_line giả, ép target_x dựa vào trung điểm của 2 biên L và R.
+                    target_x = (L + R) // 2
 
                 safe_offset = self.clamp_offset_by_borders(offset, L, R)
                 final_target = target_x + safe_offset
