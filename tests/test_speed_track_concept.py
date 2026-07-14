@@ -55,6 +55,7 @@ class SpeedTrackConcept:
         self.current_offset_px = 0.0
         self.target_offset_px = 0.0
         self.estimated_lane_width = 240.0
+        self.last_known_direction = 0.0
 
         # 4. Lưu dữ liệu cảm biến
         self.latest_scan = None
@@ -124,14 +125,18 @@ class SpeedTrackConcept:
                 if 160 < width < 280:
                     self.estimated_lane_width = 0.9 * self.estimated_lane_width + 0.1 * width
                 center_x = int((left_border + right_border) / 2)
+                self.last_known_direction = np.sign(center_x - w / 2.0)
             elif found_left:
                 right_border = int(left_border + self.estimated_lane_width)
                 center_x = int(left_border + self.estimated_lane_width / 2)
+                self.last_known_direction = np.sign(center_x - w / 2.0)
             elif found_right:
                 left_border = int(right_border - self.estimated_lane_width)
                 center_x = int(right_border - self.estimated_lane_width / 2)
+                self.last_known_direction = np.sign(center_x - w / 2.0)
             else:
-                center_x = int(w / 2)
+                # Mất cả 2 biên -> Sử dụng hướng lệch đã biết gần nhất để đánh lái quay trở lại làn
+                center_x = int(w / 2.0 + self.last_known_direction * (self.estimated_lane_width / 4.0))
                 
             left_border = max(0, min(w - 1, left_border))
             right_border = max(0, min(w - 1, right_border))

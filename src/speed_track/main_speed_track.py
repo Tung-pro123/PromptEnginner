@@ -97,6 +97,7 @@ class SpeedTrackController:
         self.current_offset_px = 0.0
         self.target_offset_px = 0.0
         self.estimated_lane_width = 240.0  # Chiều rộng làn đường ước lượng mặc định (pixel)
+        self.last_known_direction = 0.0    # Hướng lệch làn gần nhất: 1.0 (lệch phải/lane ở phải), -1.0 (lệch trái/lane ở trái)
 
         # 5. Cấu hình video ghi lại để phân tích lỗi sau lượt chạy
         self.VIDEO_OUTPUT_FILENAME = 'speed_track_run.avi'
@@ -190,17 +191,21 @@ class SpeedTrackController:
                 if 160 < width < 280:
                     self.estimated_lane_width = 0.9 * self.estimated_lane_width + 0.1 * width
                 center_x = int((left_border + right_border) / 2)
+                # Lưu lại hướng lệch gần nhất
+                self.last_known_direction = np.sign(center_x - self.WIDTH / 2.0)
             elif found_left:
                 # Chỉ thấy biên trái -> Dựng biên phải ảo dựa trên chiều rộng làn đường ước lượng
                 right_border = int(left_border + self.estimated_lane_width)
                 center_x = int(left_border + self.estimated_lane_width / 2)
+                self.last_known_direction = np.sign(center_x - self.WIDTH / 2.0)
             elif found_right:
                 # Chỉ thấy biên phải -> Dựng biên trái ảo dựa trên chiều rộng làn đường ước lượng
                 left_border = int(right_border - self.estimated_lane_width)
                 center_x = int(right_border - self.estimated_lane_width / 2)
+                self.last_known_direction = np.sign(center_x - self.WIDTH / 2.0)
             else:
-                # Mất cả 2 biên -> Giữ nguyên tâm ảnh
-                center_x = int(self.WIDTH / 2)
+                # Mất cả 2 biên -> Sử dụng hướng lệch đã biết gần nhất để đánh lái quay trở lại làn
+                center_x = int(self.WIDTH / 2.0 + self.last_known_direction * (self.estimated_lane_width / 4.0))
                 
             # Giới hạn giá trị biên nằm trong ảnh
             left_border = max(0, min(self.WIDTH - 1, left_border))
