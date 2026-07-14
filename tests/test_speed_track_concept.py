@@ -100,25 +100,56 @@ class SpeedTrackConcept:
         _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
 
         def find_borders_at_y(y_line):
+            # Tìm tất cả điểm trắng trên dòng quét
+            white_xs = [x for x in range(w) if thresh[y_line, x] == 255]
+            
+            segments = []
+            if len(white_xs) > 0:
+                current_segment = [white_xs[0]]
+                for x in white_xs[1:]:
+                    if x - current_segment[-1] > 15:
+                        segments.append(int(np.mean(current_segment)))
+                        current_segment = [x]
+                    else:
+                        current_segment.append(x)
+                segments.append(int(np.mean(current_segment)))
+
             left_border = 0
             right_border = w - 1
             found_left = False
             found_right = False
 
-            # Quét từ mép TRÁI ảnh (x = 0) đi vào trong để tìm biên trái
-            for x in range(0, int(w / 2)):
-                if thresh[y_line, x] == 255:
-                    left_border = x
+            if len(segments) >= 2:
+                left_border = segments[0]
+                right_border = segments[-1]
+                found_left = True
+                found_right = True
+            elif len(segments) == 1:
+                x_val = segments[0]
+                # Sử dụng phân loại phân vùng (Zone-based) kết hợp với FSM Prior để tránh đổi góc lái đột ngột:
+                if x_val < 110:
+                    left_border = x_val
                     found_left = True
-                    break
-            
-            # Quét từ mép PHẢI ảnh (x = w - 1) đi vào trong để tìm biên phải
-            for x in range(w - 1, int(w / 2), -1):
-                if thresh[y_line, x] == 255:
-                    right_border = x
+                elif x_val > 190:
+                    right_border = x_val
                     found_right = True
-                    break
-            
+                else:
+                    # Vùng trung tâm (110 <= x_val <= 190): Sử dụng trạng thái né tránh làm định hướng
+                    if self.state in [2, 3]:  # 2: STATE_DODGING, 3: STATE_REENTERING
+                        if self.dodge_direction == -1.0:
+                            left_border = x_val
+                            found_left = True
+                        else:
+                            right_border = x_val
+                            found_right = True
+                    else:
+                        if x_val < w / 2.0:
+                            left_border = x_val
+                            found_left = True
+                        else:
+                            right_border = x_val
+                            found_right = True
+
             # Khôi phục biên đơn nếu mất một bên:
             if found_left and found_right:
                 width = right_border - left_border
@@ -219,10 +250,11 @@ class SpeedTrackConcept:
             # Quét tìm vật cản trước mặt
             closest_angle, closest_dist = self.get_closest_obstacle_angle_in_range(-35.0, 35.0, max_dist=0.80)
             
-            # Nếu phát hiện vật cản phía trước gần hơn cự ly kích hoạt
+            # Nếu phát hiện vật cản phía trước gần hơn cự ly kích hoạt (đã đảo ngược theo mirrored LiDAR)
             if front_dist < self.TRIGGER_DIST:
-                # Quyết định hướng né tránh động dựa trên góc của vật cản
-                if closest_angle is not None and closest_angle < 0.0:
+                # - Góc >= 0 (vật cản bên phải trong mirrored): Lách sang TRÁI (dodge_direction = -1.0)
+                # - Góc < 0 (vật cản bên trái trong mirrored): Lách sang PHẢI (dodge_direction = 1.0)
+                if closest_angle is not None and closest_angle >= 0.0:
                     self.dodge_direction = -1.0
                     direction_str = "TRÁI"
                 else:
@@ -233,18 +265,20 @@ class SpeedTrackConcept:
                 self.state = 2  # Chuyển sang trạng thái 2 (Né)
                 self.state_change_time = rospy.get_time()
                 self.target_offset_px = self.dodge_direction * self.DODGE_OFFSET_PX  # Yêu cầu dịch vạch ảo
-
+ 
         # --- STATE 2: ĐANG NÉ VẬT CẢN ---
         elif self.state == 2:
             self.target_offset_px = self.dodge_direction * self.DODGE_OFFSET_PX
             
-            # Lọc góc dựa theo hướng đang né
+            # Lọc góc dựa theo hướng đang né (đã đảo ngược theo mirrored LiDAR):
+            # - Nếu né sang PHẢI: Theo dõi hông bên trái (góc âm trong mirrored: -150.0 đến 30.0)
+            # - Nếu né sang TRÁI: Theo dõi hông bên phải (góc dương trong mirrored: -30.0 đến 150.0)
             if self.dodge_direction == 1.0:
-                closest_angle, closest_dist = self.get_closest_obstacle_angle_in_range(-30.0, 150.0, max_dist=0.80)
-                is_clear = (closest_angle is None or closest_angle > 110.0)
-            else:
                 closest_angle, closest_dist = self.get_closest_obstacle_angle_in_range(-150.0, 30.0, max_dist=0.80)
                 is_clear = (closest_angle is None or closest_angle < -110.0)
+            else:
+                closest_angle, closest_dist = self.get_closest_obstacle_angle_in_range(-30.0, 150.0, max_dist=0.80)
+                is_clear = (closest_angle is None or closest_angle > 110.0)
             
             # Kiểm tra bộ đếm lọc nhiễu trước khi xác nhận đã vượt qua hẳn
             if is_clear:
@@ -265,8 +299,9 @@ class SpeedTrackConcept:
         elif self.state == 3:
             self.target_offset_px = 0.0
             
-            # Khi offset thực tế đã giảm hẳn về 0 (xe đã về giữa đường)
-            if abs(self.current_offset_px) < 1.0:
+            # Đảm bảo thời gian trả lái kéo dài ít nhất 2.5 giây để xe ổn định
+            time_in_reentering = rospy.get_time() - self.state_change_time
+            if abs(self.current_offset_px) < 1.0 and time_in_reentering >= 2.5:
                 rospy.loginfo("🏠 [FSM] Đã về làn trung tâm an toàn. Quay lại TRẠNG THÁI BÁM LÀN.")
                 self.state = 1  # Trở lại trạng thái bình thường
 
@@ -274,7 +309,9 @@ class SpeedTrackConcept:
         # Tránh việc bẻ góc lái đột ngột làm xe bị giật hoặc lật bánh
         diff = self.target_offset_px - self.current_offset_px
         if abs(diff) > 0.1:
-            step = np.sign(diff) * self.RAMP_STEP_PX
+            # Trả làn chậm (2.0 px/frame) để lướt mượt, né nhanh (5.0 px/frame) để tránh vật cản gấp
+            ramp_step = 2.0 if self.state == 3 else self.RAMP_STEP_PX
+            step = np.sign(diff) * ramp_step
             if abs(step) > abs(diff):
                 self.current_offset_px = self.target_offset_px
             else:
@@ -304,19 +341,36 @@ class SpeedTrackConcept:
             # 3. Cập nhật trạng thái FSM và tính toán vạch ảo dịch chuyển
             self.update_fsm_and_offset(front_dist)
             
-            # 4. Áp dụng vạch ảo đã dịch chuyển vào tâm đường gần
-            # e_pixel: độ lệch giữa tâm xe (giữa ảnh) và tâm đường (đã cộng offset né)
-            # Nếu current_offset_px dương -> Tâm xe dịch phải -> Xe đánh lái sang phải
-            target_center_near = C_near + self.current_offset_px
-            error = target_center_near - (img_w / 2.0)
-            
-            # 5. Bộ điều khiển P đơn giản để tính góc lái (Calibrate Kp trên xe thật)
-            # Sai số càng lớn xe bẻ lái càng mạnh
-            Kp = 0.006
-            steering = error * Kp
-            
-            # Giới hạn góc lái tối đa trong khoảng [-1.0, 1.0]
-            steering = max(-1.0, min(1.0, steering))
+            # Kiểm tra xem có đang trong giai đoạn đầu ép lái trả làn mở (open-loop pre-steer) hay không
+            is_open_loop_return = False
+            if self.state == 3:  # STATE_REENTERING
+                time_in_reentering = rospy.get_time() - self.state_change_time
+                if time_in_reentering < 1.2:
+                    is_open_loop_return = True
+
+            if is_open_loop_return:
+                # Ép lái góc cố định mạnh hơn (0.50) ngược hướng né tránh để chủ động xoay đầu xe về giữa đường
+                steering = -0.50 * self.dodge_direction
+            else:
+                # 4. Áp dụng vạch ảo đã dịch chuyển vào tâm đường gần
+                # e_pixel: độ lệch giữa tâm xe (giữa ảnh) và tâm đường (đã cộng offset né)
+                target_center_near = C_near + self.current_offset_px
+                error = target_center_near - (img_w / 2.0)
+                
+                # 5. Bộ điều khiển P đơn giản để tính góc lái
+                Kp = 0.006
+                steering = error * Kp
+                
+                # Giới hạn góc lái tối đa trong khoảng [-1.0, 1.0]
+                steering = max(-1.0, min(1.0, steering))
+                
+                # Thiết lập góc lái tối thiểu bắt buộc trong trạng thái né tránh (Safety Override)
+                if self.state == 2:  # STATE_DODGING
+                    min_dodge_steer = 0.28
+                    if self.dodge_direction == 1.0:
+                        steering = max(min_dodge_steer, steering)
+                    elif self.dodge_direction == -1.0:
+                        steering = min(-min_dodge_steer, steering)
             
             # 6. Truyền lệnh xuống động cơ xe
             self.racer.steer(steering, self.BASE_SPEED)

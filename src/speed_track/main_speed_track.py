@@ -165,25 +165,61 @@ class SpeedTrackController:
         _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
 
         def find_borders(y_line):
+            # Tìm tất cả điểm trắng trên dòng quét
+            white_xs = [x for x in range(self.WIDTH) if thresh[y_line, x] == 255]
+            
+            segments = []
+            if len(white_xs) > 0:
+                current_segment = [white_xs[0]]
+                for x in white_xs[1:]:
+                    # Nếu khoảng cách giữa 2 điểm trắng > 15 pixel, coi như là vạch khác biệt
+                    if x - current_segment[-1] > 15:
+                        segments.append(int(np.mean(current_segment)))
+                        current_segment = [x]
+                    else:
+                        current_segment.append(x)
+                segments.append(int(np.mean(current_segment)))
+
             left_border = 0
             right_border = self.WIDTH - 1
             found_left = False
             found_right = False
 
-            # Quét từ mép TRÁI ảnh (x = 0) đi vào trong để tìm biên trái
-            for x in range(0, int(self.WIDTH / 2)):
-                if thresh[y_line, x] == 255:
-                    left_border = x
+            if len(segments) >= 2:
+                # Tìm thấy từ 2 vạch trở lên -> lấy 2 vạch ngoài cùng làm biên trái/phải
+                left_border = segments[0]
+                right_border = segments[-1]
+                found_left = True
+                found_right = True
+            elif len(segments) == 1:
+                x_val = segments[0]
+                # Sử dụng phân loại phân vùng (Zone-based) kết hợp với FSM Prior để tránh đổi góc lái đột ngột:
+                if x_val < 110:
+                    # Chắc chắn là biên trái vì nằm lệch hẳn về bên trái ảnh
+                    left_border = x_val
                     found_left = True
-                    break
-            
-            # Quét từ mép PHẢI ảnh (x = w - 1) đi vào trong để tìm biên phải
-            for x in range(self.WIDTH - 1, int(self.WIDTH / 2), -1):
-                if thresh[y_line, x] == 255:
-                    right_border = x
+                elif x_val > 190:
+                    # Chắc chắn là biên phải vì nằm lệch hẳn về bên phải ảnh
+                    right_border = x_val
                     found_right = True
-                    break
-            
+                else:
+                    # Vùng trung tâm (110 <= x_val <= 190): Sử dụng trạng thái né tránh làm định hướng
+                    if self.state in [RobotState.STATE_DODGING, RobotState.STATE_REENTERING]:
+                        if self.dodge_direction == -1.0:  # Đang né trái -> Vạch trung tâm là biên trái
+                            left_border = x_val
+                            found_left = True
+                        else:  # Đang né phải -> Vạch trung tâm là biên phải
+                            right_border = x_val
+                            found_right = True
+                    else:
+                        # Trạng thái bình thường: Theo vị trí tương đối
+                        if x_val < self.WIDTH / 2.0:
+                            left_border = x_val
+                            found_left = True
+                        else:
+                            right_border = x_val
+                            found_right = True
+
             # Khôi phục biên đơn nếu mất một trong hai bên:
             if found_left and found_right:
                 # Tìm thấy cả 2 biên -> Tính toán và hiệu chuẩn chiều rộng làn đường thực tế
@@ -191,7 +227,6 @@ class SpeedTrackController:
                 if 160 < width < 280:
                     self.estimated_lane_width = 0.9 * self.estimated_lane_width + 0.1 * width
                 center_x = int((left_border + right_border) / 2)
-                # Lưu lại hướng lệch gần nhất
                 self.last_known_direction = np.sign(center_x - self.WIDTH / 2.0)
             elif found_left:
                 # Chỉ thấy biên trái -> Dựng biên phải ảo dựa trên chiều rộng làn đường ước lượng
@@ -277,6 +312,58 @@ class SpeedTrackController:
                         
         return closest_angle, min_dist
 
+    def draw_lidar_radar(self, img):
+        """Vẽ bản đồ Radar LiDAR thu nhỏ (80x80) ở góc trên bên phải để debug song song trên video."""
+        if self.latest_scan is None:
+            return img
+            
+        # Kích thước và tâm của radar
+        radar_size = 80
+        center_x = self.WIDTH - radar_size // 2 - 10
+        center_y = radar_size // 2 + 10
+        radius = radar_size // 2
+        
+        # 1. Vẽ vòng tròn nền bán kính tối đa 1.5m
+        cv2.circle(img, (center_x, center_y), radius, (30, 30, 30), -1)      # Nền đen xám đậm
+        cv2.circle(img, (center_x, center_y), radius // 2, (70, 70, 70), 1)  # Vòng lưới 0.75m
+        cv2.circle(img, (center_x, center_y), radius, (100, 100, 100), 1)    # Vòng lưới ngoài 1.5m
+        
+        # 2. Vẽ hướng xe chạy (Đầu xe hướng lên trên - Y giảm)
+        # Tâm (center_x, center_y) đại diện cho vị trí xe
+        cv2.line(img, (center_x, center_y), (center_x, center_y - 6), (0, 0, 255), 2)  # Đầu xe màu đỏ hướng lên
+        
+        # 3. Quét và vẽ các điểm đo LiDAR
+        scan = self.latest_scan
+        max_dist_visualize = 1.5  # Giới hạn hiển thị radar là 1.5m
+        scale = radius / max_dist_visualize
+        
+        for i, dist in enumerate(scan.ranges):
+            if math.isfinite(dist) and scan.range_min < dist < max_dist_visualize:
+                angle = scan.angle_min + i * scan.angle_increment
+                angle_deg = math.degrees(angle)
+                angle_deg = angle_deg + 180.0
+                angle_deg = (angle_deg + 180) % 360 - 180
+                
+                # Chuyển đổi sang hệ tọa độ màn hình OpenCV:
+                # ROS: angle_deg dương là lệch trái, âm là lệch phải
+                # Màn hình: X tăng sang phải, Y tăng đi xuống
+                # -> px = center_x - dist * sin(angle) * scale
+                # -> py = center_y - dist * cos(angle) * scale
+                rad = math.radians(angle_deg)
+                px = int(center_x - (dist * math.sin(rad)) * scale)
+                py = int(center_y - (dist * math.cos(rad)) * scale)
+                
+                # Chỉ vẽ nếu điểm nằm trong phạm vi hình tròn radar
+                dist_to_center = math.sqrt((px - center_x) ** 2 + (py - center_y) ** 2)
+                if dist_to_center <= radius:
+                    # Đánh dấu các vật cản nguy hiểm trước mũi (góc hẹp ±35 độ, khoảng cách < TRIGGER_DIST) màu đỏ
+                    if -35.0 <= angle_deg <= 35.0 and dist < self.TRIGGER_DIST:
+                        cv2.circle(img, (px, py), 1, (0, 0, 255), -1)
+                    else:
+                        cv2.circle(img, (px, py), 1, (0, 255, 0), -1)
+                        
+        return img
+
     def update_fsm_states(self, front_dist):
         """Cập nhật máy trạng thái FSM né tránh vật cản động theo 2 phía (trái/phải)."""
         
@@ -292,10 +379,10 @@ class SpeedTrackController:
             
             # Kích hoạt né tránh khi khoảng cách trước mặt bé hơn ngưỡng an toàn
             if front_dist < self.TRIGGER_DIST:
-                # Quyết định hướng né tránh động dựa trên góc của vật cản:
-                # Nếu góc < 0 (vật cản nằm bên phải): Lách sang trái (dodge_direction = -1.0)
-                # Nếu góc >= 0 (vật cản nằm bên trái hoặc chính giữa): Lách sang phải (dodge_direction = 1.0)
-                if closest_angle is not None and closest_angle < 0.0:
+                # Quyết định hướng né tránh động dựa trên góc của vật cản (LiDAR bị ngược trục trái/phải):
+                # - Góc >= 0 (vật cản bên phải trong hệ tọa độ ngược): Lách sang TRÁI (dodge_direction = -1.0)
+                # - Góc < 0 (vật cản bên trái trong hệ tọa độ ngược): Lách sang PHẢI (dodge_direction = 1.0)
+                if closest_angle is not None and closest_angle >= 0.0:
                     self.dodge_direction = -1.0
                     direction_str = "TRÁI"
                 else:
@@ -306,20 +393,20 @@ class SpeedTrackController:
                 self.state = RobotState.STATE_DODGING
                 self.state_change_time = rospy.get_time()
                 self.target_offset_px = self.dodge_direction * self.DODGE_OFFSET_PX
-
+ 
         # --- STATE 2: ĐANG LÁCH NÉ VẬT CẢN ---
         elif self.state == RobotState.STATE_DODGING:
             self.target_offset_px = self.dodge_direction * self.DODGE_OFFSET_PX
             
-            # Lọc góc dựa theo hướng đang né:
-            # - Nếu né sang PHẢI (vật cản bên trái): Theo dõi hông bên trái xe [-30, 150]
-            # - Nếu né sang TRÁI (vật cản bên phải): Theo dõi hông bên phải xe [-150, 30]
+            # Lọc góc dựa theo hướng đang né (đã đảo ngược theo hệ tọa độ LiDAR mirrored):
+            # - Nếu né sang PHẢI: Theo dõi hông bên trái (góc âm trong mirrored: -150.0 đến 30.0)
+            # - Nếu né sang TRÁI: Theo dõi hông bên phải (góc dương trong mirrored: -30.0 đến 150.0)
             if self.dodge_direction == 1.0:
-                closest_angle, closest_dist = self.get_closest_obstacle_angle_in_range(-30.0, 150.0, max_dist=0.80)
-                is_clear = (closest_angle is None or closest_angle > 110.0)
-            else:
                 closest_angle, closest_dist = self.get_closest_obstacle_angle_in_range(-150.0, 30.0, max_dist=0.80)
                 is_clear = (closest_angle is None or closest_angle < -110.0)
+            else:
+                closest_angle, closest_dist = self.get_closest_obstacle_angle_in_range(-30.0, 150.0, max_dist=0.80)
+                is_clear = (closest_angle is None or closest_angle > 110.0)
                 
             self.last_closest_angle = closest_angle
             self.last_closest_dist = closest_dist
@@ -350,15 +437,18 @@ class SpeedTrackController:
             self.last_closest_angle = closest_angle
             self.last_closest_dist = closest_dist
             
-            # Khi xe thực sự đã lượn mượt mà về lại chính giữa đường
-            if abs(self.current_offset_px) < 1.0:
-                rospy.loginfo("🏠 [FSM] Đã về làn trung tâm thành công.")
+            # Đảm bảo thời gian trả lái kéo dài ít nhất 2.5 giây để xe ổn định
+            time_in_reentering = rospy.get_time() - self.state_change_time
+            if abs(self.current_offset_px) < 1.0 and time_in_reentering >= 2.5:
+                rospy.loginfo("🏠 [FSM] Đã về làn trung tâm ổn định thành công.")
                 self.state = RobotState.STATE_NORMAL
 
         # --- RAMPING VẠCH ẢO (S-Curve) ---
         diff = self.target_offset_px - self.current_offset_px
         if abs(diff) > 0.1:
-            step = np.sign(diff) * self.RAMP_STEP_PX
+            # Trả làn chậm (2.0 px/frame) để lướt mượt, né nhanh (5.0 px/frame) để tránh vật cản gấp
+            ramp_step = 2.0 if self.state == RobotState.STATE_REENTERING else self.RAMP_STEP_PX
+            step = np.sign(diff) * ramp_step
             if abs(step) > abs(diff):
                 self.current_offset_px = self.target_offset_px
             else:
@@ -388,25 +478,47 @@ class SpeedTrackController:
             # 3. Cập nhật FSM và dịch làn ảo
             self.update_fsm_states(front_dist)
 
-            # 4. Áp dụng offset né vào tâm bám đường gần
-            target_center_near = C_near + self.current_offset_px
-            
-            # Tính sai số bẻ lái (lệch pixel giữa tâm xe 150px và tâm bám đường)
-            error_px = target_center_near - (self.WIDTH / 2.0)
+            # Kiểm tra xem có đang trong giai đoạn đầu ép lái trả làn mở (open-loop pre-steer) hay không
+            is_open_loop_return = False
+            if self.state == RobotState.STATE_REENTERING:
+                time_in_reentering = rospy.get_time() - self.state_change_time
+                if time_in_reentering < 1.2:
+                    is_open_loop_return = True
 
-            # 5. Bộ điều khiển tỉ lệ Kp (Bẻ lái góc tỉ lệ với lỗi lệch)
-            # Hệ số nhạy chỉnh trong docs/SPEED_TRACK_CALIBRATION.md
-            Kp = 0.007
-            steering = error_px * Kp
+            if is_open_loop_return:
+                # Ép lái góc cố định mạnh hơn (0.50) ngược hướng né tránh để chủ động xoay đầu xe về giữa đường
+                # dodge_direction = 1.0 (né phải) -> trả lái sang TRÁI (-0.50)
+                # dodge_direction = -1.0 (né trái) -> trả lái sang PHẢI (+0.50)
+                steering = -0.50 * self.dodge_direction
+            else:
+                # 4. Áp dụng offset né vào tâm bám đường gần
+                target_center_near = C_near + self.current_offset_px
+                
+                # Tính sai số bẻ lái (lệch pixel giữa tâm xe 150px và tâm bám đường)
+                error_px = target_center_near - (self.WIDTH / 2.0)
 
-            # Giới hạn góc lái vật lý của servo lái [-1.0, 1.0]
-            steering = max(-1.0, min(1.0, steering))
+                # 5. Bộ điều khiển tỉ lệ Kp (Bẻ lái góc tỉ lệ với lỗi lệch)
+                Kp = 0.07
+                steering = error_px * Kp
+
+                # Giới hạn góc lái vật lý của servo lái [-1.0, 1.0]
+                steering = max(-1.0, min(1.0, steering))
+
+                # 5.5. Thiết lập góc lái tối thiểu bắt buộc trong trạng thái né tránh (Safety Override)
+                if self.state == RobotState.STATE_DODGING:
+                    min_dodge_steer = 0.28  # Góc bẻ lái tối thiểu để đảm bảo xe thực sự lách qua vật cản
+                    if self.dodge_direction == 1.0:  # Né sang PHẢI
+                        steering = max(min_dodge_steer, steering)
+                    elif self.dodge_direction == -1.0:  # Né sang TRÁI
+                        steering = min(-min_dodge_steer, steering)
 
             # 6. Truyền lệnh điều khiển ga/lái trực tiếp xuống xe qua RacerController (I2C)
             self.racer.steer(steering, self.BASE_SPEED)
 
             # 7. Ghi video debug để phân tích lượt chạy
             if self.video_writer is not None:
+                # Vẽ radar LiDAR lên ảnh debug
+                debug_img = self.draw_lidar_radar(debug_img)
                 # Vẽ thêm thông tin FSM và khoảng cách lên ảnh để tiện phân tích video
                 cv2.putText(debug_img, f"State: {self.state.name}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
                 cv2.putText(debug_img, f"Dist: {front_dist:.2f}m", (10, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
