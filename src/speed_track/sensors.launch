@@ -1,0 +1,7 @@
+<launch>
+    <!-- Khởi chạy cảm biến LiDAR -->
+    <include file="$(find jetracer)/launch/lidar.launch" />
+
+    <!-- Khởi chạy Camera CSI -->
+    <include file="$(find jetracer)/launch/csi_camera.launch" />
+</launch>
