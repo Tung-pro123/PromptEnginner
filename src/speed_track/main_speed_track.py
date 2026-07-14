@@ -112,7 +112,7 @@ class SpeedTrackController:
         """Khởi tạo VideoWriter để ghi log video."""
         try:
             fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-            self.video_writer = cv2.VideoWriter(self.video_path, fourcc, self.LOOP_RATE, (self.W, self.H))
+            self.video_writer = cv2.VideoWriter(self.video_path, fourcc, self.LOOP_RATE, (self.W * 2, self.H))
             if self.video_writer.isOpened():
                 rospy.loginfo(f"Ghi video debug vào file: {self.video_path}")
             else:
@@ -123,15 +123,59 @@ class SpeedTrackController:
             self.video_writer = None
 
     def _record_frame(self, frame):
-        """Ghi một khung hình vào video log."""
-        if self.video_writer is not None and frame is not None:
+        """Ghi khung hình camera + BEV Map Lidar vào video log."""
+        if self.video_writer is not None:
             try:
-                # Đảm bảo kích thước khớp với cấu hình VideoWriter
-                if frame.shape[0] != self.H or frame.shape[1] != self.W:
-                    frame = cv2.resize(frame, (self.W, self.H))
-                self.video_writer.write(frame)
+                bev = self.draw_bev_map()
+                if frame is not None:
+                    if frame.shape[0] != self.H or frame.shape[1] != self.W:
+                        frame = cv2.resize(frame, (self.W, self.H))
+                else:
+                    frame = np.zeros((self.H, self.W, 3), dtype=np.uint8)
+                
+                combined = cv2.hconcat([frame, bev])
+                self.video_writer.write(combined)
             except Exception as e:
                 rospy.logerr_throttle(5, f"Lỗi ghi video: {e}")
+
+    def draw_bev_map(self):
+        """Vẽ bản đồ nhìn từ trên xuống (Bird's Eye View) của Lidar."""
+        bev = np.zeros((self.H, self.W, 3), dtype=np.uint8)
+        
+        # Grid lines
+        for i in range(1, 4): cv2.line(bev, (0, i*100), (self.W, i*100), (40,40,40), 1)
+        for i in range(1, 3): cv2.line(bev, (i*100, 0), (i*100, self.H), (40,40,40), 1)
+
+        cx, cy = self.W // 2, int(self.H * 0.85)
+        scale = 100.0  # 1m = 100px
+        
+        # Vehicle marker
+        cv2.rectangle(bev, (cx - 10, cy - 20), (cx + 10, cy + 20), (255, 255, 255), -1)
+        
+        if self.latest_scan:
+            msg = self.latest_scan
+            for i, d in enumerate(msg.ranges):
+                if msg.range_min < d < msg.range_max and d < 1.5:
+                    deg = math.degrees(msg.angle_min + i * msg.angle_increment) + self.LIDAR_OFFSET_DEG
+                    a = math.radians((deg + 180) % 360 - 180)
+                    x, y = d * math.cos(a), d * math.sin(a)
+                    
+                    px = int(cx - y * scale)
+                    py = int(cy - x * scale)
+                    if 0 <= px < self.W and 0 <= py < self.H:
+                        if d < 0.3: col = (0,0,255)
+                        elif d < 0.6: col = (0,165,255)
+                        elif d < 1.0: col = (0,255,255)
+                        else: col = (0,255,0)
+                        cv2.circle(bev, (px, py), 2, col, -1)
+                        
+        # Info overlays
+        cv2.putText(bev, f"Avoid: {self.avoid_state.name}", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
+        cv2.putText(bev, f"Offset: {self.current_offset:.1f}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
+        if self.avoid_state != AvoidState.NORMAL:
+            cv2.putText(bev, f">> {self.avoid_dir.upper()} >>", (cx - 30, cy - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
+            
+        return bev
 
     # ============================================================
     # HYBRID LANE DETECTION (Cách B)
