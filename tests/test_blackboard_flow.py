@@ -9,6 +9,7 @@ from src.fsm.fsm_manager import FSMManager
 from src.control.pid_controller import PIDController
 from src.perception.camera.camera_processor import CameraProcessor
 from src.perception.lidar.lidar_processor import LidarProcessor
+from src.debug.debugger import Debugger
 import numpy as np
 import cv2
 
@@ -20,6 +21,7 @@ class TestBlackboardFlow(unittest.TestCase):
         self.controller = PIDController(self.blackboard)
         self.camera = CameraProcessor(self.blackboard)
         self.lidar = LidarProcessor(self.blackboard)
+        self.debugger = Debugger(debug_mode=True)
         
         # Mocks hardware internally
         self.controller.initialize()
@@ -41,6 +43,8 @@ class TestBlackboardFlow(unittest.TestCase):
         self.fsm.process(self.blackboard)
         self.camera.process(self.blackboard)
         self.controller.process(self.blackboard)
+        self.debugger.process(self.blackboard)
+        self.debugger.close()
         
         # Kiểm tra kết quả
         self.assertEqual(self.blackboard.get('state_name'), 'NORMAL')
