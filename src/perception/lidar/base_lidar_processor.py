@@ -22,3 +22,8 @@ class BaseLidarProcessor(ABC):
             Thông tin trích xuất được (như cảnh báo va chạm).
         """
         pass
+
+    @abstractmethod
+    def process(self, blackboard):
+        """Đọc và ghi kết quả xử lý vào blackboard."""
+        pass

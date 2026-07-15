@@ -28,7 +28,7 @@ from sensor_msgs.msg import LaserScan, Image
 
 # Import các module điều khiển nội bộ
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
-from src.core.control.racer_controller import RacerController
+from src.core.control.pid_controller import PIDController
 from src.core.control.lqr_controller import LQRController, ObstacleDetector
 
 class RobotState(Enum):
@@ -105,8 +105,8 @@ class SpeedTrackController:
         self.VIDEO_FOURCC = cv2.VideoWriter_fourcc(*'MJPG')
 
     def initialize_hardware(self):
-        """Khởi tạo điều khiển phần cứng qua RacerController."""
-        self.racer = RacerController()
+        """Khởi tạo điều khiển phần cứng qua PIDController."""
+        self.racer = PIDController()
         # Khởi tạo bộ điều khiển LQR: Chiều dài cơ sở xe ~0.18m
         self.lqr = LQRController(wheelbase=0.18, scale_factor=0.0015)
         # Khởi tạo bộ tính khoảng cách an toàn tránh vật cản
@@ -402,7 +402,7 @@ class SpeedTrackController:
             # Giới hạn góc lái vật lý của servo lái [-1.0, 1.0]
             steering = max(-1.0, min(1.0, steering))
 
-            # 6. Truyền lệnh điều khiển ga/lái trực tiếp xuống xe qua RacerController (I2C)
+            # 6. Truyền lệnh điều khiển ga/lái trực tiếp xuống xe qua PIDController (I2C)
             self.racer.steer(steering, self.BASE_SPEED)
 
             # 7. Ghi video debug để phân tích lượt chạy
@@ -455,7 +455,7 @@ if __name__ == '__main__':
         print(f"Lỗi khẩn cấp: {e}")
         # Dừng xe an toàn tuyệt đối khi lỗi phần mềm
         try:
-            r = RacerController()
+            r = PIDController()
             r.stop()
         except:
             pass

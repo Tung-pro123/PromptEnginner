@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RacerController - Lớp trừu tượng điều khiển JetRacer (Ackermann Steering)
+PIDController - Lớp trừu tượng điều khiển JetRacer (Ackermann Steering)
 
 Xe JetRacer dùng Ackermann steering (lái servo phía trước + motor ga phía sau),
 KHÔNG PHẢI differential drive như JetBot.
@@ -12,8 +12,8 @@ Khác biệt chính:
 Lớp này cung cấp API thống nhất để code chính không cần quan tâm loại xe.
 
 Cách dùng:
-    from src.core.control.racer_controller import RacerController
-    controller = RacerController()
+    from src.core.control.pid_controller import PIDController
+    controller = PIDController()
     controller.forward(0.3)          # Đi thẳng
     controller.steer(0.5, 0.3)       # Rẽ phải nhẹ + đi tới
     controller.turn_angle(90)        # Rẽ phải 90 độ (đi vòng cung)
@@ -63,7 +63,7 @@ DEFAULT_CONFIG = {
 }
 
 
-class RacerController:
+class PIDController:
     """
     Controller cho JetRacer (Waveshare JetRacer Pro AI Kit)
     
@@ -305,8 +305,8 @@ class RacerController:
 # TEST (chạy trực tiếp file này để test)
 # ============================================================
 if __name__ == "__main__":
-    print("=== Test RacerController ===")
-    ctrl = RacerController()
+    print("=== Test PIDController ===")
+    ctrl = PIDController()
     print("Forward...")
     ctrl.forward(0.2)
     time.sleep(1)

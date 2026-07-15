@@ -11,7 +11,7 @@ Tài liệu này tóm tắt toàn bộ nguyên lý hoạt động, thuật toán
     *   **Camera CSI:** Truyền luồng ảnh video thực tế góc nhìn từ mũi xe.
     *   **LiDAR:** Máy quét khoảng cách laser 360 độ dùng để xác định vật cản.
 *   **Nền tảng giao tiếp:** ROS 1 Melodic kết hợp lập trình thuật toán bằng Python 3.
-*   **Giao thức điều khiển động cơ:** Lệnh bẻ lái (steering) và tốc độ (throttle) được truyền trực tiếp xuống mạch điều khiển thông qua I2C của thư viện `RacerController`.
+*   **Giao thức điều khiển động cơ:** Lệnh bẻ lái (steering) và tốc độ (throttle) được truyền trực tiếp xuống mạch điều khiển thông qua I2C của thư viện `PIDController`.
 
 ---
 

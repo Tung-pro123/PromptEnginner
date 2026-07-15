@@ -8,10 +8,12 @@ from perception.camera.base_camera_processor import BaseCameraProcessor
 from config import settings
 
 class CameraProcessor(BaseCameraProcessor):
-    def __init__(self):
+    def __init__(self, blackboard=None):
+        self.blackboard = blackboard
         self.cap = None
         self.estimated_lane_width = 100.0 # Giá trị khởi tạo
         self.last_known_direction = 0.0
+        self.latest_image = None
 
     def initialize(self):
         # Mở luồng GStreamer cho CSI camera hoặc USB camera
@@ -20,11 +22,36 @@ class CameraProcessor(BaseCameraProcessor):
         print("[INFO] Camera initialized.")
 
     def get_frame(self):
+        if self.latest_image is not None:
+            return self.latest_image
         if self.cap and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
                 return frame
         return None
+
+    def ros_callback(self, msg):
+        """Chuyển đổi dữ liệu ảnh ROS Image thành numpy array OpenCV"""
+        try:
+            img = np.frombuffer(msg.data, dtype=np.uint8)
+            if msg.encoding == 'bgr8':
+                if self.blackboard:
+                    self.blackboard.set('latest_image', img.reshape((msg.height, msg.width, 3)))
+                else:
+                    self.latest_image = img.reshape((msg.height, msg.width, 3))
+            elif msg.encoding == 'rgb8':
+                img_rgb = img.reshape((msg.height, msg.width, 3))
+                if self.blackboard:
+                    self.blackboard.set('latest_image', cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR))
+                else:
+                    self.latest_image = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+            elif msg.encoding == 'mono8':
+                if self.blackboard:
+                    self.blackboard.set('latest_image', img.reshape((msg.height, msg.width)))
+                else:
+                    self.latest_image = img.reshape((msg.height, msg.width))
+        except Exception as e:
+            print(f"Lỗi chuyển đổi ảnh: {e}")
 
     def process_frame(self, frame, dodge_direction=0.0):
         """
@@ -93,3 +120,9 @@ class CameraProcessor(BaseCameraProcessor):
             self.last_known_direction = 1.0
 
         return center_x
+
+    def process(self, blackboard):
+        latest_image = blackboard.get('latest_image')
+        dodge_direction = blackboard.get('dodge_direction', 0.0)
+        center_x = self.process_frame(latest_image, dodge_direction)
+        blackboard.set('center_x', center_x)

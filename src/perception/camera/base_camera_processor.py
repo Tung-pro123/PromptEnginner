@@ -22,3 +22,8 @@ class BaseCameraProcessor(ABC):
             Kết quả sau xử lý (ví dụ: góc lệch, danh sách vật cản).
         """
         pass
+
+    @abstractmethod
+    def process(self, blackboard):
+        """Đọc và ghi kết quả xử lý vào blackboard."""
+        pass

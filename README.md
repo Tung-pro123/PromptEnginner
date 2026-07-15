@@ -25,7 +25,7 @@ Jetson/
 │   ├── core/                      #   🔧 Module lõi dùng chung cho cả 2 bài thi
 │   │   ├── perception/            #     👁️ Xử lý cảm biến (Dual-ROI camera, LiDAR)
 │   │   ├── control/               #     🎮 Điều khiển động cơ xe
-│   │   │   ├── racer_controller.py #      Bộ điều khiển động cơ gốc (Hỗ trợ Ackermann & JetBot)
+│   │   │   ├── pid_controller.py #      Bộ điều khiển động cơ gốc (Hỗ trợ Ackermann & JetBot)
 │   │   │   └── lqr_controller.py  #       Bộ điều khiển LQR bám làn & Tránh vật cản (S-Curve offset)
 │   │   ├── planning/              #     🗺️ Điều hướng & tìm đường (A*, Dijkstra)
 │   │   └── utils/                 #     🛠️ Tiện ích & dữ liệu
@@ -88,7 +88,7 @@ pip3 install onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl
 ```
 
 ### 3. Quy Trình Tránh Xung Đột Động Cơ (Không Chạy Lệnh Tổng Khi Debug)
-Do code Python (`RacerController`) và ROS node `jetracer` đều ghi vào cổng I2C điều khiển động cơ nên sẽ gây xung đột khóa bánh. Khi muốn chạy code của chúng ta kết hợp cảm biến, hãy làm như sau:
+Do code Python (`PIDController`) và ROS node `jetracer` đều ghi vào cổng I2C điều khiển động cơ nên sẽ gây xung đột khóa bánh. Khi muốn chạy code của chúng ta kết hợp cảm biến, hãy làm như sau:
 
 * **Terminal 1:** Chỉ bật trung tâm điều phối:
   ```bash

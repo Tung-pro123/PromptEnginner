@@ -19,5 +19,10 @@ class BaseController(ABC):
 
     @abstractmethod
     def stop(self):
-        """Dừng robot khẩn cấp hoặc dừng hẳn."""
+        """Dừng xe."""
+        pass
+
+    @abstractmethod
+    def process(self, blackboard):
+        """Đọc và ghi kết quả xử lý vào blackboard."""
         pass

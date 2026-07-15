@@ -4,12 +4,12 @@ import os
 import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.control.racer_controller import RacerController
+from src.control.pid_controller import PIDController
 from src.config import settings
 
-class TestRacerController(unittest.TestCase):
+class TestPIDController(unittest.TestCase):
     def setUp(self):
-        self.controller = RacerController()
+        self.controller = PIDController()
         # Mock xe để không gọi xuống phần cứng thật trong lúc chạy test
         from unittest.mock import Mock
         self.controller.car = Mock()

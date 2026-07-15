@@ -47,3 +47,13 @@ class Debugger:
     def close(self):
         if self.csv_file:
             self.csv_file.close()
+
+    def process(self, blackboard):
+        state = blackboard.get('state_name', 'UNKNOWN')
+        front_dist = blackboard.get('front_dist', 999.0)
+        closest_angle = blackboard.get('closest_angle', 0.0)
+        closest_dist = blackboard.get('front_dist', 999.0)  # In previous code, it reused front_dist for closest_dist
+        offset_px = blackboard.get('current_offset_px', 0.0)
+        steering = blackboard.get('steering', 0.0)
+        
+        self.log_csv(state, front_dist, closest_angle, closest_dist, offset_px, steering)

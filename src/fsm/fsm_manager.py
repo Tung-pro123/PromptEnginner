@@ -74,3 +74,15 @@ class FSMManager:
         if self.current_state == State.DODGING: return "DODGING"
         if self.current_state == State.REENTERING: return "REENTERING"
         return "UNKNOWN"
+
+    def process(self, blackboard):
+        front_dist = blackboard.get('front_dist', 999.0)
+        closest_angle = blackboard.get('closest_angle', 0.0)
+        side_clear = blackboard.get('side_clear', True)
+        
+        self.update_from_lidar(front_dist, closest_angle, side_clear)
+        current_offset_px = self.update_offset()
+        
+        blackboard.set('dodge_direction', self.dodge_direction)
+        blackboard.set('current_offset_px', current_offset_px)
+        blackboard.set('state_name', self.get_state_name())
