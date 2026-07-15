@@ -28,20 +28,19 @@ def kmeans_segmentation(img, k=3):
 def color_threshold_segmentation(img):
     """
     Phân vùng bằng ngưỡng màu (HSV).
-    Thường dùng để trích xuất riêng biệt vạch kẻ trắng hoặc vàng.
+    Chỉ trả về mặt nạ nhị phân (Binary Mask): vạch kẻ màu trắng (255) và nền màu đen (0).
     """
     # Chuyển sang không gian màu HSV
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     
-    # Ví dụ: Ngưỡng lọc màu TRẮNG (thường là vạch kẻ đường)
+    # Ngưỡng lọc màu TRẮNG (dành cho vạch kẻ đường)
     lower_white = np.array([0, 0, 150])
     upper_white = np.array([180, 50, 255])
     
     mask = cv2.inRange(hsv, lower_white, upper_white)
     
-    # Áp dụng mask lên ảnh gốc
-    res = cv2.bitwise_and(img, img, mask=mask)
-    return res
+    # Trả về mask nhị phân (Đường viền trắng, nền đen)
+    return mask
 
 def canny_edge_segmentation(img):
     """
@@ -103,10 +102,10 @@ def main():
     plt.title('K-Means Clustering (K=3)')
     plt.axis('off')
 
-    # Color Threshold
+    # Color Threshold (Binary Mask)
     plt.subplot(2, 2, 3)
-    plt.imshow(seg_color)
-    plt.title('White Color Threshold (HSV)')
+    plt.imshow(seg_color, cmap='gray')
+    plt.title('White Lines Mask (HSV)')
     plt.axis('off')
 
     # Edge Detection
