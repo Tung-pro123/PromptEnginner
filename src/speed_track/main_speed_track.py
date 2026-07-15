@@ -266,11 +266,8 @@ class SpeedTrackController:
         cv2.circle(dbg, (int(robust_mid_n), y_near), 4, (255, 150, 0), -1)
         cv2.putText(dbg, "Virtual Line", (int(robust_mid_n) - 30, y_near + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 150, 0), 1)
 
-        # Vẽ Target lái hiện tại (Màu Xanh Dương lớn hơn)
-        cv2.circle(dbg, (int(target_x), y_near - 20), 8, (255, 0, 0), 2)
-        cv2.line(dbg, (self.W//2, self.H), (int(target_x), y_near - 20), (255, 0, 0), 2)
-        cv2.putText(dbg, "Target", (int(target_x) - 20, y_near - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
-
+        # Không vẽ Target ở đây nữa để tránh gây nhầm lẫn trên video log.
+        # Target thật sự (sau khi cộng offset né) sẽ được vẽ ở hàm run()
         return target_x, L_n, R_n, has_center, dbg
 
     def is_line_visible(self, frame):
@@ -538,6 +535,8 @@ class SpeedTrackController:
                 final_target = target_x + safe_offset
                 steer = self.steer_to(final_target, self.BASE_SPEED)
                 self.log_row(steer=steer, speed=self.BASE_SPEED, front=front, offset=safe_offset)
+                if debug_frame is not None:
+                    self._draw_target(debug_frame, final_target)
 
             # --- AVOID OBSTACLE ---
             elif self.state == TrackState.AVOID_OBSTACLE:
@@ -560,6 +559,8 @@ class SpeedTrackController:
                 final_target = target_x + safe_offset
                 steer = self.steer_to(final_target, self.AVOID_SPEED)
                 self.log_row(steer=steer, speed=self.AVOID_SPEED, front=front, offset=safe_offset)
+                if debug_frame is not None:
+                    self._draw_target(debug_frame, final_target)
 
                 if self.avoid_state == AvoidState.NORMAL:
                     self.log_row(event='OBSTACLE_CLEARED')
@@ -597,6 +598,8 @@ class SpeedTrackController:
                 if self.latest_image is not None:
                     target_x, L, R, _, debug_frame = self.detect_lane(self.latest_image)
                     self.steer_to(target_x, self.BASE_SPEED)
+                    if debug_frame is not None:
+                        self._draw_target(debug_frame, target_x)
                 if self.time_in_state() > self.CP_COOLDOWN:
                     self.set_state(TrackState.KEEP_LANE)
 
@@ -610,6 +613,13 @@ class SpeedTrackController:
                 self._record_frame(debug_frame)
 
             rate.sleep()
+
+    def _draw_target(self, frame, target_x):
+        """Vẽ Target thực sự xe đang hướng tới sau khi tính toán offset."""
+        y_near = int(self.H * 0.55)
+        cv2.circle(frame, (int(target_x), y_near - 20), 8, (255, 0, 0), 2)
+        cv2.line(frame, (self.W//2, self.H), (int(target_x), y_near - 20), (255, 0, 0), 2)
+        cv2.putText(frame, "Target", (int(target_x) - 20, y_near - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
 
         self.racer.stop()
         elapsed = time.time() - self._fps_start
