@@ -535,10 +535,15 @@ class SpeedTrackController:
                 has_center = False
                 if self.latest_image is not None:
                     target_x, L, R, has_center, debug_frame = self.detect_lane(self.latest_image)
-                    
-                    # FIX: Khi đang né, xe bẻ góc lớn khiến camera dễ bắt nhầm lề đường thành center line.
-                    # Bỏ qua center_line giả, ép target_x dựa vào trung điểm của 2 biên L và R.
-                    target_x = (L + R) // 2
+                    # FIX: Khi đang né, xe bẻ lái lớn nên có thể chỉ nhìn thấy 1 bên lề đường.
+                    # Khắc phục: Ước lượng tâm đường (target_x) dựa vào lề còn nhìn thấy.
+                    # Giả sử nửa độ rộng làn đường trên camera là khoảng 120px.
+                    if self.avoid_dir == 'right':
+                        # Né phải -> Lề phải (R) nằm rõ trong hình, lề trái dễ bị khuất.
+                        target_x = R - 120
+                    else:
+                        # Né trái -> Lề trái (L) nằm rõ trong hình.
+                        target_x = L + 120
 
                 safe_offset = self.clamp_offset_by_borders(offset, L, R)
                 final_target = target_x + safe_offset
