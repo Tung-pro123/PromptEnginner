@@ -202,8 +202,16 @@ class SpeedTrackController:
                 if thresh[y, x] == 255: R = x; break
             return L, R, (L + R) // 2
 
-        L_n, R_n, mid_n = find_borders(y_near)
-        L_f, R_f, mid_f = find_borders(y_far)
+        L_n, R_n, _ = find_borders(y_near)
+        L_f, R_f, _ = find_borders(y_far)
+
+        def get_robust_mid(L, R):
+            if L == 0 and R < self.W - 1: return R - 120
+            if R == self.W - 1 and L > 0: return L + 120
+            return (L + R) // 2
+
+        robust_mid_n = get_robust_mid(L_n, R_n)
+        robust_mid_f = get_robust_mid(L_f, R_f)
 
         # Tìm vạch trắng đứt khúc giữa bằng contour trong vùng giữa 2 biên
         roi_y = int(self.H * 0.70)
@@ -228,8 +236,8 @@ class SpeedTrackController:
                     center_line_x = int(M["m10"] / M["m00"])
                     has_center = True
 
-        # Target: ưu tiên vạch giữa, fallback = trung điểm 2 biên
-        target_x = center_line_x if has_center else mid_n
+        # Target: ưu tiên vạch giữa, fallback = trung điểm ảo
+        target_x = center_line_x if has_center else robust_mid_n
 
         # Debug image
         dbg = resized.copy()
@@ -251,9 +259,12 @@ class SpeedTrackController:
             cv2.circle(dbg, (center_line_x, roi_y + roi_h//2), 6, (0, 255, 0), -1)
             cv2.putText(dbg, "Center", (center_line_x - 20, roi_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
         else:
-            # Vẽ trung điểm hình học (Màu Vàng) làm fallback
-            cv2.circle(dbg, (mid_n, y_near), 4, (0, 255, 255), -1)
-            cv2.putText(dbg, "Mid", (mid_n - 10, y_near - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+            pass
+
+        # Vẽ đường trung tâm ảo (Virtual Center Line - Màu Xanh Biển)
+        cv2.line(dbg, (int(robust_mid_f), y_far), (int(robust_mid_n), y_near), (255, 150, 0), 2)
+        cv2.circle(dbg, (int(robust_mid_n), y_near), 4, (255, 150, 0), -1)
+        cv2.putText(dbg, "Virtual Line", (int(robust_mid_n) - 30, y_near + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 150, 0), 1)
 
         # Vẽ Target lái hiện tại (Màu Xanh Dương lớn hơn)
         cv2.circle(dbg, (int(target_x), y_near - 20), 8, (255, 0, 0), 2)
