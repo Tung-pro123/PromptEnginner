@@ -188,8 +188,8 @@ class SpeedTrackController:
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         _, thresh = cv2.threshold(blurred, self.GRAY_THRESH, 255, cv2.THRESH_BINARY)
 
-        y_near = int(self.H * 0.85)
-        y_far = int(self.H * 0.55)
+        y_near = int(self.H * 0.55)  # Nâng y_near lên khoảng 50%
+        y_far = int(self.H * 0.35)   # Nâng y_far lên cao hơn tương ứng
 
         def find_borders(y):
             mid = self.W // 2
@@ -214,8 +214,8 @@ class SpeedTrackController:
         robust_mid_f = get_robust_mid(L_f, R_f)
 
         # Tìm vạch trắng đứt khúc giữa bằng contour trong vùng giữa 2 biên
-        roi_y = int(self.H * 0.70)
-        roi_h = int(self.H * 0.25)
+        roi_y = int(self.H * 0.40)
+        roi_h = int(self.H * 0.20)
         roi = thresh[roi_y:roi_y+roi_h, :]
         # Mask chỉ giữ vùng giữa 2 biên (loại bỏ biên)
         margin = 15  # pixel margin tránh biên
