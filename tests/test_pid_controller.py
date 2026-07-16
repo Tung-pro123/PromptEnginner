@@ -30,12 +30,14 @@ class TestPIDController(unittest.TestCase):
 
     def test_calculate_steering_pid_deviated(self):
         """Kiểm tra đánh lái khi xe lệch khỏi vùng an toàn."""
-        settings.IMAGE_CENTER_X = 150
-        settings.IMAGE_WIDTH = 300
-        settings.SAFE_ZONE_PERCENT = 0.1
-        settings.PID_KP = 0.5
-        settings.PID_KI = 0.0
-        settings.PID_KD = 0.0
+        # Use settings module that pid_controller imported
+        from src.control.pid_controller import settings as pid_settings
+        pid_settings.IMAGE_CENTER_X = 150
+        pid_settings.IMAGE_WIDTH = 300
+        pid_settings.SAFE_ZONE_PERCENT = 0.1
+        pid_settings.PID_KP = 0.5
+        pid_settings.PID_KI = 0.0
+        pid_settings.PID_KD = 0.0
         
         # Xe lệch phải (center_x lớn)
         center_x = 250

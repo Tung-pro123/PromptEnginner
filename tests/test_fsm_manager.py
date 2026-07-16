@@ -4,8 +4,7 @@ import os
 
 # Đảm bảo có thể import từ src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.fsm.fsm_manager import FSMManager, State
-from src.config import settings
+from src.fsm.fsm_manager import FSMManager, State, settings
 
 class TestFSMManager(unittest.TestCase):
     def setUp(self):
@@ -39,7 +38,10 @@ class TestFSMManager(unittest.TestCase):
         
     def test_reentering_after_clear(self):
         """Kiểm tra xe có quay lại làn (REENTERING) khi sườn xe an toàn không."""
+        import time
         self.fsm.current_state = State.DODGING
+        self.fsm.dodge_start_time = time.time()  # Prevent watchdog
+        self.fsm.current_offset_px = 50.0 # Prevent instant normal
         settings.CLEAR_FRAMES_REQUIRED = 3
         
         # Mô phỏng sườn an toàn trong 3 frame liên tiếp

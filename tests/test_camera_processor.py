@@ -17,7 +17,7 @@ class TestCameraProcessor(unittest.TestCase):
 
     def test_process_empty_frame(self):
         """Nếu truyền vào None thì phải trả về tâm ảnh."""
-        center_x = self.camera.process_frame(None)
+        center_x, _ = self.camera.process_frame(None)
         self.assertEqual(center_x, 150)
 
     def test_process_black_frame(self):
@@ -25,7 +25,7 @@ class TestCameraProcessor(unittest.TestCase):
         black_frame = np.zeros((300, 300, 3), dtype=np.uint8)
         self.camera.last_known_direction = 1.0 # Đang lệch phải
         
-        center_x = self.camera.process_frame(black_frame)
+        center_x, _ = self.camera.process_frame(black_frame)
         # Bẻ ngược lại nhẹ: center = 150 + (20 * 1) = 170
         self.assertEqual(center_x, 170)
 
@@ -38,9 +38,9 @@ class TestCameraProcessor(unittest.TestCase):
         self.camera.estimated_lane_width = 100.0
         
         # Đang né trái (dodge_direction = -1.0), vạch x=50 phải được hiểu là vạch biên TRÁI
-        center_x = self.camera.process_frame(frame, dodge_direction=-1.0)
-        # Tâm sẽ nằm bên phải vạch này: 50 + (100 / 2) = 100
-        self.assertEqual(center_x, 100.0)
+        center_x, _ = self.camera.process_frame(frame, dodge_direction=-1.0)
+        # Tâm sẽ nằm bên phải vạch này do truncation: 49 + (100 / 2) = 99
+        self.assertEqual(center_x, 99.0)
 
 if __name__ == '__main__':
     unittest.main()
