@@ -57,72 +57,78 @@ class CameraProcessor(BaseCameraProcessor):
         """
         Xử lý ảnh dựa trên Pipeline 3.1:
         1. Tiền xử lý
-        2. Phân cụm
-        3. State-Aware
-        4. Tính center_x
+        2. Phân cụm trên nhiều hàng (scanlines)
+        3. Tính toán waypoints
         """
         if frame is None:
-            return settings.IMAGE_CENTER_X
+            return settings.IMAGE_CENTER_X, []
             
         # 1. Tiền xử lý
         resized = cv2.resize(frame, (settings.IMAGE_WIDTH, settings.IMAGE_HEIGHT))
         gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, settings.THRESHOLD_VALUE, 255, cv2.THRESH_BINARY)
         
-        # Lấy dòng quét ở tọa độ y = 250 (gần mũi xe)
-        scan_line = thresh[250, :]
+        y_lines = [160, 200, 240, 280]
+        waypoints = []
+        center_x_bottom = settings.IMAGE_CENTER_X
         
-        # 2. Phân cụm vạch
-        white_pixels = np.where(scan_line == 255)[0]
-        clusters = []
-        if len(white_pixels) > 0:
-            current_cluster = [white_pixels[0]]
-            for i in range(1, len(white_pixels)):
-                if white_pixels[i] - white_pixels[i-1] <= settings.MAX_GAP_BETWEEN_POINTS:
-                    current_cluster.append(white_pixels[i])
-                else:
-                    clusters.append(int(np.mean(current_cluster)))
-                    current_cluster = [white_pixels[i]]
-            clusters.append(int(np.mean(current_cluster)))
+        for y in y_lines:
+            scan_line = thresh[y, :]
             
-        # 3. State-Aware Classification & 4. Tính toán center_x
-        center_x = settings.IMAGE_CENTER_X
-        
-        if len(clusters) >= 2:
-            left_border = clusters[0]
-            right_border = clusters[-1]
-            center_x = (left_border + right_border) / 2.0
+            # 2. Phân cụm vạch
+            white_pixels = np.where(scan_line == 255)[0]
+            clusters = []
+            if len(white_pixels) > 0:
+                current_cluster = [white_pixels[0]]
+                for i in range(1, len(white_pixels)):
+                    if white_pixels[i] - white_pixels[i-1] <= settings.MAX_GAP_BETWEEN_POINTS:
+                        current_cluster.append(white_pixels[i])
+                    else:
+                        clusters.append(int(np.mean(current_cluster)))
+                        current_cluster = [white_pixels[i]]
+                clusters.append(int(np.mean(current_cluster)))
+                
+            # 3. State-Aware Classification & Tính toán x
+            center_x = settings.IMAGE_CENTER_X
             
-            # Cập nhật chiều rộng đường EMA (alpha = 0.1)
-            current_width = right_border - left_border
-            self.estimated_lane_width = 0.9 * self.estimated_lane_width + 0.1 * current_width
-            
-        elif len(clusters) == 1:
-            line_pos = clusters[0]
-            # State-Aware
-            if dodge_direction == -1.0: # Đang né trái -> Vạch là biên trái
-                center_x = line_pos + (self.estimated_lane_width / 2.0)
-            elif dodge_direction == 1.0: # Đang né phải -> Vạch là biên phải
-                center_x = line_pos - (self.estimated_lane_width / 2.0)
-            else:
-                # Nếu không né, giả sử vạch nằm bên nào thì nó là biên đó
-                if line_pos < settings.IMAGE_CENTER_X:
+            if len(clusters) >= 2:
+                left_border = clusters[0]
+                right_border = clusters[-1]
+                center_x = (left_border + right_border) / 2.0
+                
+                if y == max(y_lines):
+                    current_width = right_border - left_border
+                    self.estimated_lane_width = 0.9 * self.estimated_lane_width + 0.1 * current_width
+                
+            elif len(clusters) == 1:
+                line_pos = clusters[0]
+                # State-Aware
+                if dodge_direction == -1.0: # Đang né trái -> Vạch là biên trái
                     center_x = line_pos + (self.estimated_lane_width / 2.0)
-                else:
+                elif dodge_direction == 1.0: # Đang né phải -> Vạch là biên phải
                     center_x = line_pos - (self.estimated_lane_width / 2.0)
-        else:
-            # Mất cả 2 biên, bẻ lái nhẹ ngược lại hướng mất
-            center_x = settings.IMAGE_CENTER_X + (20 * self.last_known_direction)
+                else:
+                    if line_pos < settings.IMAGE_CENTER_X:
+                        center_x = line_pos + (self.estimated_lane_width / 2.0)
+                    else:
+                        center_x = line_pos - (self.estimated_lane_width / 2.0)
+            else:
+                center_x = settings.IMAGE_CENTER_X + (20 * self.last_known_direction)
 
-        if center_x < settings.IMAGE_CENTER_X:
+            waypoints.append((int(center_x), y))
+            if y == 240:
+                center_x_bottom = center_x
+
+        if center_x_bottom < settings.IMAGE_CENTER_X:
             self.last_known_direction = -1.0
-        elif center_x > settings.IMAGE_CENTER_X:
+        elif center_x_bottom > settings.IMAGE_CENTER_X:
             self.last_known_direction = 1.0
 
-        return center_x
+        return center_x_bottom, waypoints
 
     def process(self, blackboard):
         latest_image = blackboard.get('latest_image')
         dodge_direction = blackboard.get('dodge_direction', 0.0)
-        center_x = self.process_frame(latest_image, dodge_direction)
+        center_x, waypoints = self.process_frame(latest_image, dodge_direction)
         blackboard.set('center_x', center_x)
+        blackboard.set('lane_waypoints', waypoints)

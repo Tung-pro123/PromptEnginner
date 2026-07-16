@@ -53,9 +53,10 @@ class Debugger:
             self.csv_writer.writerow(['timestamp', 'state', 'front_dist', 'closest_angle', 'closest_dist', 'current_offset_px', 'steering'])
 
             # Khởi tạo VideoWriter (ghi ảnh camera và Lidar)
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            cam_vid_path = os.path.join(session_dir, "camera_log.mp4")
-            lidar_vid_path = os.path.join(session_dir, "lidar_log.mp4")
+            # Dùng 'XVID' và đuôi '.avi' vì đây là codec ổn định nhất trên Windows/OpenCV mà không cần tải thêm thư viện ngoài (tránh lỗi openh264)
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            cam_vid_path = os.path.join(session_dir, "camera_log.avi")
+            lidar_vid_path = os.path.join(session_dir, "lidar_log.avi")
             
             # Kích thước cố định 300x300, tốc độ 20fps
             self.cam_writer = cv2.VideoWriter(cam_vid_path, fourcc, 20.0, (300, 300))
@@ -142,13 +143,28 @@ class Debugger:
         # Ghi log Video Camera
         latest_image = blackboard.get('latest_image')
         if latest_image is not None and self.cam_writer:
+            # Tạo bản sao để vẽ đồ hoạ mà không ảnh hưởng ảnh gốc
+            display_img = latest_image.copy()
+            
+            # Vẽ các điểm neo (waypoints) màu đỏ
+            waypoints = blackboard.get('lane_waypoints', [])
+            for pt in waypoints:
+                cv2.circle(display_img, pt, 5, (0, 0, 255), -1) 
+                
+            # Vẽ quỹ đạo dự đoán (predicted curve) màu xanh lá
+            predicted_curve = blackboard.get('predicted_curve', [])
+            if len(predicted_curve) >= 2:
+                pts = np.array(predicted_curve, np.int32)
+                pts = pts.reshape((-1, 1, 2))
+                cv2.polylines(display_img, [pts], False, (0, 255, 0), 2)
+
             # Đảm bảo ảnh đúng kích thước trước khi ghi
-            img_h, img_w = latest_image.shape[:2]
+            img_h, img_w = display_img.shape[:2]
             if img_h != 300 or img_w != 300:
-                resized_img = cv2.resize(latest_image, (300, 300))
+                resized_img = cv2.resize(display_img, (300, 300))
                 self.cam_writer.write(resized_img)
             else:
-                self.cam_writer.write(latest_image)
+                self.cam_writer.write(display_img)
                 
         # Ghi log Video Lidar
         latest_scan = blackboard.get('latest_scan')

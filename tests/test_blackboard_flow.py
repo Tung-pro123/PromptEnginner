@@ -38,12 +38,14 @@ class TestBlackboardFlow(unittest.TestCase):
         cv2.line(img, (200, 0), (200, 300), (255, 255, 255), 5)
         self.blackboard.set('latest_image', img)
         
-        # Chu kỳ chạy Blackboard (Tương tự trong vòng lặp ROS)
-        self.lidar.process(self.blackboard)
-        self.fsm.process(self.blackboard)
-        self.camera.process(self.blackboard)
-        self.controller.process(self.blackboard)
-        self.debugger.process(self.blackboard)
+        # Chu kỳ chạy Blackboard (Chạy 20 frames để sinh ra video dài 1 giây)
+        for _ in range(20):
+            self.lidar.process(self.blackboard)
+            self.fsm.process(self.blackboard)
+            self.camera.process(self.blackboard)
+            self.controller.process(self.blackboard)
+            self.debugger.process(self.blackboard)
+        
         self.debugger.close()
         
         # Kiểm tra kết quả

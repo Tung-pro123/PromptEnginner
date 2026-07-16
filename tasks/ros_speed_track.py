@@ -18,6 +18,7 @@ import math
 from src.config import settings
 from src.fsm.fsm_manager import FSMManager
 from src.control.pid_controller import PIDController
+from src.control.predictive_controller import PredictiveController
 from src.perception.camera.camera_processor import CameraProcessor
 from src.perception.lidar.lidar_processor import LidarProcessor
 from src.debug.debugger import Debugger
@@ -33,7 +34,15 @@ class ROSSpeedTrackNode:
         
         # Khởi tạo các module cốt lõi (Knowledge Sources)
         self.fsm = FSMManager()
-        self.controller = PIDController(self.blackboard)
+        
+        controller_type = getattr(settings, 'CONTROLLER_TYPE', 'pid')
+        if controller_type == 'predictive':
+            self.controller = PredictiveController(self.blackboard)
+            rospy.loginfo("Sử dụng PredictiveController.")
+        else:
+            self.controller = PIDController(self.blackboard)
+            rospy.loginfo("Sử dụng PIDController.")
+            
         self.camera = CameraProcessor(self.blackboard)
         self.lidar = LidarProcessor(self.blackboard)
         self.debugger = Debugger(debug_mode=True)

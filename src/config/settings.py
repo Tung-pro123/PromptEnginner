@@ -27,3 +27,6 @@ WATCHDOG_TIMEOUT = 3.5       # Giây. Thời gian tối đa né vật cản
 DODGE_OFFSET_PX = 70.0       # Pixel. Khoảng cách dịch vạch ảo khi né
 OFFSET_STEP = 5.0            # Pixel/frame. Độ mượt khi dịch vạch
 CLEAR_FRAMES_REQUIRED = 8    # Số frame liên tiếp cần để xác nhận an toàn sườn xe
+
+# Điều khiển
+CONTROLLER_TYPE = 'predictive'  # 'pid' hoặc 'predictive'
