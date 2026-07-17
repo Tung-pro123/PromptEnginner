@@ -48,13 +48,13 @@ class SpeedTrackController:
         # Obstacle FSM
         self.TRIGGER_DIST = 0.85
         self.SIDE_CLEAR_DIST = 0.45
-        self.DODGE_OFFSET_PX = 110
-        self.RAMP_STEP_PX = 12
+        self.DODGE_OFFSET_PX = 85      # Giảm từ 110 xuống 85 để không leo lên lề
+        self.RAMP_STEP_PX = 5          # Giảm từ 12 xuống 5 để tẻ lái mượt hơn, không gắt
         self.LIDAR_OFFSET_DEG = 180.0
         self.avoid_state = AvoidState.NORMAL
         self.target_offset = 0.0; self.current_offset = 0.0
         self.avoid_dir = 'right'
-        self.MIN_DODGE_TIME = 1.5
+        self.MIN_DODGE_TIME = 2.0      # Tăng thời gian né tối thiểu lên 2.0s
         self.avoid_state_time = rospy.get_time()
         # Checkpoint
         self.CP_WHITE_RATIO = 0.45
@@ -188,8 +188,8 @@ class SpeedTrackController:
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         _, thresh = cv2.threshold(blurred, self.GRAY_THRESH, 255, cv2.THRESH_BINARY)
 
-        y_near = int(self.H * 0.55)  # Nâng y_near lên khoảng 50%
-        y_far = int(self.H * 0.35)   # Nâng y_far lên cao hơn tương ứng
+        y_near = int(self.H * 0.65)  # Tăng 10%: detect gần xe hơn
+        y_far = int(self.H * 0.45)   # Tăng 10%: detect xa hơn tương ứng
 
         def find_borders(y):
             mid = self.W // 2
@@ -206,8 +206,9 @@ class SpeedTrackController:
         L_f, R_f, _ = find_borders(y_far)
 
         def get_robust_mid(L, R):
-            if L == 0 and R < self.W - 1: return R - 120
-            if R == self.W - 1 and L > 0: return L + 120
+            # Khi chỉ thấy 1 biên, ước lượng tâm đường, nhưng clamp để không bao giờ chỉ vào lề
+            if L == 0 and R < self.W - 1: return max(self.W // 4, R - 120)
+            if R == self.W - 1 and L > 0: return min(self.W * 3 // 4, L + 120)
             return (L + R) // 2
 
         robust_mid_n = get_robust_mid(L_n, R_n)
@@ -261,10 +262,16 @@ class SpeedTrackController:
         else:
             pass
 
-        # Vẽ đường trung tâm ảo (Virtual Center Line - Màu Xanh Biển)
-        cv2.line(dbg, (int(robust_mid_f), y_far), (int(robust_mid_n), y_near), (255, 150, 0), 2)
-        cv2.circle(dbg, (int(robust_mid_n), y_near), 4, (255, 150, 0), -1)
-        cv2.putText(dbg, "Virtual Line", (int(robust_mid_n) - 30, y_near + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 150, 0), 1)
+        # Chỉ vẽ Virtual Line khi KHÔNG tìm thấy center line (để tránh gây nhiễu trên video)
+        if not has_center:
+            cv2.line(dbg, (int(robust_mid_f), y_far), (int(robust_mid_n), y_near), (255, 150, 0), 2)
+            cv2.circle(dbg, (int(robust_mid_n), y_near), 4, (255, 150, 0), -1)
+            cv2.putText(dbg, "Virtual (fallback)", (int(robust_mid_n) - 40, y_near + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 150, 0), 1)
+
+        # Hiển thị mode đang dùng trên debug frame
+        mode_text = "MODE: Center Line" if has_center else "MODE: Virtual Line"
+        mode_color = (0, 255, 0) if has_center else (0, 165, 255)
+        cv2.putText(dbg, mode_text, (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, mode_color, 1)
 
         # Không vẽ Target ở đây nữa để tránh gây nhầm lẫn trên video log.
         # Target thật sự (sau khi cộng offset né) sẽ được vẽ ở hàm run()
@@ -389,16 +396,22 @@ class SpeedTrackController:
                 rospy.loginfo("Đã vượt vật cản hoàn toàn, quay lại lane")
 
         elif self.avoid_state == AvoidState.REENTERING:
+            # Reset offset ngay lập tức - lái trực tiếp bằng counter-steer trong main loop
             self.target_offset = 0.0
-            if abs(self.current_offset) < 2.0:
+            self.current_offset = 0.0
+            time_in_reenter = now - self.avoid_state_time
+            # Timeout: nếu sau 3.5s vẫn chưa thấy center line, ép về NORMAL
+            if time_in_reenter > 3.5:
                 self.avoid_state = AvoidState.NORMAL
                 self.avoid_state_time = now
-                rospy.loginfo("Về lane thành công")
+                rospy.loginfo("Hết thời gian trả lái, ép về NORMAL")
 
         # S-Curve ramp
         diff = self.target_offset - self.current_offset
         if abs(diff) > 0.1:
-            step = np.sign(diff) * self.RAMP_STEP_PX
+            # Lực né (tăng offset) thì nhanh, nhưng trả lái (offset về 0) thì chậm hơn nhiều để xe kịp di chuyển về
+            current_step = (self.RAMP_STEP_PX / 4.0) if self.target_offset == 0.0 else self.RAMP_STEP_PX
+            step = np.sign(diff) * current_step
             self.current_offset = self.target_offset if abs(step) > abs(diff) else self.current_offset + step
         else:
             self.current_offset = self.target_offset
@@ -541,34 +554,58 @@ class SpeedTrackController:
             # --- AVOID OBSTACLE ---
             elif self.state == TrackState.AVOID_OBSTACLE:
                 offset, front = self.update_obstacle_fsm()
-                target_x, L, R = self.W // 2, 0, self.W - 1
-                has_center = False
-                if self.latest_image is not None:
-                    target_x, L, R, has_center, debug_frame = self.detect_lane(self.latest_image)
-                    # FIX: Khi đang né, xe bẻ lái lớn nên có thể chỉ nhìn thấy 1 bên lề đường.
-                    # Khắc phục: Ước lượng tâm đường (target_x) dựa vào lề còn nhìn thấy.
-                    # Giả sử nửa độ rộng làn đường trên camera là khoảng 120px.
-                    if self.avoid_dir == 'right':
-                        # Né phải -> Lề phải (R) nằm rõ trong hình, lề trái dễ bị khuất.
-                        target_x = R - 120
-                    else:
-                        # Né trái -> Lề trái (L) nằm rõ trong hình.
-                        target_x = L + 120
 
-                safe_offset = self.clamp_offset_by_borders(offset, L, R)
-                final_target = target_x + safe_offset
-                steer = self.steer_to(final_target, self.AVOID_SPEED)
-                self.log_row(steer=steer, speed=self.AVOID_SPEED, front=front, offset=safe_offset)
-                if debug_frame is not None:
-                    self._draw_target(debug_frame, final_target)
+                if self.avoid_state == AvoidState.REENTERING:
+                    # === PHASE TRẢ LÁI: Bẻ lái ngược lại để về giữa đường ===
+                    # Không tin tưởng detect_lane khi xe đang lệch - lái ngược cố định
+                    counter_steer = -0.35 if self.avoid_dir == 'right' else 0.35
+                    self.racer.steer(counter_steer, self.RECOVER_SPEED)
+                    steer = counter_steer
+
+                    # Vẫn chạy detect_lane để vẽ debug + kiểm tra đã thấy center line chưa
+                    has_center = False
+                    if self.latest_image is not None:
+                        _, _, _, has_center, debug_frame = self.detect_lane(self.latest_image)
+
+                    self.log_row(steer=steer, speed=self.RECOVER_SPEED, front=front, offset=0, event='REENTERING')
+
+                    # Nếu camera thấy lại vạch giữa đứt khúc -> xe đã về làn thành công!
+                    if has_center:
+                        self.avoid_state = AvoidState.NORMAL
+                        self.avoid_state_time = rospy.get_time()
+                        rospy.loginfo("Tìm thấy center line, về lane thành công!")
+
+                else:
+                    # === PHASE NÉ: Dùng detect_lane + offset ===
+                    target_x, L, R = self.W // 2, 0, self.W - 1
+                    has_center = False
+                    if self.latest_image is not None:
+                        target_x, L, R, has_center, debug_frame = self.detect_lane(self.latest_image)
+                        # Dùng robust_mid có clamp an toàn
+                        def get_robust_mid_override(L, R):
+                            if L == 0 and R < self.W - 1: return max(self.W // 4, R - 120)
+                            if R == self.W - 1 and L > 0: return min(self.W * 3 // 4, L + 120)
+                            return (L + R) // 2
+                        target_x = get_robust_mid_override(L, R)
+
+                    safe_offset = offset
+                    final_target = target_x + safe_offset
+                    # CLAMP: Xe không bao giờ được đi ra ngoài 2 biên L và R
+                    final_target = max(L + 20, min(R - 20, final_target))
+                    steer = self.steer_to(final_target, self.AVOID_SPEED)
+                    self.log_row(steer=steer, speed=self.AVOID_SPEED, front=front, offset=safe_offset)
+                    if debug_frame is not None:
+                        self._draw_target(debug_frame, final_target)
 
                 if self.avoid_state == AvoidState.NORMAL:
                     self.log_row(event='OBSTACLE_CLEARED')
                     self.set_state(TrackState.KEEP_LANE)
-                elif self.time_in_state() > self.AVOID_TIMEOUT:
-                    self.avoid_state = AvoidState.NORMAL
-                    self.current_offset = 0.0; self.target_offset = 0.0
-                    self.set_state(TrackState.RECOVERING)
+                elif self.time_in_state() > self.AVOID_TIMEOUT and self.avoid_state == AvoidState.DODGING:
+                    self.avoid_state = AvoidState.REENTERING
+                    self.avoid_state_time = rospy.get_time()
+                    self.target_offset = 0.0
+                    self.current_offset = 0.0
+                    rospy.loginfo("Hết thời gian né, chuyển sang counter-steer về lane")
 
             # --- RECOVERING ---
             elif self.state == TrackState.RECOVERING:
@@ -614,13 +651,7 @@ class SpeedTrackController:
 
             rate.sleep()
 
-    def _draw_target(self, frame, target_x):
-        """Vẽ Target thực sự xe đang hướng tới sau khi tính toán offset."""
-        y_near = int(self.H * 0.55)
-        cv2.circle(frame, (int(target_x), y_near - 20), 8, (255, 0, 0), 2)
-        cv2.line(frame, (self.W//2, self.H), (int(target_x), y_near - 20), (255, 0, 0), 2)
-        cv2.putText(frame, "Target", (int(target_x) - 20, y_near - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
-
+        # --- CLEANUP (Chạy khi thoát vòng lặp while do bấm Ctrl+C) ---
         self.racer.stop()
         elapsed = time.time() - self._fps_start
         fps = self._frame_count / elapsed if elapsed > 0 else 0
@@ -630,6 +661,16 @@ class SpeedTrackController:
             self.video_writer.release()
             rospy.loginfo("Đã lưu và đóng file video.")
         rospy.loginfo("Kết thúc.")
+
+    def _draw_target(self, frame, target_x):
+        """Vẽ Target thực sự xe đang hướng tới sau khi tính toán offset."""
+        y_near = int(self.H * 0.55)
+        cv2.circle(frame, (int(target_x), y_near - 20), 8, (255, 0, 0), 2)
+        cv2.line(frame, (self.W//2, self.H), (int(target_x), y_near - 20), (255, 0, 0), 2)
+        cv2.putText(frame, "Target", (int(target_x) - 20, y_near - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+
+        # Cleanup code moved from here to the end of run()
+
 
 def main():
     rospy.init_node('speed_track_controller', anonymous=True)

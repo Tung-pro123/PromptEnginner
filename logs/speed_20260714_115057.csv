@@ -1,0 +1,3 @@
+timestamp,state,steer,speed,front_dist,offset,avoid_phase,obstacle_side,event
+1784004670.950,WAITING,0.000,0.00,0.00,0.0,CLEAR,none,RUN_START
+1784004671.399,WAITING,0.000,0.00,1.03,0.0,CLEAR,none,LINE_FOUND
