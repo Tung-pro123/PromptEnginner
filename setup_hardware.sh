@@ -176,20 +176,61 @@ echo -e "\n${GREEN}${BOLD}======================================================
 echo -e "${GREEN}${BOLD}      THIẾT LẬP PHẦN CỨNG HOÀN TẤT!                   ${NC}"
 echo -e "${GREEN}${BOLD}======================================================${NC}"
 
-# Hỏi người dùng có muốn chạy thử lidar luôn không
-echo -e "\n${BOLD}Bạn có muốn chạy thử roslaunch cho LiDAR ngay bây giờ không?${NC}"
-read -p "Chạy thử? (y/n): " RUN_TEST
+# Hỏi người dùng có muốn chạy thử phần cứng cảm biến không
+echo -e "\n${BOLD}Bạn có muốn chạy thử liên tục LiDAR (3 giây) và Camera (3 giây) không?${NC}"
+read -p "Chạy thử cảm biến? (y/n): " RUN_TEST
 
 if [[ "$RUN_TEST" =~ ^[Yy]$ ]]; then
     if [ -f "$CATKIN_WS_DIR/devel/setup.bash" ]; then
         source "$CATKIN_WS_DIR/devel/setup.bash"
-        echo -e "${BLUE}Đang chạy lệnh: roslaunch jetracer lidar.launch ...${NC}"
-        echo -e "${YELLOW}Nhấn Ctrl+C để tắt LiDAR và kết thúc.${NC}"
-        roslaunch jetracer lidar.launch
+        
+        # 1. Đảm bảo roscore chạy ngầm nếu chưa có
+        if ! pgrep -x "roscore" &>/dev/null && ! pgrep -x "rosmaster" &>/dev/null; then
+            echo -e "${YELLOW}Đang khởi động ROS Master (roscore) dưới nền...${NC}"
+            roscore &
+            ROSCORE_PID=$!
+            sleep 3
+        fi
+        
+        # 2. Khởi chạy thử LiDAR 3 giây
+        echo -e "\n${BLUE}--- [1/2] BẮT ĐẦU TEST LIDAR TRONG 3 GIÂY ---${NC}"
+        roslaunch jetracer lidar.launch &
+        LIDAR_PID=$!
+        
+        sleep 3
+        
+        echo -e "${RED}Đang dừng LiDAR...${NC}"
+        kill $LIDAR_PID 2>/dev/null
+        # Dọn dẹp tiến trình con của lidar
+        killall -9 ydlidar_node rplidarNode 2>/dev/null
+        sleep 1
+        
+        # 3. Khởi chạy thử Camera 3 giây
+        echo -e "\n${BLUE}--- [2/2] BẮT ĐẦU TEST CAMERA TRONG 3 GIÂY ---${NC}"
+        roslaunch jetracer csi_camera.launch &
+        CAMERA_PID=$!
+        
+        sleep 3
+        
+        echo -e "${RED}Đang dừng Camera...${NC}"
+        kill $CAMERA_PID 2>/dev/null
+        # Dọn dẹp tiến trình con của camera
+        killall -9 nvargus_daemon_client jetson_camera 2>/dev/null
+        sleep 1
+        
+        # Dọn dẹp roscore nếu chính script này bật lên
+        if [ -n "$ROSCORE_PID" ]; then
+            echo -e "${RED}Đang dừng ROS Master...${NC}"
+            kill $ROSCORE_PID 2>/dev/null
+            killall -9 roscore rosmaster 2>/dev/null
+        fi
+        
+        echo -e "${GREEN}${BOLD}>>> HOÀN TẤT THỬ NGHIỆM CẢM BIẾN! <<<${NC}"
     else
         echo -e "${RED}[ERROR] Chưa có file devel/setup.bash để nạp gói jetracer. Vui lòng kiểm tra lại catkin_make.${NC}"
     fi
 else
-    echo -e "Bạn có thể khởi động LiDAR thủ công sau bằng lệnh:"
-    echo -e "  ${BOLD}source ~/catkin_ws/devel/setup.bash && roslaunch jetracer lidar.launch${NC}"
+    echo -e "Bạn có thể khởi động các cảm biến thủ công sau bằng lệnh:"
+    echo -e "  - LiDAR:  ${BOLD}source ~/catkin_ws/devel/setup.bash && roslaunch jetracer lidar.launch${NC}"
+    echo -e "  - Camera: ${BOLD}source ~/catkin_ws/devel/setup.bash && roslaunch jetracer csi_camera.launch${NC}"
 fi
