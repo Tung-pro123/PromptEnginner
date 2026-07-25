@@ -1,6 +1,7 @@
 import numpy as np
 import sys
 import os
+import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from control.base_controller import BaseController
@@ -10,8 +11,60 @@ class PredictiveController(BaseController):
     def __init__(self, blackboard=None):
         self.blackboard = blackboard
         # Tái sử dụng hệ số P, vì đây thực chất là Proportional control trên điểm lookahead
-        self.kp = settings.PID_P 
+        self.kp = settings.PID_KP 
+        self.car = None
+        self._mock = False
         
+    def initialize(self):
+        """Khởi tạo phần cứng JetRacer hoặc chế độ Mock."""
+        try:
+            from jetracer.nvidia_racecar import NvidiaRacecar
+            self.car = NvidiaRacecar()
+            self.car.steering = 0.0
+            self.car.throttle = 0.0
+            print("[INFO] Khởi tạo JetRacer (NvidiaRacecar) thành công cho PredictiveController.")
+            return
+        except Exception as e:
+            print(f"[WARN] Không tìm thấy thư viện jetracer: {e}")
+
+        try:
+            from jetbot import Robot
+            self.car = Robot()
+            self._mock = False
+            print("[INFO] Khởi tạo JetBot Pro (fallback) thành công cho PredictiveController.")
+            return
+        except Exception as e:
+            print(f"[WARN] Không tìm thấy thư viện jetbot: {e}")
+
+        print("[WARN] Không tìm thấy phần cứng → Chạy ở chế độ MÔ PHỎNG (Mock).")
+        from unittest.mock import Mock
+        self.car = Mock()
+        self._mock = True
+
+    def move(self, speed, direction):
+        """Thực thi lệnh lái và ga xuống phần cứng."""
+        self._set_steering(direction)
+        self._set_throttle(speed)
+
+    def stop(self):
+        """Dừng xe khẩn cấp."""
+        self._set_throttle(0.0)
+        self._set_steering(0.0)
+
+    # --- Internal Helpers ---
+    def _set_throttle(self, value):
+        value = max(-settings.MAX_THROTTLE, min(settings.MAX_THROTTLE, value))
+        if hasattr(self.car, 'throttle'):
+            self.car.throttle = value
+        elif hasattr(self.car, 'set_motors'):
+            self.car.set_motors(value, value)
+
+    def _set_steering(self, value):
+        value = max(settings.MIN_STEERING, min(settings.MAX_STEERING, value))
+        value += settings.STEERING_OFFSET
+        if hasattr(self.car, 'steering'):
+            self.car.steering = value
+
     def process(self, blackboard):
         waypoints = blackboard.get('lane_waypoints', [])
         
@@ -20,6 +73,10 @@ class PredictiveController(BaseController):
             center_x = blackboard.get('center_x', settings.IMAGE_CENTER_X)
             offset_px = settings.IMAGE_CENTER_X - center_x
             steering = self.kp * offset_px
+            # Giới hạn góc lái
+            steering = max(min(steering, 1.0), -1.0)
+            
+            self.move(settings.BASE_SPEED, steering)
             blackboard.set('steering', steering)
             blackboard.set('predicted_curve', [])
             return
@@ -51,6 +108,7 @@ class PredictiveController(BaseController):
                 x_val = int(np.polyval(poly_coeff, y_val))
                 curve_points.append((x_val, y_val))
                 
+            self.move(settings.BASE_SPEED, steering)
             blackboard.set('steering', steering)
             blackboard.set('predicted_curve', curve_points)
             
@@ -59,5 +117,10 @@ class PredictiveController(BaseController):
             # Fallback
             center_x = blackboard.get('center_x', settings.IMAGE_CENTER_X)
             offset_px = settings.IMAGE_CENTER_X - center_x
-            blackboard.set('steering', self.kp * offset_px)
+            steering = self.kp * offset_px
+            steering = max(min(steering, 1.0), -1.0)
+            
+            self.move(settings.BASE_SPEED, steering)
+            blackboard.set('steering', steering)
             blackboard.set('predicted_curve', [])
+

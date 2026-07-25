@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import sys
+sys.path.append("../")
+
 import os
 
 # Sắp xếp lại sys.path để ưu tiên thư viện Python 3, tránh xung đột với ROS Python 2.7
