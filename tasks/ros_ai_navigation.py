@@ -112,11 +112,11 @@ class ROSAINavigationNode:
     # Callbacks: Thêm log debug để kiểm tra có nhận data không
     # ----------------------------------------------------------
     def _camera_callback(self, msg):
-        rospy.loginfo_throttle(1.0, "[CB] Camera: ĐÃ NHẬN frame ảnh từ ROS!")
+        rospy.logdebug("[CB] Camera: ĐÃ NHẬN frame ảnh từ ROS!")
         self.camera.ros_callback(msg)
 
     def _lidar_callback(self, msg):
-        rospy.loginfo_throttle(1.0, "[CB] Lidar:  ĐÃ NHẬN dữ liệu quét Laser từ ROS!")
+        rospy.logdebug("[CB] Lidar:  ĐÃ NHẬN dữ liệu quét Laser từ ROS!")
         self.lidar.ros_callback(msg)
 
     # ----------------------------------------------------------
@@ -146,7 +146,7 @@ class ROSAINavigationNode:
     # ----------------------------------------------------------
     def run(self):
         """Vòng lặp điều khiển chính chạy ở 20Hz."""
-        rospy.loginfo("[Run] Bắt đầu vòng lặp điều khiển 20Hz...")
+        rospy.logdebug("[Run] Bắt đầu vòng lặp điều khiển 20Hz...")
         rate = rospy.Rate(20)
 
         try:
@@ -188,14 +188,14 @@ class ROSAINavigationNode:
 
     def stop(self):
         """Dừng an toàn tất cả phần cứng khi thoát."""
-        rospy.loginfo("[Stop] --- BẮT ĐẦU DỪNG AN TOÀN ---")
+        rospy.logdebug("[Stop] --- BẮT ĐẦU DỪNG AN TOÀN ---")
         if hasattr(self, 'controller') and self.controller:
-            rospy.loginfo("[Stop] Xả ga, trả lái về 0...")
+            rospy.logdebug("[Stop] Xả ga, trả lái về 0...")
             self.controller.stop()
         if hasattr(self, 'debugger') and self.debugger:
-            rospy.loginfo("[Stop] Đóng cửa sổ debug...")
+            rospy.logdebug("[Stop] Đóng cửa sổ debug...")
             self.debugger.close()
-        rospy.loginfo("[Stop] --- ĐÃ DỪNG AN TOÀN ---")
+        rospy.logdebug("[Stop] --- ĐÃ DỪNG AN TOÀN ---")
 
 
 # ============================================================
