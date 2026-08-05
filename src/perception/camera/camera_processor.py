@@ -14,6 +14,10 @@ class CameraProcessor(BaseCameraProcessor):
         self.estimated_lane_width = 100.0 # Giá trị khởi tạo
         self.last_known_direction = 0.0
         self.latest_image = None
+        
+        # EMA Filter cho waypoints
+        self.ema_waypoints = {}
+        self.ema_alpha = 0.6  # Hệ số làm mượt (0-1). 1.0 = không làm mượt, 0.0 = giữ nguyên quá khứ.
 
     def initialize(self):
         # Mở luồng GStreamer cho CSI camera hoặc USB camera
@@ -68,7 +72,17 @@ class CameraProcessor(BaseCameraProcessor):
         # 1. Tiền xử lý
         resized = cv2.resize(frame, (settings.IMAGE_WIDTH, settings.IMAGE_HEIGHT))
         gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, settings.THRESHOLD_VALUE, 255, cv2.THRESH_BINARY)
+        
+        # --- BỔ SUNG: Lọc và tăng cường chất lượng ảnh ---
+        # 1.1 Lọc nhiễu bằng Gaussian Blur để giảm nhiễu hạt
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # 1.2 Cân bằng histogram cục bộ (CLAHE) để chống chói/thiếu sáng
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(blurred)
+        
+        # 1.3 Nhị phân hóa (Thresholding) trên ảnh đã tăng cường
+        _, thresh = cv2.threshold(enhanced, settings.THRESHOLD_VALUE, 255, cv2.THRESH_BINARY)
         
         y_lines = [160, 200, 240, 280]
         waypoints = []
@@ -117,9 +131,17 @@ class CameraProcessor(BaseCameraProcessor):
             else:
                 center_x = settings.IMAGE_CENTER_X + (20 * self.last_known_direction)
 
-            waypoints.append((int(center_x), y))
+            # --- BỔ SUNG: Làm mượt waypoint bằng EMA (Exponential Moving Average) ---
+            if y not in self.ema_waypoints:
+                self.ema_waypoints[y] = center_x
+            else:
+                self.ema_waypoints[y] = self.ema_alpha * center_x + (1.0 - self.ema_alpha) * self.ema_waypoints[y]
+            
+            smoothed_center_x = self.ema_waypoints[y]
+
+            waypoints.append((int(smoothed_center_x), y))
             if y == 240:
-                center_x_bottom = center_x
+                center_x_bottom = smoothed_center_x
 
         if center_x_bottom < settings.IMAGE_CENTER_X:
             self.last_known_direction = -1.0
