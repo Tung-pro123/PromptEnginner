@@ -5,7 +5,7 @@ Module này chứa logic AI để đưa ra quyết định hành vi phức tạp
 bao gồm: rẽ trái, rẽ phải, đi thẳng, dừng, đợi chờ tín hiệu, ...
 
 Thiết kế theo kiến trúc Rule-Based + Sensor Fusion:
-- Input: Dữ liệu từ Blackboard (Lidar, Camera, FSM State)
+- Input: Dữ liệu từ Blackboard (Lidar, Camera, FSM State, Traffic Light/Sign)
 - Output: Lệnh hành vi (AI_ACTION) ghi lại vào Blackboard
 
 Hành vi (Action) được định nghĩa rõ ràng để controller cấp dưới thực thi.
@@ -26,7 +26,9 @@ class Action:
     FOLLOW_LANE    = "FOLLOW_LANE"      # Bám vạch, đi thẳng theo làn
     TURN_LEFT      = "TURN_LEFT"        # Rẽ trái (tại ngã tư / giao lộ)
     TURN_RIGHT     = "TURN_RIGHT"       # Rẽ phải (tại ngã tư / giao lộ)
+    GO_STRAIGHT    = "GO_STRAIGHT"      # Đi thẳng qua giao lộ (theo biển)
     WAIT           = "WAIT"             # Đợi (ví dụ đèn đỏ, chướng ngại vật cứng)
+    WAIT_RED_LIGHT = "WAIT_RED_LIGHT"   # Dừng chờ đèn đỏ (riêng biệt)
     EMERGENCY_STOP = "EMERGENCY_STOP"   # Dừng khẩn cấp (vật cản cực gần)
     REVERSE        = "REVERSE"          # Lùi xe (khi bị kẹt)
     DODGE_LEFT     = "DODGE_LEFT"       # Né tránh sang trái
@@ -71,10 +73,11 @@ class AIDecisionEngine:
 
     Nguyên lý hoạt động (Priority Chain):
       1. EMERGENCY_STOP  - Vật cản cực gần -> dừng ngay
-      2. WAIT            - Vật cản gần, không thể đi -> đứng chờ
-      3. TURN (rẽ)       - Phát hiện ngã tư/giao lộ
-      4. DODGE           - Né tránh vật cản động
-      5. FOLLOW_LANE     - Bám làn thông thường (mặc định)
+      2. WAIT_RED_LIGHT  - Đèn đỏ -> dừng chờ
+      3. WAIT            - Vật cản gần, không thể đi -> đứng chờ
+      4. TURN (rẽ)       - Phát hiện ngã tư/giao lộ hoặc biển chỉ dẫn
+      5. DODGE           - Né tránh vật cản động
+      6. FOLLOW_LANE     - Bám làn thông thường (mặc định)
     """
 
     def __init__(self):
@@ -164,6 +167,8 @@ class AIDecisionEngine:
         lane_waypoints  = blackboard.get('lane_waypoints', [])
         center_x        = blackboard.get('center_x', 150.0)
         steering_pid    = blackboard.get('steering', 0.0)  # Kết quả từ controller PID/Predictive
+        traffic_light   = blackboard.get('traffic_light', 'NONE')
+        traffic_sign    = blackboard.get('traffic_sign', 'NONE')
 
         waypoint_count = len(lane_waypoints)
 
@@ -181,7 +186,23 @@ class AIDecisionEngine:
             self._set_action(Action.FOLLOW_LANE)
 
         # ===================================================
-        # PRIORITY 2: WAIT (Đứng chờ vật cản không có lối thoát)
+        # PRIORITY 2: ĐÈN ĐỎ -> DẪNg CHỜN
+        # ===================================================
+        if traffic_light == 'RED':
+            if self.current_action != Action.WAIT_RED_LIGHT:
+                self._set_action(Action.WAIT_RED_LIGHT)
+            import rospy
+            rospy.logdebug("[AI] ĐÈN ĐỎ! Dừng xe chờ...")
+            return Action.WAIT_RED_LIGHT, 0.0, 0.0
+
+        # Thoát khỏi WAIT_RED_LIGHT khi đèn chuyển xanh
+        if self.current_action == Action.WAIT_RED_LIGHT and traffic_light != 'RED':
+            import rospy
+            rospy.logdebug("[AI] ĐÈN XANH! Tiếp tục hành trình.")
+            self._set_action(Action.FOLLOW_LANE)
+
+        # ===================================================
+        # PRIORITY 3: WAIT (Vật cản gần, không có lối thoát)
         # ===================================================
         if front_dist < AIConfig.WAIT_DIST and not side_clear:
             if self.current_action != Action.WAIT:
@@ -196,7 +217,7 @@ class AIDecisionEngine:
             return Action.WAIT, 0.0, 0.0
 
         # ===================================================
-        # PRIORITY 2b: REVERSE (Lùi khi bị kẹt sau khi WAIT)
+        # PRIORITY 3b: REVERSE (Lùi khi bị kẹt sau khi WAIT)
         # ===================================================
         if self.current_action == Action.REVERSE:
             if time.time() - self.reverse_start_time < 1.5:
@@ -207,7 +228,7 @@ class AIDecisionEngine:
                 self._set_action(Action.FOLLOW_LANE)
 
         # ===================================================
-        # PRIORITY 3: DODGE (Né tránh vật cản có lối thoát)
+        # PRIORITY 4: DODGE (Né tránh vật cản có lối thoát)
         # ===================================================
         if AIConfig.WAIT_DIST <= front_dist < AIConfig.CAUTION_DIST and side_clear:
             if closest_angle < 0:  # Vật cản bên phải -> né trái
@@ -226,13 +247,33 @@ class AIDecisionEngine:
                 return self.current_action, dodge_steer, AIConfig.SPEED_CAUTION
 
         # ===================================================
-        # PRIORITY 4: TURN (Rẽ tại ngã tư - phát hiện mất vạch)
+        # PRIORITY 5: BIỂN BÁO CHỈ DẪN (Override hướng rẽ)
+        # ===================================================
+        # Biển báo có độ ưu tiên cao hơn tự suy luận ngã tư
+        if traffic_sign == 'LEFT' and self.current_action not in (Action.TURN_LEFT,):
+            self.pending_turn = 'left'
+        elif traffic_sign == 'RIGHT' and self.current_action not in (Action.TURN_RIGHT,):
+            self.pending_turn = 'right'
+        elif traffic_sign == 'STRAIGHT':
+            self.pending_turn = 'straight'
+
+        # ===================================================
+        # PRIORITY 6: TURN (Rẽ tại ngã tư - phát hiện mất vạch)
         # ===================================================
         if self._detect_intersection(waypoint_count, front_dist):
-            if self.current_action not in (Action.TURN_LEFT, Action.TURN_RIGHT):
-                turn_action = self._decide_turn_direction()
-                self._set_action(turn_action)
+            if self.current_action not in (Action.TURN_LEFT, Action.TURN_RIGHT, Action.GO_STRAIGHT):
+                # Ʈu tiên biển báo nếu có, không thì dùng turn_priority mặc định
+                if self.pending_turn == 'left':
+                    self._set_action(Action.TURN_LEFT)
+                elif self.pending_turn == 'right':
+                    self._set_action(Action.TURN_RIGHT)
+                elif self.pending_turn == 'straight':
+                    self._set_action(Action.GO_STRAIGHT)
+                else:
+                    turn_action = self._decide_turn_direction()
+                    self._set_action(turn_action)
                 self._intersection_frame_count = 0  # Reset bộ đếm
+                self.pending_turn = None  # Xóa biển báo sau khi đã dùng
 
         if self.current_action == Action.TURN_LEFT:
             if self._action_elapsed() < AIConfig.TURN_HOLD_TIME:
@@ -247,6 +288,14 @@ class AIDecisionEngine:
                 import rospy
                 rospy.logdebug(f"[AI] TURN_RIGHT | Con {AIConfig.TURN_HOLD_TIME - self._action_elapsed():.1f}s")
                 return Action.TURN_RIGHT, AIConfig.TURN_RIGHT_STEER, AIConfig.TURN_THROTTLE
+            else:
+                self._set_action(Action.FOLLOW_LANE)
+
+        if self.current_action == Action.GO_STRAIGHT:
+            if self._action_elapsed() < AIConfig.TURN_HOLD_TIME:
+                import rospy
+                rospy.logdebug(f"[AI] GO_STRAIGHT (theo biển) | Con {AIConfig.TURN_HOLD_TIME - self._action_elapsed():.1f}s")
+                return Action.GO_STRAIGHT, 0.0, AIConfig.TURN_THROTTLE
             else:
                 self._set_action(Action.FOLLOW_LANE)
 

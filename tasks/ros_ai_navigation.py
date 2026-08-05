@@ -46,6 +46,7 @@ from src.perception.lidar.lidar_processor import LidarProcessor
 from src.debug.debugger import Debugger
 from src.core.blackboard import Blackboard
 from src.ai.ai_decision_engine import AIDecisionEngine, Action
+from src.perception.camera.traffic_detector import TrafficDetector
 
 
 class ROSAINavigationNode:
@@ -92,6 +93,13 @@ class ROSAINavigationNode:
             self.ai.set_turn_priority(turn_priority)
             rospy.loginfo(f"[Init]    Turn Priority: {turn_priority}")
 
+        # --- Bộ nhận diện biển báo và đèn giao thông ---
+        rospy.loginfo("[Init] 5b. Khởi tạo Traffic Detector...")
+        self.traffic_detector = TrafficDetector(
+            image_width=settings.IMAGE_WIDTH,
+            image_height=settings.IMAGE_HEIGHT
+        )
+
         # --- Khởi tạo phần cứng ---
         rospy.loginfo("[Init] 6. Gọi initialize() trên phần cứng...")
         self.controller.initialize()
@@ -127,12 +135,12 @@ class ROSAINavigationNode:
         """Thực thi lệnh điều khiển từ AI xuống phần cứng."""
         if ai_action == Action.EMERGENCY_STOP:
             self.controller.stop()
-        elif ai_action == Action.WAIT:
+        elif ai_action in (Action.WAIT, Action.WAIT_RED_LIGHT):
             self.controller.stop()
         elif ai_action in (
             Action.TURN_LEFT, Action.TURN_RIGHT,
             Action.DODGE_LEFT, Action.DODGE_RIGHT,
-            Action.REVERSE
+            Action.REVERSE, Action.GO_STRAIGHT
         ):
             # AI đang điều khiển trực tiếp (override controller)
             self.controller.move(ai_throttle, ai_steer)
@@ -166,6 +174,7 @@ class ROSAINavigationNode:
                 self.lidar.process(self.blackboard)
                 self.fsm.process(self.blackboard)
                 self.camera.process(self.blackboard)
+                self.traffic_detector.process(self.blackboard)
                 self.controller.process(self.blackboard)
                 self.ai.process(self.blackboard)
 

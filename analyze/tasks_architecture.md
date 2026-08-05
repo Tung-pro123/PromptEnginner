@@ -64,7 +64,7 @@ flowchart LR
 
 ## 2. Task: AI Navigation (`ros_ai_navigation.py`)
 
-Đây là hệ thống có "Não" cấp cao hơn. Thay vì chỉ phản xạ chạy theo vạch, nó có khả năng đưa ra các quyết định phức tạp như: rẽ ở ngã tư, lùi xe khi bị kẹt, hoặc dừng khẩn cấp.
+Đây là hệ thống có "Bộ Não" AI cấp cao. Ngoài việc phản xạ chạy theo vạch, nó có khả năng đưa ra các quyết định phức tạp như: rẽ ở ngã tư theo chỉ dẫn của biển báo, dừng lại khi gặp đèn đỏ, lùi xe khi bị kẹt, hoặc dừng khẩn cấp.
 
 ### Sơ đồ Luồng Dữ Liệu (Pipeline)
 ```mermaid
@@ -84,12 +84,13 @@ flowchart LR
     subgraph Core["Core Processing System"]
         direction TB
         Perception["👁️ Perception<br>(Camera & Lidar)"]:::core
+        Traffic["🚦 Traffic Detector<br>(Nhận diện Biển báo & Đèn)"]:::core
         FSM["⚙️ FSM Manager"]:::core
         CTRL["🎛️ Controller<br>(PID/Predictive)"]:::core
     end
 
     subgraph Brain["High-Level AI Brain"]
-        AI{"🧠 AIDecisionEngine<br>Quyết định rẽ<br>Xử lý kẹt xe<br>Dừng khẩn cấp"}:::ai
+        AI{"🧠 AIDecisionEngine<br>Tuân thủ đèn giao thông<br>Rẽ theo biển báo<br>Xử lý kẹt xe"}:::ai
     end
 
     EXEC["⚡ _execute_command"]:::core
@@ -100,6 +101,9 @@ flowchart LR
     Cam --> Perception
     Perception -->|"Cập nhật State"| BB
     
+    Cam --> Traffic
+    Traffic -->|"Đèn đỏ/xanh, Biển báo"| BB
+    
     BB -.->|"Đọc dữ liệu"| FSM
     FSM -.->|"Ghi DODGE/SAFE"| BB
     
@@ -107,7 +111,7 @@ flowchart LR
     CTRL -.->|"Đề xuất Góc lái"| BB
     
     BB ===>|"Dữ liệu toàn cảnh"| AI
-    AI ===>|"OVERRIDE (Rẽ, Dừng, Lùi)"| BB
+    AI ===>|"OVERRIDE (Rẽ, Dừng đèn đỏ, Lùi)"| BB
     
     BB -->|"Lấy Lệnh Cuối Cùng"| EXEC
     EXEC -->|"Điều khiển động cơ"| Motor
@@ -115,9 +119,12 @@ flowchart LR
 
 **Cách hoạt động (20Hz):**
 1. Hệ thống Perception và FSM và Controller chạy tương tự như `Speed Track`.
-2. **Khác biệt cốt lõi:** Lệnh của Controller KHÔNG truyền trực tiếp xuống phần cứng.
-3. Controller chỉ đóng vai trò "Đề xuất góc lái".
-4. Khối `AIDecisionEngine` sẽ đánh giá toàn bộ bức tranh. 
-   - Nếu điều kiện bình thường: Nó cho phép lệnh của Controller đi qua (FOLLOW_LANE).
-   - Nếu gặp ngã tư / ngõ cụt: Nó sẽ ghi đè (override), tự tính toán góc lái và ga để bắt xe Rẽ trái/phải, Lùi, hoặc Đứng chờ.
+2. Bổ sung thêm khối **Traffic Detector** phân tích ảnh Camera độc lập, tìm kiếm Đèn Giao Thông và Biển Báo rồi ghi kết quả vào Blackboard.
+3. Controller chỉ đóng vai trò "Đề xuất góc lái". Lệnh này KHÔNG truyền trực tiếp xuống phần cứng.
+4. Khối **`AIDecisionEngine`** sẽ đánh giá toàn bộ bức tranh theo thứ tự ưu tiên (Priority Chain):
+   - **Mức 1 (Khẩn cấp):** Dừng ngay lập tức nếu vật cản quá gần.
+   - **Mức 2 (Đèn giao thông):** Nếu nhận thấy `ĐÈN ĐỎ`, ép dừng xe (`WAIT_RED_LIGHT`).
+   - **Mức 3 (Vật cản):** Kẹt cứng thì đứng chờ, đợi lâu quá thì lùi xe. Né tránh nếu có chỗ trống.
+   - **Mức 4 (Ngã tư & Biển báo):** Nếu thấy ngã tư, AI sẽ kiểm tra xem trước đó có nhận diện được biển báo chỉ dẫn không. Nếu có biển báo Rẽ Trái/Phải/Thẳng, AI sẽ ép xe đi theo hướng đó.
+   - **Mức 5 (Mặc định):** Cho phép lệnh của Controller đi qua để bám làn bình thường (`FOLLOW_LANE`).
 5. Hàm `_execute_command` nhận lệnh cuối cùng từ AI và truyền xuống motor.
