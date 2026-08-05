@@ -14,6 +14,11 @@ Output ghi vào Blackboard:
 
 import cv2
 import numpy as np
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import settings
 
 
 class TrafficSign:
@@ -42,37 +47,32 @@ class TrafficDetector:
       4. Tìm contour lớn nhất -> phân loại hình dạng.
     """
 
-    def __init__(self, image_width=300, image_height=300):
-        self.width = image_width
-        self.height = image_height
+    def __init__(self, image_width=None, image_height=None):
+        self.width = image_width or settings.IMAGE_WIDTH
+        self.height = image_height or settings.IMAGE_HEIGHT
 
-        # Vùng ROI: chỉ quét nửa trên bức ảnh (biển báo và đèn ở phía xa/cao)
+        # Vùng ROI: chỉ quét nửa trên bức ảnh
         self.roi_y_start = 0
-        self.roi_y_end = int(image_height * 0.45)
+        self.roi_y_end = int(self.height * settings.TRAFFIC_ROI_TOP_RATIO)
 
-        # Ngưỡng diện tích tối thiểu (pixel^2) để coi là biển/đèn thật (lọc nhiễu)
-        self.min_area_light = 80      # Đèn giao thông nhỏ hơn biển
-        self.min_area_sign = 150      # Biển báo lớn hơn
+        # Ngưỡng diện tích tối thiểu (pixel^2)
+        self.min_area_light = settings.TRAFFIC_MIN_AREA_LIGHT
+        self.min_area_sign  = settings.TRAFFIC_MIN_AREA_SIGN
 
-        # === DẢI MÀU HSV ===
-        # Đèn ĐỎ (2 dải vì Đỏ nằm ở 2 đầu vòng HSV: 0-10 và 160-180)
-        self.red_lower1 = np.array([0, 120, 100])
-        self.red_upper1 = np.array([10, 255, 255])
-        self.red_lower2 = np.array([160, 120, 100])
-        self.red_upper2 = np.array([180, 255, 255])
+        # === DẢI MÀU HSV (từ settings) ===
+        self.red_lower1   = np.array(settings.TRAFFIC_RED_HSV_LOWER1)
+        self.red_upper1   = np.array(settings.TRAFFIC_RED_HSV_UPPER1)
+        self.red_lower2   = np.array(settings.TRAFFIC_RED_HSV_LOWER2)
+        self.red_upper2   = np.array(settings.TRAFFIC_RED_HSV_UPPER2)
+        self.green_lower  = np.array(settings.TRAFFIC_GREEN_HSV_LOWER)
+        self.green_upper  = np.array(settings.TRAFFIC_GREEN_HSV_UPPER)
+        self.blue_lower   = np.array(settings.TRAFFIC_BLUE_HSV_LOWER)
+        self.blue_upper   = np.array(settings.TRAFFIC_BLUE_HSV_UPPER)
 
-        # Đèn XANH LÁ
-        self.green_lower = np.array([40, 80, 80])
-        self.green_upper = np.array([85, 255, 255])
-
-        # Biển XANH DƯƠNG (biển chỉ dẫn đường đi thường có nền xanh dương)
-        self.blue_lower = np.array([100, 100, 80])
-        self.blue_upper = np.array([130, 255, 255])
-
-        # Bộ đệm ổn định kết quả (tránh nhấp nháy)
+        # Bộ đệm ổn định kết quả (Voting)
         self._light_history = []
-        self._sign_history = []
-        self._history_len = 5  # Lấy đa số 5 frame gần nhất
+        self._sign_history  = []
+        self._history_len   = settings.TRAFFIC_HISTORY_LEN
 
     # ----------------------------------------------------------
     # API chính: Xử lý 1 frame ảnh

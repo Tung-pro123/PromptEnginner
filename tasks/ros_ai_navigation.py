@@ -133,19 +133,14 @@ class ROSAINavigationNode:
     # ----------------------------------------------------------
     def _execute_command(self, ai_action, ai_steer, ai_throttle):
         """Thực thi lệnh điều khiển từ AI xuống phần cứng."""
-        if ai_action == Action.EMERGENCY_STOP:
+        if ai_action == Action.WAIT_RED_LIGHT:
+            # Đèn đỏ -> dừng hẳn
             self.controller.stop()
-        elif ai_action in (Action.WAIT, Action.WAIT_RED_LIGHT):
-            self.controller.stop()
-        elif ai_action in (
-            Action.TURN_LEFT, Action.TURN_RIGHT,
-            Action.DODGE_LEFT, Action.DODGE_RIGHT,
-            Action.REVERSE, Action.GO_STRAIGHT
-        ):
-            # AI đang điều khiển trực tiếp (override controller)
+        elif ai_action in (Action.TURN_LEFT, Action.TURN_RIGHT, Action.GO_STRAIGHT):
+            # AI điều khiển trực tiếp (override controller) khi rẽ/đi thẳng qua ngã tư
             self.controller.move(ai_throttle, ai_steer)
         else:
-            # FOLLOW_LANE: dùng góc lái từ Controller, tốc độ từ AI
+            # FOLLOW_LANE: dùng góc lái từ Controller PID/Predictive, tốc độ từ AI
             steer_from_controller = self.blackboard.get('steering', 0.0)
             self.controller.move(ai_throttle, steer_from_controller)
 
