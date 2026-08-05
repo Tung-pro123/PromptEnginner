@@ -1,0 +1,40 @@
+map:
+  start_node: "N_2_0"
+  finish_node: "N_0_0"
+  nodes:
+    N_2_0:
+      x: 2.0
+      y: 0.0
+      connections: ["N_2_1"]
+    N_2_1:
+      x: 2.0
+      y: 1.0
+      connections: ["N_2_2", "N_1_1", "N_2_0"]
+    N_2_2:
+      x: 2.0
+      y: 2.0
+      connections: ["N_1_2", "N_2_1"]
+    N_1_2:
+      x: 1.0
+      y: 2.0
+      connections: ["N_0_2", "N_1_1", "N_2_2"]
+    N_0_2:
+      x: 0.0
+      y: 2.0
+      connections: ["N_0_1", "N_1_2"]
+    N_0_1:
+      x: 0.0
+      y: 1.0
+      connections: ["N_0_0", "N_1_1", "N_0_2"]
+    N_0_0:
+      x: 0.0
+      y: 0.0
+      connections: ["N_1_0", "N_0_1"]
+    N_1_0:
+      x: 1.0
+      y: 0.0
+      connections: ["N_2_0", "N_1_1", "N_0_0"]
+    N_1_1:
+      x: 1.0
+      y: 1.0
+      connections: ["N_1_2", "N_2_1", "N_1_0", "N_0_1"]

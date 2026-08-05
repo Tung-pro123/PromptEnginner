@@ -1,0 +1,47 @@
+<launch>
+  <!-- Launch configurations -->
+  <arg name="use_bridge" default="false" doc="Set to true if using the ZeroMQ Python 2-3 bridge fallback"/>
+  <arg name="map_config" default="d:/AI_Project/racing_promax/catkin_ws/src/jetracer_smartcity/config/intersection_map.yaml"/>
+  <arg name="camera_config" default="d:/AI_Project/racing_promax/catkin_ws/src/jetracer_smartcity/config/camera_config.yaml"/>
+  <arg name="model_config" default="d:/AI_Project/racing_promax/catkin_ws/src/jetracer_smartcity/config/model_config.yaml"/>
+
+  <!-- ==================== PERCEPTION LAYER ==================== -->
+  <!-- Case A: Native Python 3 ROS node (uses launch-prefix to enforce python3) -->
+  <node unless="$(arg use_bridge)" name="ai_bridge_node" pkg="jetracer_smartcity" type="ai_bridge_node.py" output="screen" launch-prefix="python3">
+    <param name="model_config_path" value="$(arg model_config)"/>
+  </node>
+
+  <!-- Case B: Python 2 ZeroMQ relay bridge -->
+  <node if="$(arg use_bridge)" name="zmq_bridge" pkg="jetracer_py3_bridge" type="zmq_bridge.py" output="screen">
+    <param name="pub_port" value="5555"/>
+    <param name="sub_port" value="5556"/>
+  </node>
+
+  <!-- Lane follower node for bám làn -->
+  <node name="lane_follower" pkg="jetracer_smartcity" type="lane_follower.py" output="screen">
+    <param name="kp" value="0.005"/>
+    <param name="kd" value="0.002"/>
+    <param name="ki" value="0.0"/>
+  </node>
+
+  <!-- ==================== DECISION & CONTROL LAYER ==================== -->
+  <!-- Intersection State Machine node -->
+  <node name="intersection_state_machine" pkg="jetracer_smartcity" type="intersection_state_machine.py" output="screen">
+    <param name="map_config_path" value="$(arg map_config)"/>
+    <param name="min_detection_conf" value="0.45"/>
+    <param name="approach_box_size" value="40"/>
+    <param name="turn_duration" value="1.8"/>
+  </node>
+
+  <!-- Vehicle Controller node -->
+  <node name="control_node" pkg="jetracer_smartcity" type="control_node.py" output="screen">
+    <param name="cruise_throttle" value="0.15"/>
+    <param name="turn_throttle" value="0.11"/>
+    <param name="max_steer_left" value="-0.8"/>
+    <param name="max_steer_right" value="0.8"/>
+    <param name="straight_duration" value="1.0"/>
+  </node>
+
+  <!-- NOTE: Ensure you launch the Waveshare camera and motor drivers in parallel.
+       Usually via: roslaunch jetracer jetracer.launch -->
+</launch>

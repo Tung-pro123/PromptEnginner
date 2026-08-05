@@ -1,0 +1,15 @@
+model:
+  engine_path: "/home/jetson/catkin_ws/src/jetracer_smartcity/models/yolov5n_smartcity.engine"
+  input_size: [320, 320]
+  conf_threshold: 0.35
+  nms_threshold: 0.45
+  classes:
+    0: "red_light"
+    1: "green_light"
+    2: "turn_left_sign"
+    3: "turn_right_sign"
+    4: "go_straight_sign"
+    5: "no_left_sign"
+    6: "no_right_sign"
+    7: "no_straight_sign"
+    8: "obstacle"

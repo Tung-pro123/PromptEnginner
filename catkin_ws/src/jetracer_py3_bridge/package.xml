@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>jetracer_py3_bridge</name>
+  <version>1.0.0</version>
+  <description>ZeroMQ Bridge package to relay ROS messages between Python 2 and Python 3.</description>
+  <maintainer email="jetracer@fpt.edu.vn">FPT AI Racer Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>rospy</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>jetracer_smartcity</build_depend>
+
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>jetracer_smartcity</exec_depend>
+</package>
