@@ -44,17 +44,17 @@ class ROSSpeedTrackNode:
         else:
             self.controller = PIDController(self.blackboard)
             rospy.loginfo("Sử dụng PIDController.")
-            
+        
         self.camera = CameraProcessor(self.blackboard)
         self.lidar = LidarProcessor(self.blackboard)
         self.debugger = Debugger(debug_mode=True)
         
         self.controller.initialize()
-        self.camera.initialize()
+        # self.camera.initialize()
         self.lidar.initialize()
         
         # ROS Subscribers
-        rospy.Subscriber('/scan', LaserScan, self.lidar.ros_callback)
+        rospy.Subscriber('/rplidarNode', LaserScan, self.lidar.ros_callback)
         rospy.Subscriber('/csi_cam_0/image_raw', Image, self.camera.ros_callback)
         
         rospy.loginfo("Node ROS Speed Track (Blackboard) đã khởi động thành công.")
@@ -63,44 +63,59 @@ class ROSSpeedTrackNode:
         """Vòng lặp điều khiển chính chạy ở 20Hz"""
         rate = rospy.Rate(20)
         
-        while not rospy.is_shutdown():
-            if not self.blackboard.has('latest_image') or not self.blackboard.has('latest_scan'):
-                rospy.logwarn_throttle(2, "Đang chờ dữ liệu từ Camera và Lidar...")
-                rate.sleep()
-                continue
-                
-            # Các Processor xử lý theo thứ tự (Knowledge Sources)
-            self.lidar.process(self.blackboard)
-            self.fsm.process(self.blackboard)
-            self.camera.process(self.blackboard)
-            self.controller.process(self.blackboard)
-            self.debugger.process(self.blackboard)
-            
-            # Lấy data để in log ROS (tùy chọn)
-            state_name = self.blackboard.get('state_name', 'UNKNOWN')
-            offset = self.blackboard.get('current_offset_px', 0.0)
-            steer = self.blackboard.get('steering', 0.0)
-            f_dist = self.blackboard.get('front_dist', 999.0)
-            
-            rospy.loginfo_throttle(1, f"[{state_name}] offset: {offset:.1f}, steer: {steer:.3f}, f_dist: {f_dist:.2f}")
-            
-            rate.sleep()
+        try:
+            while not rospy.is_shutdown():
+                if not self.blackboard.has('latest_image') or not self.blackboard.has('latest_scan'):
+                    rospy.logwarn_throttle(2, "Đang chờ dữ liệu từ Camera và Lidar...")
+                    rate.sleep()
+                    continue
+                    
+                # Các Processor xử lý theo thứ tự (Knowledge Sources)
+                self.lidar.process(self.blackboard)
+                self.fsm.process(self.blackboard)
+                self.camera.process(self.blackboard)
+                self.controller.process(self.blackboard)
 
-        # Đóng an toàn khi người dùng nhấn Ctrl+C
-        rospy.loginfo("Dừng hệ thống, xả ga và tắt lưu log.")
-        self.controller.stop()
-        self.debugger.close()
+                # Debugger: ghi CSV, video và in toàn bộ log debug (tập trung ở đây)
+                self.debugger.process(self.blackboard)
+
+                rate.sleep()
+
+        except KeyboardInterrupt:
+            rospy.logwarn("Đã nhận tín hiệu Ctrl+C từ người dùng (KeyboardInterrupt)!")
+
+    def stop(self):
+        """Đóng an toàn khi người dùng nhấn Ctrl+C"""
+        rospy.loginfo("--- BẮT ĐẦU DỪNG HỆ THỐNG ---")
+        if hasattr(self, 'controller') and self.controller:
+            rospy.loginfo("Xả ga, trả lái về 0...")
+            self.controller.stop()
+        if hasattr(self, 'debugger') and self.debugger:
+            rospy.loginfo("Tắt các cửa sổ debug...")
+            self.debugger.close()
+        rospy.loginfo("--- ĐÃ DỪNG AN TOÀN ---")
 
 if __name__ == '__main__':
+    node = None
     try:
         node = ROSSpeedTrackNode()
         node.run()
     except rospy.ROSInterruptException:
         pass
+    except KeyboardInterrupt:
+        pass
     except Exception as e:
-        print(f"Lỗi ngoài ý muốn: {e}")
-        try:
-            r = PIDController()
-            r.stop()
-        except:
-            pass
+        rospy.logerr(f"Lỗi ngoài ý muốn: {e}")
+    finally:
+        # Đảm bảo lệnh stop() luôn được gọi khi thoát (bằng Ctrl+C hoặc crash)
+        if node:
+            node.stop()
+        else:
+            # Fallback nếu ROS chưa kịp init
+            try:
+                from src.control.pid_controller import PIDController
+                from src.core.blackboard import Blackboard
+                r = PIDController(Blackboard())
+                r.stop()
+            except:
+                pass

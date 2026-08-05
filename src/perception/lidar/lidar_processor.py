@@ -19,6 +19,8 @@ class LidarProcessor(BaseLidarProcessor):
 
     def ros_callback(self, msg):
         """Chuyển đổi dữ liệu LaserScan ROS thành list[(angle_deg, dist)]"""
+        import rospy
+        rospy.loginfo_throttle(1.0, "[DEBUG] LidarProcessor: ĐÃ NHẬN được gói tin quét Laser từ ROS Topic!")
         scan_data = []
         for i, dist in enumerate(msg.ranges):
             angle = msg.angle_min + i * msg.angle_increment

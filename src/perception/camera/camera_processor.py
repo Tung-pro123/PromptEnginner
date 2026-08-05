@@ -18,7 +18,7 @@ class CameraProcessor(BaseCameraProcessor):
     def initialize(self):
         # Mở luồng GStreamer cho CSI camera hoặc USB camera
         # Tạm thời để cap = cv2.VideoCapture(0) cho mục đích test
-        self.cap = cv2.VideoCapture(0)
+        # self.cap = cv2.VideoCapture(0)
         print("[INFO] Camera initialized.")
 
     def get_frame(self):
@@ -32,6 +32,8 @@ class CameraProcessor(BaseCameraProcessor):
 
     def ros_callback(self, msg):
         """Chuyển đổi dữ liệu ảnh ROS Image thành numpy array OpenCV"""
+        import rospy
+        rospy.loginfo_throttle(1.0, "[DEBUG] CameraProcessor: ĐÃ NHẬN được frame ảnh từ ROS Topic!")
         try:
             img = np.frombuffer(msg.data, dtype=np.uint8)
             if msg.encoding == 'bgr8':

@@ -27,19 +27,19 @@ class PredictiveController(BaseController):
         except Exception as e:
             print(f"[WARN] Không tìm thấy thư viện jetracer: {e}")
 
-        try:
-            from jetbot import Robot
-            self.car = Robot()
-            self._mock = False
-            print("[INFO] Khởi tạo JetBot Pro (fallback) thành công cho PredictiveController.")
-            return
-        except Exception as e:
-            print(f"[WARN] Không tìm thấy thư viện jetbot: {e}")
+        # try:
+        #     from jetbot import Robot
+        #     self.car = Robot()
+        #     self._mock = False
+        #     print("[INFO] Khởi tạo JetBot Pro (fallback) thành công cho PredictiveController.")
+        #     return
+        # except Exception as e:
+        #     print(f"[WARN] Không tìm thấy thư viện jetbot: {e}")
 
-        print("[WARN] Không tìm thấy phần cứng → Chạy ở chế độ MÔ PHỎNG (Mock).")
-        from unittest.mock import Mock
-        self.car = Mock()
-        self._mock = True
+        # print("[WARN] Không tìm thấy phần cứng → Chạy ở chế độ MÔ PHỎNG (Mock).")
+        # from unittest.mock import Mock
+        # self.car = Mock()
+        # self._mock = True
 
     def move(self, speed, direction):
         """Thực thi lệnh lái và ga xuống phần cứng."""
