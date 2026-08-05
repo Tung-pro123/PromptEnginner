@@ -18,6 +18,16 @@ class CameraProcessor(BaseCameraProcessor):
         # EMA Filter cho waypoints
         self.ema_waypoints = {}
         self.ema_alpha = 0.6  # Hệ số làm mượt (0-1). 1.0 = không làm mượt, 0.0 = giữ nguyên quá khứ.
+        
+        # Tích hợp LaneDetector (Phân đoạn ảnh - Computer Vision)
+        try:
+            from src.perception.camera.detect_lane import LaneDetector
+            self.lane_detector = LaneDetector(image_width=settings.IMAGE_WIDTH, image_height=settings.IMAGE_HEIGHT)
+            self.use_advanced_segmentation = True
+        except ImportError as e:
+            print(f"[WARN] Không thể import LaneDetector: {e}")
+            self.lane_detector = None
+            self.use_advanced_segmentation = False
 
     def initialize(self):
         # Mở luồng GStreamer cho CSI camera hoặc USB camera
@@ -153,9 +163,33 @@ class CameraProcessor(BaseCameraProcessor):
     def process(self, blackboard):
         latest_image = blackboard.get('latest_image')
         dodge_direction = blackboard.get('dodge_direction', 0.0)
-        center_x, waypoints, thresh = self.process_frame(latest_image, dodge_direction)
         
-        blackboard.set('center_x', center_x)
-        blackboard.set('lane_waypoints', waypoints)
-        if thresh is not None:
-            blackboard.set('camera_thresh', thresh)
+        if getattr(self, 'use_advanced_segmentation', False) and self.lane_detector is not None:
+            # 1. Sử dụng thuật toán phân đoạn ảnh (Sliding Window & Curve Fitting)
+            segmented_img, thresh, center_x, left_fit, right_fit = self.lane_detector.process_and_segment(latest_image, settings.THRESHOLD_VALUE)
+            
+            # 2. Sinh ra danh sách waypoints để tương thích ngược với PredictiveController
+            waypoints = []
+            if left_fit is not None and right_fit is not None:
+                y_lines = [160, 200, 240, 280]
+                for y in y_lines:
+                    lx = left_fit[0]*y**2 + left_fit[1]*y + left_fit[2]
+                    rx = right_fit[0]*y**2 + right_fit[1]*y + right_fit[2]
+                    waypoints.append((int((lx + rx) / 2.0), y))
+            
+            # 3. Ghi dữ liệu vào Blackboard
+            blackboard.set('center_x', center_x)
+            blackboard.set('lane_waypoints', waypoints)
+            if thresh is not None:
+                blackboard.set('camera_thresh', thresh)
+            if segmented_img is not None:
+                # Ghi đè biến latest_image bằng ảnh đã phân đoạn để Debugger hiển thị dải màu xanh lá
+                blackboard.set('latest_image', segmented_img)
+        else:
+            # Chạy thuật toán dự phòng (Pipeline cũ, đơn giản)
+            center_x, waypoints, thresh = self.process_frame(latest_image, dodge_direction)
+            
+            blackboard.set('center_x', center_x)
+            blackboard.set('lane_waypoints', waypoints)
+            if thresh is not None:
+                blackboard.set('camera_thresh', thresh)
