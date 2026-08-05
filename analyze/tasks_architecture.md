@@ -12,37 +12,37 @@ Tài liệu này mô tả luồng dữ liệu (Data Pipeline) và vòng đời t
 ```mermaid
 graph TD
     subgraph Sensors
-        L[Lidar Data /scan]
-        C[Camera Data /image_raw]
+        L["Lidar Data /scan"]
+        C["Camera Data /image_raw"]
     end
 
     subgraph Perception
-        LP[LidarProcessor\n- Tìm vật cản\n- Đo khoảng cách]
-        CP[CameraProcessor\n- Tiền xử lý ảnh\n- Tìm waypoints\n- Phân đoạn làn]
+        LP["LidarProcessor<br>- Tìm vật cản<br>- Đo khoảng cách"]
+        CP["CameraProcessor<br>- Tiền xử lý ảnh<br>- Tìm waypoints<br>- Phân đoạn làn"]
     end
 
     subgraph State & Control
-        FSM[FSMManager\n- Trạng thái: SAFE, DODGE\n- Quyết định: offset_px]
-        CTRL[PID / Predictive Controller\n- Tính toán góc lái (Steering)\n- Tính toán ga (Throttle)]
+        FSM["FSMManager<br>- Trạng thái: SAFE, DODGE<br>- Quyết định: offset_px"]
+        CTRL["PID / Predictive Controller<br>- Tính toán góc lái (Steering)<br>- Tính toán ga (Throttle)"]
     end
     
-    BB((Blackboard\nShared Memory))
+    BB(("Blackboard<br>Shared Memory"))
     
-    Motor[Phần Cứng Motor\nNvidiaRacecar]
+    Motor["Phần Cứng Motor<br>NvidiaRacecar"]
 
     L --> LP
     C --> CP
     
-    LP -->|Khoảng cách, Góc| BB
-    CP -->|center_x, waypoints| BB
+    LP -->|"Khoảng cách, Góc"| BB
+    CP -->|"center_x, waypoints"| BB
     
     BB --> FSM
-    FSM -->|State, Dodge direction| BB
+    FSM -->|"State, Dodge direction"| BB
     
     BB --> CTRL
     CTRL --> Motor
     
-    BB -.-> Debugger[Debugger\nLog CSV & Video]
+    BB -.-> Debugger["Debugger<br>Log CSV & Video"]
 ```
 
 **Cách hoạt động (20Hz):**
@@ -60,23 +60,23 @@ graph TD
 ```mermaid
 graph TD
     subgraph Sensors
-        L[Lidar Data]
-        C[Camera Data]
+        L["Lidar Data"]
+        C["Camera Data"]
     end
 
     subgraph Core System
-        Perception[Camera & Lidar Processor]
-        FSM[FSMManager]
-        CTRL[PID / Predictive Controller]
+        Perception["Camera & Lidar Processor"]
+        FSM["FSMManager"]
+        CTRL["PID / Predictive Controller"]
     end
     
-    BB((Blackboard))
+    BB(("Blackboard"))
     
     subgraph High-Level AI
-        AI[AIDecisionEngine\n- Quyết định rẽ\n- Xử lý kẹt xe\n- Dừng khẩn cấp]
+        AI["AIDecisionEngine<br>- Quyết định rẽ<br>- Xử lý kẹt xe<br>- Dừng khẩn cấp"]
     end
     
-    Motor[Phần Cứng Motor\nNvidiaRacecar]
+    Motor["Phần Cứng Motor<br>NvidiaRacecar"]
 
     L --> Perception
     C --> Perception
@@ -86,13 +86,13 @@ graph TD
     FSM --> BB
     
     BB --> CTRL
-    CTRL -->|Đề xuất Steering| BB
+    CTRL -->|"Đề xuất Steering"| BB
     
     BB --> AI
-    AI -->|Override: Hành động cuối cùng| BB
+    AI -->|"Override: Hành động cuối cùng"| BB
     
-    BB --> EXEC[_execute_command]
-    EXEC -->|Lệnh cuối| Motor
+    BB --> EXEC["_execute_command"]
+    EXEC -->|"Lệnh cuối"| Motor
 ```
 
 **Cách hoạt động (20Hz):**
