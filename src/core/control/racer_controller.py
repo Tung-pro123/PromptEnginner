@@ -122,7 +122,7 @@ class RacerController:
 
     def forward(self, speed=None):
         """Đi thẳng với tốc độ cho trước."""
-        speed = speed or self.config["BASE_THROTTLE"]
+        speed = self.config["BASE_THROTTLE"] if speed is None else speed
         speed = self._clamp_throttle(speed)
         self._set_steering(0.0)
         self._set_throttle(speed)
@@ -140,7 +140,7 @@ class RacerController:
             steering_value: -1.0 (trái max) → 0.0 (thẳng) → +1.0 (phải max)
             speed: tốc độ, mặc định BASE_THROTTLE
         """
-        speed = speed or self.config["BASE_THROTTLE"]
+        speed = self.config["BASE_THROTTLE"] if speed is None else speed
         speed = self._clamp_throttle(speed)
         steering_value = self._clamp_steering(steering_value)
         self._set_steering(steering_value)
