@@ -10,39 +10,49 @@ Tài liệu này mô tả luồng dữ liệu (Data Pipeline) và vòng đời t
 
 ### Sơ đồ Luồng Dữ Liệu (Pipeline)
 ```mermaid
-graph TD
-    subgraph Sensors
-        L["Lidar Data /scan"]
-        C["Camera Data /image_raw"]
+flowchart LR
+    %% Style (Màu sắc và viền)
+    classDef sensor fill:#e1f5fe,stroke:#01579b,stroke-width:2px,color:#000
+    classDef perceive fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
+    classDef control fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#000
+    classDef bb fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
+    classDef debug fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
+    classDef hw fill:#eceff1,stroke:#455a64,stroke-width:2px,color:#000
+
+    %% Nodes
+    Lidar["📡 Lidar Data"]:::sensor
+    Cam["📷 Camera Data"]:::sensor
+    BB[("Blackboard<br>(Shared Data)")]:::bb
+
+    subgraph Perception["Perception Layer"]
+        direction TB
+        LP["LidarProcessor<br>- Tìm vật cản<br>- Đo khoảng cách"]:::perceive
+        CP["CameraProcessor<br>- Tiền xử lý ảnh<br>- Phân đoạn làn"]:::perceive
     end
 
-    subgraph Perception
-        LP["LidarProcessor<br>- Tìm vật cản<br>- Đo khoảng cách"]
-        CP["CameraProcessor<br>- Tiền xử lý ảnh<br>- Tìm waypoints<br>- Phân đoạn làn"]
+    subgraph StateControl["State & Control Layer"]
+        direction TB
+        FSM["⚙️ FSM Manager<br>- SAFE / DODGE"]:::control
+        CTRL["🎛️ Controller<br>- Tính Steering<br>- Tính Throttle"]:::control
     end
 
-    subgraph State & Control
-        FSM["FSMManager<br>- Trạng thái: SAFE, DODGE<br>- Quyết định: offset_px"]
-        CTRL["PID / Predictive Controller<br>- Tính toán góc lái (Steering)<br>- Tính toán ga (Throttle)"]
-    end
-    
-    BB(("Blackboard<br>Shared Memory"))
-    
-    Motor["Phần Cứng Motor<br>NvidiaRacecar"]
+    Motor["🚙 NvidiaRacecar<br>(Hardware)"]:::hw
+    Debugger["🎥 Debugger<br>(Video & CSV)"]:::debug
 
-    L --> LP
-    C --> CP
+    %% Connections
+    Lidar --> LP
+    Cam --> CP
     
-    LP -->|"Khoảng cách, Góc"| BB
-    CP -->|"center_x, waypoints"| BB
+    LP -->|"Dữ liệu vật cản"| BB
+    CP -->|"Tọa độ waypoints"| BB
     
-    BB --> FSM
-    FSM -->|"State, Dodge direction"| BB
+    BB -.->|"Đọc dữ liệu"| FSM
+    FSM -.->|"Ghi DODGE/SAFE"| BB
     
-    BB --> CTRL
-    CTRL --> Motor
+    BB -.->|"Đọc State & Waypoints"| CTRL
+    CTRL ===>|"Bơm thẳng lệnh"| Motor
     
-    BB -.-> Debugger["Debugger<br>Log CSV & Video"]
+    BB -.->|"Dữ liệu toàn cảnh"| Debugger
 ```
 
 **Cách hoạt động (20Hz):**
