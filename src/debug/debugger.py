@@ -23,9 +23,12 @@ class Debugger:
         self.debug_mode = debug_mode
         self.csv_file = None
         self.csv_writer = None
-        self.cam_writer = None
-        self.lidar_writer = None
+        self.combined_writer = None
         self.info_path = None
+        
+        # Bien de tinh FPS
+        self._last_time = 0.0
+        self._fps = 0.0
 
         # Thử import rospy một lần - dùng cho toàn bộ vòng đời đối tượng
         self._rospy = None
@@ -77,14 +80,13 @@ class Debugger:
                 'throttle', 'ai_action'
             ])
 
-            # Khởi tạo VideoWriter
-            # Dung 'XVID' + duoi '.avi' - codec on dinh nhat, khong can thu vien ngoai
-            fourcc = cv2.VideoWriter_fourcc(*'XVID')
-            cam_vid_path   = os.path.join(session_dir, "camera_log.avi")
-            lidar_vid_path = os.path.join(session_dir, "lidar_log.avi")
-            # Kich thuoc co dinh 300x300, toc do 20fps
-            self.cam_writer   = cv2.VideoWriter(cam_vid_path,   fourcc, 20.0, (300, 300))
-            self.lidar_writer = cv2.VideoWriter(lidar_vid_path, fourcc, 20.0, (300, 300))
+            # Khởi tạo VideoWriter chung
+            # Dung codec 'mp4v' va duoi '.mp4' de tao file video MP4
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            combined_vid_path = os.path.join(session_dir, "combined_log.mp4")
+            
+            # Kich thuoc gop 3 anh 300x300 thanh 900x300, toc do 20fps
+            self.combined_writer = cv2.VideoWriter(combined_vid_path, fourcc, 20.0, (900, 300))
 
             self._dbg(f"[Debugger] Session {session_num} bat dau. Log tai: {session_dir}")
 
@@ -164,10 +166,8 @@ class Debugger:
         """Don dep tai nguyen khi tat."""
         if self.csv_file:
             self.csv_file.close()
-        if self.cam_writer:
-            self.cam_writer.release()
-        if self.lidar_writer:
-            self.lidar_writer.release()
+        if self.combined_writer:
+            self.combined_writer.release()
 
         if hasattr(self, 'info_path') and self.info_path:
             import datetime
@@ -255,36 +255,73 @@ class Debugger:
             ai_action=ai_action or ''
         )
 
-        # ---- Ghi video Camera ----
+        # ---- Tinh FPS ----
+        curr_time = time.time()
+        if self._last_time > 0:
+            dt = curr_time - self._last_time
+            fps_current = 1.0 / dt if dt > 0 else 0.0
+            self._fps = 0.8 * self._fps + 0.2 * fps_current
+        self._last_time = curr_time
+
+        # ---- Hop nhat 3 anh vao 1 frame (900x300) ----
+        combined_img = np.zeros((300, 900, 3), dtype=np.uint8)
+
+        # 1. Camera goc
         latest_image = blackboard.get('latest_image')
-        if latest_image is not None and self.cam_writer:
+        if latest_image is not None:
             display_img = latest_image.copy()
-
-            # Ve waypoints mau do
-            for pt in waypoints:
-                cv2.circle(display_img, pt, 5, (0, 0, 255), -1)
-
-            # Ve duong cong du doan mau xanh la
+            
+            # Ve waypoints va duong noi cac waypoints (Mau do, cham vang)
+            if len(waypoints) > 0:
+                pts = np.array(waypoints, np.int32).reshape((-1, 1, 2))
+                cv2.polylines(display_img, [pts], False, (0, 0, 255), 2) # Duong noi mau do
+                for pt in waypoints:
+                    cv2.circle(display_img, pt, 5, (0, 255, 255), -1) # Diem nhan mau vang
+                    
             predicted_curve = blackboard.get('predicted_curve', [])
             if len(predicted_curve) >= 2:
                 pts = np.array(predicted_curve, np.int32).reshape((-1, 1, 2))
                 cv2.polylines(display_img, [pts], False, (0, 255, 0), 2)
-
-            # Chu thich trang thai len anh
+            
             label = state if not ai_action else f"{state} | {ai_action}"
-            cv2.putText(display_img, label,
-                        (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
-            cv2.putText(display_img, f"Dist:{front_dist:.2f}m  Steer:{steering:+.3f}",
-                        (5, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 200, 0), 1)
-
+            cv2.putText(display_img, label, (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+            cv2.putText(display_img, f"Dist:{front_dist:.2f}m Steer:{steering:+.2f}", (5, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 200, 0), 1)
+            
             if display_img.shape[:2] != (300, 300):
                 display_img = cv2.resize(display_img, (300, 300))
-            self.cam_writer.write(display_img)
-            self._dbg("[Debugger | Video] Ghi frame Camera OK.")
+            combined_img[:, 0:300] = display_img
 
-        # ---- Ghi video Lidar ----
+        # 2. Camera Thresh
+        camera_thresh = blackboard.get('camera_thresh')
+        if camera_thresh is not None:
+            thresh_resized = cv2.resize(camera_thresh, (300, 300))
+            thresh_color = cv2.cvtColor(thresh_resized, cv2.COLOR_GRAY2BGR)
+            
+            # Ve waypoint len Threshold de kiem tra su an khop truc quan nhat
+            if len(waypoints) > 0:
+                pts = np.array(waypoints, np.int32).reshape((-1, 1, 2))
+                cv2.polylines(thresh_color, [pts], False, (0, 0, 255), 2)
+                for pt in waypoints:
+                    cv2.circle(thresh_color, pt, 4, (0, 255, 255), -1)
+            
+            # Them chu thich
+            cv2.putText(thresh_color, "Threshold (Binary)", (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+            combined_img[:, 300:600] = thresh_color
+
+        # 3. Lidar
         latest_scan = blackboard.get('latest_scan')
-        if latest_scan is not None and self.lidar_writer:
+        if latest_scan is not None:
             lidar_img = self.visualize_lidar(latest_scan)
-            self.lidar_writer.write(lidar_img)
-            self._dbg("[Debugger | Video] Ghi frame Lidar OK.")
+            cv2.putText(lidar_img, "Lidar Map", (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+            combined_img[:, 600:900] = lidar_img
+
+        # ---- Ve FPS chung ----
+        cv2.putText(combined_img, f"FPS: {self._fps:.1f}", (800, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+        # ---- Ghi video va hien thi ----
+        if self.combined_writer:
+            self.combined_writer.write(combined_img)
+            self._dbg("[Debugger | Video] Ghi combined frame OK.")
+        
+        # self.show_image("JetRacer Combined Debug", combined_img)
+

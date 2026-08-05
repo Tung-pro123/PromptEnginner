@@ -67,7 +67,7 @@ class CameraProcessor(BaseCameraProcessor):
         3. Tính toán waypoints
         """
         if frame is None:
-            return settings.IMAGE_CENTER_X, []
+            return settings.IMAGE_CENTER_X, [], None
             
         # 1. Tiền xử lý
         resized = cv2.resize(frame, (settings.IMAGE_WIDTH, settings.IMAGE_HEIGHT))
@@ -148,11 +148,14 @@ class CameraProcessor(BaseCameraProcessor):
         elif center_x_bottom > settings.IMAGE_CENTER_X:
             self.last_known_direction = 1.0
 
-        return center_x_bottom, waypoints
+        return center_x_bottom, waypoints, thresh
 
     def process(self, blackboard):
         latest_image = blackboard.get('latest_image')
         dodge_direction = blackboard.get('dodge_direction', 0.0)
-        center_x, waypoints = self.process_frame(latest_image, dodge_direction)
+        center_x, waypoints, thresh = self.process_frame(latest_image, dodge_direction)
+        
         blackboard.set('center_x', center_x)
         blackboard.set('lane_waypoints', waypoints)
+        if thresh is not None:
+            blackboard.set('camera_thresh', thresh)
