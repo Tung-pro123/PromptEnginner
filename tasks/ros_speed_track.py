@@ -54,8 +54,8 @@ class ROSSpeedTrackNode:
         self.lidar.initialize()
         
         # ROS Subscribers
-        rospy.Subscriber('/rplidarNode', LaserScan, self.lidar.ros_callback)
-        rospy.Subscriber('/csi_cam_0/image_raw', Image, self.camera.ros_callback)
+        rospy.Subscriber(settings.ROS_TOPIC_LIDAR, LaserScan, self.lidar.ros_callback)
+        rospy.Subscriber(settings.ROS_TOPIC_CAMERA, Image, self.camera.ros_callback)
         
         rospy.loginfo("Node ROS Speed Track (Blackboard) đã khởi động thành công.")
         

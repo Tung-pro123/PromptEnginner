@@ -58,41 +58,49 @@ graph TD
 
 ### Sơ đồ Luồng Dữ Liệu (Pipeline)
 ```mermaid
-graph TD
-    subgraph Sensors
-        L["Lidar Data"]
-        C["Camera Data"]
+flowchart LR
+    %% Style (Màu sắc và viền)
+    classDef sensor fill:#e1f5fe,stroke:#01579b,stroke-width:2px,color:#000
+    classDef core fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
+    classDef bb fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
+    classDef ai fill:#fce4ec,stroke:#c2185b,stroke-width:3px,color:#000
+    classDef hw fill:#eceff1,stroke:#455a64,stroke-width:2px,color:#000
+
+    %% Nodes
+    Lidar["📡 Lidar Data"]:::sensor
+    Cam["📷 Camera Data"]:::sensor
+    BB[("Blackboard<br>(Shared Data)")]:::bb
+
+    subgraph Core["Core Processing System"]
+        direction TB
+        Perception["👁️ Perception<br>(Camera & Lidar)"]:::core
+        FSM["⚙️ FSM Manager"]:::core
+        CTRL["🎛️ Controller<br>(PID/Predictive)"]:::core
     end
 
-    subgraph Core System
-        Perception["Camera & Lidar Processor"]
-        FSM["FSMManager"]
-        CTRL["PID / Predictive Controller"]
+    subgraph Brain["High-Level AI Brain"]
+        AI{"🧠 AIDecisionEngine<br>Quyết định rẽ<br>Xử lý kẹt xe<br>Dừng khẩn cấp"}:::ai
     end
-    
-    BB(("Blackboard"))
-    
-    subgraph High-Level AI
-        AI["AIDecisionEngine<br>- Quyết định rẽ<br>- Xử lý kẹt xe<br>- Dừng khẩn cấp"]
-    end
-    
-    Motor["Phần Cứng Motor<br>NvidiaRacecar"]
 
-    L --> Perception
-    C --> Perception
-    Perception --> BB
+    EXEC["⚡ _execute_command"]:::core
+    Motor["🚙 NvidiaRacecar<br>(Hardware)"]:::hw
+
+    %% Connections
+    Lidar --> Perception
+    Cam --> Perception
+    Perception -->|"Cập nhật State"| BB
     
-    BB --> FSM
-    FSM --> BB
+    BB -.->|"Đọc dữ liệu"| FSM
+    FSM -.->|"Ghi DODGE/SAFE"| BB
     
-    BB --> CTRL
-    CTRL -->|"Đề xuất Steering"| BB
+    BB -.->|"Đọc waypoints"| CTRL
+    CTRL -.->|"Đề xuất Góc lái"| BB
     
-    BB --> AI
-    AI -->|"Override: Hành động cuối cùng"| BB
+    BB ===>|"Dữ liệu toàn cảnh"| AI
+    AI ===>|"OVERRIDE (Rẽ, Dừng, Lùi)"| BB
     
-    BB --> EXEC["_execute_command"]
-    EXEC -->|"Lệnh cuối"| Motor
+    BB -->|"Lấy Lệnh Cuối Cùng"| EXEC
+    EXEC -->|"Điều khiển động cơ"| Motor
 ```
 
 **Cách hoạt động (20Hz):**

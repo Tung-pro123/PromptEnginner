@@ -30,3 +30,8 @@ CLEAR_FRAMES_REQUIRED = 8    # Số frame liên tiếp cần để xác nhận a
 
 # Điều khiển
 CONTROLLER_TYPE = 'predictive'  # 'pid' hoặc 'predictive'
+
+# 4. ROS Topics (Khai báo chung để dễ cấu hình lại nếu đổi camera/lidar)
+ROS_TOPIC_CAMERA = '/csi_cam_0/image_raw'
+ROS_TOPIC_LIDAR = '/rplidarNode'
+ROS_TOPIC_JOY = '/joy'

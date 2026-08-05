@@ -30,8 +30,8 @@ class ROSJoyTeleopNode:
         self.debugger = Debugger(debug_mode=True)
         
         # Đăng ký nhận dữ liệu từ topic
-        rospy.Subscriber('/joy', Joy, self.joy_callback)
-        rospy.Subscriber('/csi_cam_0/image_raw', Image, self.camera.ros_callback)
+        rospy.Subscriber(settings.ROS_TOPIC_JOY, Joy, self.joy_callback)
+        rospy.Subscriber(settings.ROS_TOPIC_CAMERA, Image, self.camera.ros_callback)
         
         self.steering = 0.0
         self.throttle = 0.0

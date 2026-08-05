@@ -103,8 +103,8 @@ class ROSAINavigationNode:
 
         # --- ROS Subscribers ---
         rospy.loginfo("[Init] 7. Đăng ký ROS Subscribers...")
-        rospy.Subscriber('/rplidarNode', LaserScan, self._lidar_callback)
-        rospy.Subscriber('/csi_cam_0/image_raw', Image, self._camera_callback)
+        rospy.Subscriber(settings.ROS_TOPIC_LIDAR, LaserScan, self._lidar_callback)
+        rospy.Subscriber(settings.ROS_TOPIC_CAMERA, Image, self._camera_callback)
 
         rospy.loginfo("[Init] ====== HOÀN TẤT - Node đã sẵn sàng! ======")
 
