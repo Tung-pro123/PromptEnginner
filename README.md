@@ -84,10 +84,10 @@ git clone <repo_url>
 cd Jetson
 
 # 2. Bật LiDAR
-roslaunch jetbot_pro lidar.launch
+roslaunch jetracer lidar.launch
 
 # 3. Bật Camera (mở terminal mới)
-roslaunch jetbot_pro csi_camera.launch
+roslaunch jetracer csi_camera.launch
 
 # 4a. Chạy Speed Track (mở terminal mới)
 cd src/speed_track
