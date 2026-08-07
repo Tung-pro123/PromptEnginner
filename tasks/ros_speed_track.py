@@ -96,26 +96,21 @@ class ROSSpeedTrackNode:
         rospy.loginfo("--- ĐÃ DỪNG AN TOÀN ---")
 
 if __name__ == '__main__':
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from error_logger import log_crash
+
     node = None
     try:
         node = ROSSpeedTrackNode()
         node.run()
-    except rospy.ROSInterruptException:
-        pass
-    except KeyboardInterrupt:
+    except (rospy.ROSInterruptException, KeyboardInterrupt):
         pass
     except Exception as e:
-        rospy.logerr(f"Lỗi ngoài ý muốn: {e}")
+        log_crash("ros_speed_track", e)
+        raise
     finally:
-        # Đảm bảo lệnh stop() luôn được gọi khi thoát (bằng Ctrl+C hoặc crash)
         if node:
             node.stop()
-        else:
-            # Fallback nếu ROS chưa kịp init
-            try:
-                from src.control.pid_controller import PIDController
-                from src.core.blackboard import Blackboard
-                r = PIDController(Blackboard())
-                r.stop()
-            except:
-                pass
+

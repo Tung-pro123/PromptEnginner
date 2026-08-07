@@ -219,30 +219,23 @@ def parse_args():
 
 
 if __name__ == '__main__':
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from error_logger import log_crash
+
     args = parse_args()
     node = None
     try:
         rospy.loginfo(f"[Main] Turn Priority: {args.turn_priority}")
         node = ROSAINavigationNode(turn_priority=args.turn_priority)
         node.run()
-    except rospy.ROSInterruptException:
-        pass
-    except KeyboardInterrupt:
+    except (rospy.ROSInterruptException, KeyboardInterrupt):
         pass
     except Exception as e:
-        rospy.logerr(f"[Main] Lỗi ngoài ý muốn: {e}")
-        import traceback
-        rospy.logerr(traceback.format_exc())
+        log_crash("ros_ai_navigation", e)
+        raise
     finally:
         if node:
             node.stop()
-        else:
-            # Fallback khẩn cấp nếu ROS chưa kịp init
-            try:
-                from src.control.pid_controller import PIDController
-                from src.core.blackboard import Blackboard as BB
-                r = PIDController(BB())
-                r.initialize()
-                r.stop()
-            except Exception:
-                pass
+

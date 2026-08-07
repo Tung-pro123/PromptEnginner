@@ -23,7 +23,7 @@ class CameraProcessor(BaseCameraProcessor):
         try:
             from src.perception.camera.detect_lane import LaneDetector
             self.lane_detector = LaneDetector(image_width=settings.IMAGE_WIDTH, image_height=settings.IMAGE_HEIGHT)
-            self.use_advanced_segmentation = True
+            self.use_advanced_segmentation = False # Bỏ phân đoạn nâng cao màu xanh lá, chạy Hough Transform ở nhánh else
         except ImportError as e:
             print(f"[WARN] Không thể import LaneDetector: {e}")
             self.lane_detector = None
@@ -71,10 +71,7 @@ class CameraProcessor(BaseCameraProcessor):
 
     def process_frame(self, frame, dodge_direction=0.0):
         """
-        Xử lý ảnh dựa trên Pipeline 3.1:
-        1. Tiền xử lý
-        2. Phân cụm trên nhiều hàng (scanlines)
-        3. Tính toán waypoints
+        Xử lý ảnh kết hợp Threshold + Contours lọc nhiễu + Canny tìm biên + Phân cụm quét hàng.
         """
         if frame is None:
             return settings.IMAGE_CENTER_X, [], None
@@ -83,82 +80,117 @@ class CameraProcessor(BaseCameraProcessor):
         resized = cv2.resize(frame, (settings.IMAGE_WIDTH, settings.IMAGE_HEIGHT))
         gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
         
-        # --- BỔ SUNG: Lọc và tăng cường chất lượng ảnh ---
-        # 1.1 Lọc nhiễu bằng Gaussian Blur để giảm nhiễu hạt
+        # 1.1 Lọc nhiễu bằng Gaussian Blur
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         
-        # 1.2 Cân bằng histogram cục bộ (CLAHE) để chống chói/thiếu sáng
+        # 1.2 Cân bằng histogram cục bộ (CLAHE)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(blurred)
         
-        # 1.3 Nhị phân hóa (Thresholding) trên ảnh đã tăng cường
-        _, thresh = cv2.threshold(enhanced, settings.THRESHOLD_VALUE, 255, cv2.THRESH_BINARY)
+        # 1.3 Nhị phân hóa tự động bằng thuật toán Otsu
+        _, thresh = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
+        # 1.4 Khép kín các lỗ đứt gãy nhỏ trên vạch kẻ bằng phép toán đóng (Closing)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        thresh_closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+        
+        # 1.5 Dùng Contours để lọc bỏ các vùng đốm trắng nhiễu nhỏ (Tương thích cả OpenCV 3 và OpenCV 4)
+        contours_data = cv2.findContours(thresh_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = contours_data[0] if len(contours_data) == 2 else contours_data[1]
+        valid_contours = [c for c in contours if cv2.contourArea(c) > 60]  # Lọc bỏ nhiễu diện tích < 60 px^2
+        
+        # Tạo ảnh mask sạch chỉ chứa các vạch kẻ đường hợp lệ
+        clean_thresh = np.zeros_like(thresh_closed)
+        cv2.drawContours(clean_thresh, valid_contours, -1, 255, -1)
+        
+        # 2. Canny Edge Detection trên ảnh đã sạch nhiễu hoàn toàn
+        edges = cv2.Canny(clean_thresh, 50, 150)
+        
+        # Mask vùng quan tâm (ROI) - Nửa dưới ảnh
+        mask = np.zeros_like(edges)
+        roi_corners = np.array([[(0, settings.IMAGE_HEIGHT), 
+                                 (0, settings.IMAGE_HEIGHT // 2), 
+                                 (settings.IMAGE_WIDTH, settings.IMAGE_HEIGHT // 2), 
+                                 (settings.IMAGE_WIDTH, settings.IMAGE_HEIGHT)]], dtype=np.int32)
+        cv2.fillPoly(mask, roi_corners, 255)
+        masked_edges = cv2.bitwise_and(edges, mask)
+        
+        # Ghi nhận ảnh Canny sạch vào blackboard để phục vụ debug ghi file riêng
+        if self.blackboard is not None:
+            self.blackboard.set('canny_edges', masked_edges)
+            
+        # 3. Phân cụm quét hàng (Scanline) tìm biên đường đen (phương án C)
         y_lines = [160, 200, 240, 280]
         waypoints = []
+        raw_waypoints = []
         center_x_bottom = settings.IMAGE_CENTER_X
         
         for y in y_lines:
-            scan_line = thresh[y, :]
+            scan_line = clean_thresh[y, :]
             
-            # 2. Phân cụm vạch
-            white_pixels = np.where(scan_line == 255)[0]
-            clusters = []
-            if len(white_pixels) > 0:
-                current_cluster = [white_pixels[0]]
-                for i in range(1, len(white_pixels)):
-                    if white_pixels[i] - white_pixels[i-1] <= settings.MAX_GAP_BETWEEN_POINTS:
-                        current_cluster.append(white_pixels[i])
-                    else:
-                        clusters.append(int(np.mean(current_cluster)))
-                        current_cluster = [white_pixels[i]]
-                clusters.append(int(np.mean(current_cluster)))
-                
-            # 3. State-Aware Classification & Tính toán x
+            # Quét tìm ranh giới biên bên trái (chuyển đổi từ nền trắng 255 sang lòng đường đen 0)
+            found_left = False
+            left_border = 0
+            for x in range(1, settings.IMAGE_CENTER_X):
+                if scan_line[x - 1] == 255 and scan_line[x] == 0:
+                    left_border = x
+                    found_left = True
+                    break
+                    
+            # Quét tìm ranh giới biên bên phải (chuyển từ nền trắng 255 sang lòng đường đen 0 từ phải qua trái)
+            found_right = False
+            right_border = settings.IMAGE_WIDTH - 1
+            for x in range(settings.IMAGE_WIDTH - 2, settings.IMAGE_CENTER_X, -1):
+                if scan_line[x + 1] == 255 and scan_line[x] == 0:
+                    right_border = x
+                    found_right = True
+                    break
+            
             center_x = settings.IMAGE_CENTER_X
             
-            if len(clusters) >= 2:
-                left_border = clusters[0]
-                right_border = clusters[-1]
+            if found_left and found_right:
+                # Nhìn thấy cả 2 biên ranh giới trắng trái/phải
                 center_x = (left_border + right_border) / 2.0
-                
                 if y == max(y_lines):
                     current_width = right_border - left_border
-                    self.estimated_lane_width = 0.9 * self.estimated_lane_width + 0.1 * current_width
-                
-            elif len(clusters) == 1:
-                line_pos = clusters[0]
-                # State-Aware
-                if dodge_direction == -1.0: # Đang né trái -> Vạch là biên trái
-                    center_x = line_pos + (self.estimated_lane_width / 2.0)
-                elif dodge_direction == 1.0: # Đang né phải -> Vạch là biên phải
-                    center_x = line_pos - (self.estimated_lane_width / 2.0)
-                else:
-                    if line_pos < settings.IMAGE_CENTER_X:
-                        center_x = line_pos + (self.estimated_lane_width / 2.0)
-                    else:
-                        center_x = line_pos - (self.estimated_lane_width / 2.0)
+                    if 160 < current_width < 280:
+                        self.estimated_lane_width = 0.9 * self.estimated_lane_width + 0.1 * current_width
+            elif found_left:
+                # Chỉ thấy biên trái
+                center_x = left_border + (self.estimated_lane_width / 2.0)
+            elif found_right:
+                # Chỉ thấy biên phải
+                center_x = right_border - (self.estimated_lane_width / 2.0)
             else:
+                # Mất cả 2 biên -> Rà mù theo hướng bẻ lái gần nhất
                 center_x = settings.IMAGE_CENTER_X + (20 * self.last_known_direction)
-
-            # --- BỔ SUNG: Làm mượt waypoint bằng EMA (Exponential Moving Average) ---
+                
+            # Lưu điểm trung tâm chưa làm mượt
+            raw_waypoints.append((int(center_x), y))
+            
+            # Làm mượt bằng EMA (Exponential Moving Average)
             if y not in self.ema_waypoints:
                 self.ema_waypoints[y] = center_x
             else:
                 self.ema_waypoints[y] = self.ema_alpha * center_x + (1.0 - self.ema_alpha) * self.ema_waypoints[y]
-            
+                
             smoothed_center_x = self.ema_waypoints[y]
-
             waypoints.append((int(smoothed_center_x), y))
+            
             if y == 240:
                 center_x_bottom = smoothed_center_x
-
+                
+        if self.blackboard is not None:
+            self.blackboard.set('raw_waypoints', raw_waypoints)
+            
         if center_x_bottom < settings.IMAGE_CENTER_X:
             self.last_known_direction = -1.0
         elif center_x_bottom > settings.IMAGE_CENTER_X:
             self.last_known_direction = 1.0
-
-        return center_x_bottom, waypoints, thresh
+            
+        # Trực quan hóa ảnh Canny sạch cho khối Debugger hiển thị
+        debug_img = cv2.cvtColor(masked_edges, cv2.COLOR_GRAY2BGR)
+        return center_x_bottom, waypoints, debug_img
 
     def process(self, blackboard):
         latest_image = blackboard.get('latest_image')

@@ -1,0 +1,11 @@
+sudo apt-get install -y \
+  ros-melodic-nav-msgs \
+  ros-melodic-sensor-msgs \
+  ros-melodic-geometry-msgs \
+  ros-melodic-tf \
+  ros-melodic-tf2 \
+  ros-melodic-dynamic-reconfigure \
+  ros-melodic-navigation \
+  ros-melodic-laser-geometry \
+  python-catkin-pkg \
+  python-rosdep

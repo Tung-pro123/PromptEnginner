@@ -71,10 +71,15 @@ class PredictiveController(BaseController):
         if not waypoints or len(waypoints) < 2:
             # Fallback nếu không có đủ điểm
             center_x = blackboard.get('center_x', settings.IMAGE_CENTER_X)
-            offset_px = settings.IMAGE_CENTER_X - center_x
-            steering = self.kp * offset_px
+            offset_px = center_x - settings.IMAGE_CENTER_X
+            normalized_offset = offset_px / (settings.IMAGE_WIDTH / 2.0)
+            steering = self.kp * normalized_offset
+            
             # Giới hạn góc lái
-            steering = max(min(steering, 1.0), -1.0)
+            steering = max(settings.MIN_STEERING, min(settings.MAX_STEERING, steering))
+            
+            # Lưu điểm điều khiển giả định
+            blackboard.set('lookahead_point', (int(center_x), 240))
             
             self.move(settings.BASE_SPEED, steering)
             blackboard.set('steering', steering)
@@ -93,14 +98,20 @@ class PredictiveController(BaseController):
             lookahead_y = 160 
             predicted_x = np.polyval(poly_coeff, lookahead_y)
             
-            # Tính toán offset từ tâm ảnh tới điểm dự đoán
-            offset_px = settings.IMAGE_CENTER_X - predicted_x
+            # Tính toán offset từ tâm ảnh tới điểm dự đoán (predicted_x - CENTER)
+            offset_px = predicted_x - settings.IMAGE_CENTER_X
+            
+            # Chuẩn hóa offset về khoảng [-1, 1]
+            normalized_offset = offset_px / (settings.IMAGE_WIDTH / 2.0)
             
             # Tính góc lái
-            steering = self.kp * offset_px
+            steering = self.kp * normalized_offset
             
             # Giới hạn góc lái
-            steering = max(min(steering, 1.0), -1.0)
+            steering = max(settings.MIN_STEERING, min(settings.MAX_STEERING, steering))
+            
+            # Lưu điểm điều khiển thực tế
+            blackboard.set('lookahead_point', (int(predicted_x), lookahead_y))
             
             # Sinh ra các điểm trên đường cong để phục vụ Debug/Vẽ đồ thị
             curve_points = []
@@ -116,9 +127,13 @@ class PredictiveController(BaseController):
             print(f"[PredictiveController] Lỗi polyfit: {e}")
             # Fallback
             center_x = blackboard.get('center_x', settings.IMAGE_CENTER_X)
-            offset_px = settings.IMAGE_CENTER_X - center_x
-            steering = self.kp * offset_px
-            steering = max(min(steering, 1.0), -1.0)
+            offset_px = center_x - settings.IMAGE_CENTER_X
+            normalized_offset = offset_px / (settings.IMAGE_WIDTH / 2.0)
+            steering = self.kp * normalized_offset
+            steering = max(settings.MIN_STEERING, min(settings.MAX_STEERING, steering))
+            
+            # Lưu điểm điều khiển giả định
+            blackboard.set('lookahead_point', (int(center_x), 240))
             
             self.move(settings.BASE_SPEED, steering)
             blackboard.set('steering', steering)

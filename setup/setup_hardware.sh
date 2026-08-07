@@ -144,6 +144,38 @@ else
     
     # Quay lại thư mục gốc workspace để biên dịch
     cd "$CATKIN_WS_DIR"
+    
+    echo -e "${YELLOW}Đang cài đặt các thư viện ROS phụ thuộc trước khi build...${NC}"
+    sudo apt-get update
+    sudo apt-get install -y \
+      ros-melodic-nav-msgs \
+      ros-melodic-sensor-msgs \
+      ros-melodic-geometry-msgs \
+      ros-melodic-tf \
+      ros-melodic-tf2 \
+      ros-melodic-dynamic-reconfigure \
+      ros-melodic-navigation \
+      ros-melodic-laser-geometry \
+      ros-melodic-rplidar-ros \
+      ros-melodic-joy \
+      ros-melodic-teleop-twist-joy \
+      ros-melodic-teleop-twist-keyboard \
+      ros-melodic-gmapping \
+      ros-melodic-amcl \
+      ros-melodic-map-server \
+      ros-melodic-move-base \
+      ros-melodic-urdf \
+      ros-melodic-xacro \
+      ros-melodic-robot-state-publisher \
+      python-catkin-pkg \
+      python-rosdep \
+      python-pip \
+      python3-pip
+
+    echo -e "${YELLOW}Cài đặt thư viện Python phụ thuộc (adafruit-platformdetect)...${NC}"
+    sudo -H pip install adafruit-platformdetect
+    sudo -H pip3 install adafruit-platformdetect
+
     echo -e "${YELLOW}Đang biên dịch workspace bằng catkin_make...${NC}"
     source "$ROS_MELODIC_SETUP"
     catkin_make

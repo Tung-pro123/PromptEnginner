@@ -86,3 +86,38 @@ class FSMManager:
         blackboard.set('dodge_direction', self.dodge_direction)
         blackboard.set('current_offset_px', current_offset_px)
         blackboard.set('state_name', self.get_state_name())
+
+class CameraFSMManager(FSMManager):
+    """
+    Máy trạng thái FSM dành riêng cho các task không sử dụng Lidar.
+    Kế thừa từ FSMManager nhưng quyết định trạng thái chỉ dựa trên Camera.
+    """
+    def __init__(self):
+        super().__init__()
+        
+    def update_from_camera(self, waypoints, camera_thresh):
+        """
+        Cập nhật trạng thái máy dựa trên dữ liệu Camera.
+        Ví dụ: Nếu mất vạch (len(waypoints) == 0), có thể cảnh báo hoặc chậm lại.
+        Hiện tại (do chưa có Object Detection từ Camera) ta mặc định xe ở NORMAL.
+        """
+        # TODO: Thêm AI Object Detection (YOLO) để phát hiện chướng ngại vật bằng Camera
+        # Hiện tại cứ để NORMAL để xe chạy bám làn bình thường
+        self.current_state = State.NORMAL
+        self.target_offset_px = 0.0
+        self.dodge_direction = 0.0
+        
+    def process(self, blackboard):
+        """Ghi đè hàm process để bỏ qua Lidar, lấy dữ liệu Camera từ Blackboard."""
+        waypoints = blackboard.get('lane_waypoints', [])
+        camera_thresh = blackboard.get('camera_thresh', None)
+        
+        self.update_from_camera(waypoints, camera_thresh)
+        
+        # Hàm update_offset kế thừa từ class cha
+        current_offset_px = self.update_offset()
+        
+        blackboard.set('dodge_direction', self.dodge_direction)
+        blackboard.set('current_offset_px', current_offset_px)
+        blackboard.set('state_name', self.get_state_name())
+

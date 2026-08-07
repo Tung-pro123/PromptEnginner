@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import sys
+sys.path.append("../")
+
 import os
 import rospy
 from sensor_msgs.msg import Joy, Image
@@ -24,7 +26,7 @@ class ROSJoyTeleopNode:
         self.controller = PIDController()
         self.controller.initialize()
         
-        # Khoi tao cac cong cu Debug & Camera
+        # Khởi tạo các công cụ Debug & Camera
         self.blackboard = Blackboard()
         self.camera = CameraProcessor(self.blackboard)
         self.debugger = Debugger(debug_mode=True)
@@ -73,15 +75,15 @@ class ROSJoyTeleopNode:
                 # Bỏ qua FSM, truyền thẳng lệnh điều khiển xuống motor
                 self.controller.move(self.throttle, self.steering)
                 
-                # Ghi dữ liệu vào Blackboard de Debugger xuat ra video/csv
+                # Ghi dữ liệu vào Blackboard để Debugger xuất ra video/csv
                 self.blackboard.set('state_name', 'TELEOP')
                 self.blackboard.set('steering', self.steering)
                 self.blackboard.set('throttle', self.throttle)
                 
-                # Xy ly camera (neu co frame moi)
+                # Xử lý camera (nếu có frame mới)
                 self.camera.process(self.blackboard)
                 
-                # Xuat log va video
+                # Xuất log và video
                 self.debugger.process(self.blackboard)
                 
                 rate.sleep()
@@ -98,12 +100,21 @@ class ROSJoyTeleopNode:
         rospy.loginfo("Đã dừng an toàn.")
 
 if __name__ == '__main__':
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from error_logger import log_crash
+
     node = None
     try:
         node = ROSJoyTeleopNode()
         node.run()
-    except rospy.ROSInterruptException:
+    except (rospy.ROSInterruptException, KeyboardInterrupt):
         pass
+    except Exception as e:
+        log_crash("ros_joy_teleop", e)
+        raise
     finally:
         if node:
             node.stop()
+
