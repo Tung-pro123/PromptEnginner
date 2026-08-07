@@ -6,13 +6,14 @@ import math
 import traceback
 import cv2
 import numpy as np
+from src.config import settings
 
 
 class Debugger:
     """
     Lớp tiện ích debug tập trung cho toàn bộ hệ thống robot.
 
-    Đây là nơi DUY NHẤT thực hiện:
+    Đây là nơi DUY NHẤT thực hiện:  
       - In log chi tiết (rospy.logdebug) mỗi chu kỳ xử lý
       - Ghi log dữ liệu ra file CSV
       - Ghi video Camera và Lidar
@@ -390,7 +391,7 @@ class Debugger:
             
             label = state if not ai_action else f"{state} | {ai_action}"
             cv2.putText(display_img, label, (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
-            cv2.putText(display_img, f"Dist:{front_dist:.2f}m Steer:{steering:+.2f}", (5, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 200, 0), 1)
+            cv2.putText(display_img, f"Dist:{front_dist:.2f}m Steer:{steering:+.2f} Thr:{throttle:.2f}", (5, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 200, 0), 1)
             
             if display_img.shape[:2] != (300, 300):
                 display_img = cv2.resize(display_img, (300, 300))

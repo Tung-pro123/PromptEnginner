@@ -10,8 +10,9 @@ from config import settings
 class PredictiveController(BaseController):
     def __init__(self, blackboard=None):
         self.blackboard = blackboard
-        # Tái sử dụng hệ số P, vì đây thực chất là Proportional control trên điểm lookahead
-        self.kp = settings.PID_KP 
+        # Tăng mạnh độ nhạy lái của bộ điều khiển Predictive (nhân 6.0)
+        # Vì điểm nhìn ở rất gần cam (y=240), sai số lệch pixel rất nhỏ, cần hệ số kp lớn để bẻ lái gắt
+        self.kp = settings.PID_KP * 6.0
         self.car = None
         self._mock = False
         
@@ -90,41 +91,69 @@ class PredictiveController(BaseController):
         # Fit x theo y vì y tăng đều đặn từ trên xuống dưới ảnh
         ys = [pt[1] for pt in waypoints]
         xs = [pt[0] for pt in waypoints]
-        
         try:
+            # Hồi quy đa thức bậc 2: x = a*y^2 + b*y + c
             poly_coeff = np.polyfit(ys, xs, 2)
+            a, b, c = poly_coeff
             
-            # Chọn điểm nhìn xa (Lookahead point). y càng nhỏ nghĩa là càng xa về phía đỉnh ảnh.
-            lookahead_y = 160 
-            predicted_x = np.polyval(poly_coeff, lookahead_y)
+            # Chọn điểm nhìn xa (Lookahead point) sát camera hơn (sát đầu xe)
+            lookahead_y = 240 
+            predicted_x = a * (lookahead_y**2) + b * lookahead_y + c
             
-            # Tính toán offset từ tâm ảnh tới điểm dự đoán (predicted_x - CENTER)
+            # GIỚI HẠN: Nếu điểm nhìn xa nằm ngoài ranh giới đường quét được ở lookahead_y
+            road_boundaries = blackboard.get('road_boundaries', {})
+            if lookahead_y in road_boundaries:
+                left_b, right_b = road_boundaries[lookahead_y]
+                margin = 30 
+                min_safe_x = left_b + margin
+                max_safe_x = right_b - margin
+                predicted_x = max(min_safe_x, min(max_safe_x, predicted_x))
+            
+            # --- TÍNH TOÁN ĐỘ CONG VÀ GÓC HƯỚNG ĐƯỜNG CONG ---
+            # Đạo hàm bậc 1: dx/dy = 2*a*y + b
+            dx_dy = 2 * a * lookahead_y + b
+            
+            # Góc hướng (Heading Angle) tính bằng radian (arctan của hệ số góc)
+            heading_angle = np.arctan(dx_dy)
+            
+            # Độ cong (Curvature): kappa = |2*a| / (1 + (2*a*y + b)^2)^1.5
+            curvature = abs(2 * a) / ((1 + dx_dy**2)**1.5)
+            
+            # --- CÔNG THỨC ĐIỀU KHIỂN HỢP NHẤT ---
+            # 1. Tính toán sai số khoảng cách (Offset Error)
             offset_px = predicted_x - settings.IMAGE_CENTER_X
-            
-            # Chuẩn hóa offset về khoảng [-1, 1]
             normalized_offset = offset_px / (settings.IMAGE_WIDTH / 2.0)
             
-            # Tính góc lái
-            steering = self.kp * normalized_offset
-            
-            # Giới hạn góc lái
+            # 2. Phương trình lái phối hợp (Lệch làn + Hướng độ cong)
+            # Kp kiểm soát kéo xe về tâm, Kd (hoặc hệ số hướng) giúp xe chuẩn bị bẻ lái theo độ cong của cua trước
+            k_heading = 1.2 # Hệ số nhạy theo độ cong của đường
+            steering = (self.kp * normalized_offset) - (k_heading * heading_angle)
             steering = max(settings.MIN_STEERING, min(settings.MAX_STEERING, steering))
             
-            # Lưu điểm điều khiển thực tế
+            # 3. Phương trình tốc độ (Throttle) tự động giảm ga khi vào cua gắt
+            # Cua càng gắt (curvature lớn hoặc heading_angle lớn), xe sẽ tự động chạy chậm lại để tránh trượt bánh
+            speed_reduction = 0.6 * abs(heading_angle) # Giảm tối đa 60% tốc độ cơ bản khi cua cực gắt
+            throttle = settings.BASE_SPEED * (1.0 - speed_reduction)
+            throttle = max(0.12, min(settings.MAX_THROTTLE, throttle)) # Giữ tốc độ tối thiểu để không bị kẹt động cơ
+            
+            # Lưu các điểm điều khiển và đường cong phục vụ debug
             blackboard.set('lookahead_point', (int(predicted_x), lookahead_y))
             
-            # Sinh ra các điểm trên đường cong để phục vụ Debug/Vẽ đồ thị
             curve_points = []
-            for y_val in range(160, 300, 20):
-                x_val = int(np.polyval(poly_coeff, y_val))
+            for y_val in range(240, 300, 10):
+                x_val = int(a * (y_val**2) + b * y_val + c)
+                if y_val in road_boundaries:
+                    l_b, r_b = road_boundaries[y_val]
+                    x_val = max(l_b + 30, min(r_b - 30, x_val))
                 curve_points.append((x_val, y_val))
                 
-            self.move(settings.BASE_SPEED, steering)
+            self.move(throttle, steering)
             blackboard.set('steering', steering)
+            blackboard.set('throttle', throttle)
             blackboard.set('predicted_curve', curve_points)
             
         except Exception as e:
-            print(f"[PredictiveController] Lỗi polyfit: {e}")
+            print(f"[PredictiveController] Lỗi polyfit hoặc tính toán curvature: {e}")
             # Fallback
             center_x = blackboard.get('center_x', settings.IMAGE_CENTER_X)
             offset_px = center_x - settings.IMAGE_CENTER_X
@@ -132,10 +161,9 @@ class PredictiveController(BaseController):
             steering = self.kp * normalized_offset
             steering = max(settings.MIN_STEERING, min(settings.MAX_STEERING, steering))
             
-            # Lưu điểm điều khiển giả định
             blackboard.set('lookahead_point', (int(center_x), 240))
-            
             self.move(settings.BASE_SPEED, steering)
             blackboard.set('steering', steering)
+            blackboard.set('throttle', settings.BASE_SPEED)
             blackboard.set('predicted_curve', [])
 

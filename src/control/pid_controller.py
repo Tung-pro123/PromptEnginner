@@ -133,6 +133,13 @@ class PIDController(BaseController):
         current_offset_px = blackboard.get('current_offset_px', 0.0)
         
         steering = self.calculate_steering(center_x, current_offset_px)
-        self.move(settings.BASE_SPEED, steering)
+        
+        # Bù trừ tốc độ theo góc bẻ lái thực tế (Cua càng gắt, ga càng giảm)
+        speed_reduction = 0.5 * abs(steering) # Giảm tối đa 50% ga khi bẻ lái kịch biên
+        throttle = settings.BASE_SPEED * (1.0 - speed_reduction)
+        throttle = max(0.12, min(settings.MAX_THROTTLE, throttle)) # Đảm bảo ga tối thiểu không kẹt động cơ
+        
+        self.move(throttle, steering)
         
         blackboard.set('steering', steering)
+        blackboard.set('throttle', throttle)

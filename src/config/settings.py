@@ -8,10 +8,10 @@ THRESHOLD_VALUE = 180
 MAX_GAP_BETWEEN_POINTS = 15
 
 # 2. Control (PID Controller)
-PID_KP = 0.5
+PID_KP = 1.0 # mặc định 0.5
 PID_KI = 0.0
 PID_KD = 0.1
-BASE_SPEED = 0.20        # Tốc độ cơ bản
+BASE_SPEED = 0.4        # Tốc độ cơ bản
 MAX_THROTTLE = 0.40      # Giới hạn tốc độ
 MAX_STEERING = 1.0       # Giới hạn góc lái
 MIN_STEERING = -1.0

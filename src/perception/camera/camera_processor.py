@@ -123,6 +123,7 @@ class CameraProcessor(BaseCameraProcessor):
         y_lines = [160, 200, 240, 280]
         waypoints = []
         raw_waypoints = []
+        road_boundaries = {}
         center_x_bottom = settings.IMAGE_CENTER_X
         
         for y in y_lines:
@@ -145,6 +146,9 @@ class CameraProcessor(BaseCameraProcessor):
                     right_border = x
                     found_right = True
                     break
+            
+            # Lưu biên thực tế quét được (nếu không thấy thì xem như mép ảnh)
+            road_boundaries[y] = (left_border, right_border)
             
             center_x = settings.IMAGE_CENTER_X
             
@@ -182,6 +186,7 @@ class CameraProcessor(BaseCameraProcessor):
                 
         if self.blackboard is not None:
             self.blackboard.set('raw_waypoints', raw_waypoints)
+            self.blackboard.set('road_boundaries', road_boundaries)
             
         if center_x_bottom < settings.IMAGE_CENTER_X:
             self.last_known_direction = -1.0
