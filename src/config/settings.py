@@ -6,6 +6,7 @@ IMAGE_HEIGHT = 300
 IMAGE_CENTER_X = 150
 THRESHOLD_VALUE = 180
 MAX_GAP_BETWEEN_POINTS = 15
+USE_ADVANCED_SEGMENTATION = False # True: Dùng phân đoạn ảnh AI, False: Dùng HSV màu cam/đỏ truyền thống
 
 # 2. Control (PID Controller)
 PID_KP = 1.0 # mặc định 0.5
@@ -61,3 +62,10 @@ TRAFFIC_GREEN_HSV_UPPER = [85,  255, 255]
 # Dải màu HSV cho biển báo nền XANH DƯƠNG
 TRAFFIC_BLUE_HSV_LOWER  = [100, 100, 80]
 TRAFFIC_BLUE_HSV_UPPER  = [130, 255, 255]
+
+# Tự động hiển thị toàn bộ bộ thông số cấu hình mặc định khi bắt đầu chạy chương trình
+print("==================== THÔNG SỐ CẤU HÌNH MẶC ĐỊNH ====================", flush=True)
+for key, val in sorted(list(globals().items())):
+    if key.isupper():
+        print(f"  {key:<30} = {val}", flush=True)
+print("====================================================================", flush=True)

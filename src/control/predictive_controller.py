@@ -135,16 +135,20 @@ class PredictiveController(BaseController):
             speed_reduction = 0.6 * abs(heading_angle) # Giảm tối đa 60% tốc độ cơ bản khi cua cực gắt
             throttle = settings.BASE_SPEED * (1.0 - speed_reduction)
             throttle = max(0.12, min(settings.MAX_THROTTLE, throttle)) # Giữ tốc độ tối thiểu để không bị kẹt động cơ
-            
-            # Lưu các điểm điều khiển và đường cong phục vụ debug
+            # Lưu điểm điều khiển thực tế lên blackboard phục vụ debug
             blackboard.set('lookahead_point', (int(predicted_x), lookahead_y))
             
+            # Sinh ra các điểm trên đường cong để phục vụ Debug (Quét sát từ 240 đến 300)
             curve_points = []
             for y_val in range(240, 300, 10):
                 x_val = int(a * (y_val**2) + b * y_val + c)
-                if y_val in road_boundaries:
-                    l_b, r_b = road_boundaries[y_val]
+                
+                # Ép đường vẽ debug chui vào lòng đường sử dụng biên ở độ cao y gần nhất
+                if road_boundaries:
+                    closest_y = min(road_boundaries.keys(), key=lambda k: abs(k - y_val))
+                    l_b, r_b = road_boundaries[closest_y]
                     x_val = max(l_b + 30, min(r_b - 30, x_val))
+                    
                 curve_points.append((x_val, y_val))
                 
             self.move(throttle, steering)

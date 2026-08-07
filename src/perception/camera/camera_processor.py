@@ -23,7 +23,7 @@ class CameraProcessor(BaseCameraProcessor):
         try:
             from src.perception.camera.detect_lane import LaneDetector
             self.lane_detector = LaneDetector(image_width=settings.IMAGE_WIDTH, image_height=settings.IMAGE_HEIGHT)
-            self.use_advanced_segmentation = False # Bỏ phân đoạn nâng cao màu xanh lá, chạy Hough Transform ở nhánh else
+            self.use_advanced_segmentation = getattr(settings, 'USE_ADVANCED_SEGMENTATION', False)
         except ImportError as e:
             print(f"[WARN] Không thể import LaneDetector: {e}")
             self.lane_detector = None
@@ -71,24 +71,28 @@ class CameraProcessor(BaseCameraProcessor):
 
     def process_frame(self, frame, dodge_direction=0.0):
         """
-        Xử lý ảnh kết hợp Threshold + Contours lọc nhiễu + Canny tìm biên + Phân cụm quét hàng.
+        Xử lý ảnh bằng lọc màu HSV Cam/Đỏ để trích xuất vạch ranh giới, 
+        sau đó dùng Contours lọc nhiễu và quét hàng (Scanline) tìm tâm đường đen ở giữa.
         """
         if frame is None:
             return settings.IMAGE_CENTER_X, [], None
             
-        # 1. Tiền xử lý
+        # 1. Tiền xử lý bằng hệ màu HSV để chống nhiễu ánh sáng và vết bẩn lòng đường
         resized = cv2.resize(frame, (settings.IMAGE_WIDTH, settings.IMAGE_HEIGHT))
-        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(resized, cv2.COLOR_BGR2HSV)
         
-        # 1.1 Lọc nhiễu bằng Gaussian Blur
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        # Ngưỡng màu Đỏ/Cam (Dải 1: Đỏ nhạt đến cam)
+        lower_red1 = np.array([0, 60, 50])
+        upper_red1 = np.array([22, 255, 255])
+        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
         
-        # 1.2 Cân bằng histogram cục bộ (CLAHE)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(blurred)
+        # Ngưỡng màu Đỏ/Cam (Dải 2: Đỏ đậm)
+        lower_red2 = np.array([160, 60, 50])
+        upper_red2 = np.array([180, 255, 255])
+        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
         
-        # 1.3 Nhị phân hóa tự động bằng thuật toán Otsu
-        _, thresh = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Hợp nhất dải màu để lấy trọn vẹn vạch biên màu cam/đỏ
+        thresh = cv2.bitwise_or(mask1, mask2)
         
         # 1.4 Khép kín các lỗ đứt gãy nhỏ trên vạch kẻ bằng phép toán đóng (Closing)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
@@ -97,7 +101,7 @@ class CameraProcessor(BaseCameraProcessor):
         # 1.5 Dùng Contours để lọc bỏ các vùng đốm trắng nhiễu nhỏ (Tương thích cả OpenCV 3 và OpenCV 4)
         contours_data = cv2.findContours(thresh_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours = contours_data[0] if len(contours_data) == 2 else contours_data[1]
-        valid_contours = [c for c in contours if cv2.contourArea(c) > 60]  # Lọc bỏ nhiễu diện tích < 60 px^2
+        valid_contours = [c for c in contours if cv2.contourArea(c) > 30]  # Giữ lại vạch ranh giới thực sự
         
         # Tạo ảnh mask sạch chỉ chứa các vạch kẻ đường hợp lệ
         clean_thresh = np.zeros_like(thresh_closed)
@@ -120,32 +124,39 @@ class CameraProcessor(BaseCameraProcessor):
             self.blackboard.set('canny_edges', masked_edges)
             
         # 3. Phân cụm quét hàng (Scanline) tìm biên đường đen (phương án C)
-        y_lines = [160, 200, 240, 280]
+        # Thu hẹp cự ly quét về sát camera hơn [220, 240, 260, 280]
+        y_lines = [220, 240, 260, 280]
         waypoints = []
         raw_waypoints = []
         road_boundaries = {}
         center_x_bottom = settings.IMAGE_CENTER_X
         
+        # Độ rộng cửa sổ kiểm tra (window size) để lọc nhiễu đốm nhỏ
+        # Một điểm chuyển giao chỉ được coi là biên nếu đó là vạch màu trắng (255) rộng ít nhất 4 pixel
+        check_w = 4
+        
         for y in y_lines:
             scan_line = clean_thresh[y, :]
             
-            # Quét tìm ranh giới biên bên trái (chuyển đổi từ nền trắng 255 sang lòng đường đen 0)
+            # Quét tìm ranh giới biên bên trái (tìm vạch ranh giới màu trắng 255)
             found_left = False
             left_border = 0
-            for x in range(1, settings.IMAGE_CENTER_X):
-                if scan_line[x - 1] == 255 and scan_line[x] == 0:
-                    left_border = x
-                    found_left = True
-                    break
+            for x in range(1, settings.IMAGE_CENTER_X - check_w):
+                if scan_line[x] == 255:
+                    if np.all(scan_line[x : x + check_w] == 255):
+                        left_border = x + check_w // 2
+                        found_left = True
+                        break
                     
-            # Quét tìm ranh giới biên bên phải (chuyển từ nền trắng 255 sang lòng đường đen 0 từ phải qua trái)
+            # Quét tìm ranh giới biên bên phải (tìm vạch ranh giới màu trắng 255 từ phải qua trái)
             found_right = False
             right_border = settings.IMAGE_WIDTH - 1
-            for x in range(settings.IMAGE_WIDTH - 2, settings.IMAGE_CENTER_X, -1):
-                if scan_line[x + 1] == 255 and scan_line[x] == 0:
-                    right_border = x
-                    found_right = True
-                    break
+            for x in range(settings.IMAGE_WIDTH - 2, settings.IMAGE_CENTER_X + check_w, -1):
+                if scan_line[x] == 255:
+                    if np.all(scan_line[x - check_w + 1 : x + 1] == 255):
+                        right_border = x - check_w // 2
+                        found_right = True
+                        break
             
             # Lưu biên thực tế quét được (nếu không thấy thì xem như mép ảnh)
             road_boundaries[y] = (left_border, right_border)
@@ -195,6 +206,8 @@ class CameraProcessor(BaseCameraProcessor):
             
         # Trực quan hóa ảnh Canny sạch cho khối Debugger hiển thị
         debug_img = cv2.cvtColor(masked_edges, cv2.COLOR_GRAY2BGR)
+        # Vẽ viền vùng quan tâm ROI bằng nét màu xanh lá cây mỏng
+        cv2.polylines(debug_img, [roi_corners], True, (0, 255, 0), 1)
         return center_x_bottom, waypoints, debug_img
 
     def process(self, blackboard):
