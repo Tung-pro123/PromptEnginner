@@ -404,8 +404,8 @@ class Debugger:
             bev_panel = bev_debug_img.copy()
             if bev_panel.shape[:2] != (300, 300):
                 bev_panel = cv2.resize(bev_panel, (300, 300))
-            # Thêm nhãn nếu chưa có
-            cv2.putText(bev_panel, "BEV + Boundary Fit", (5, 20),
+            # Thêm nhãn (dời xuống y=40 để tránh đè lên text màu vàng)
+            cv2.putText(bev_panel, "BEV + Boundary Fit", (5, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 255, 255), 1)
         else:
             # Placeholder: Hiển thị nền đen + chú thích khi không dùng BEV
@@ -430,8 +430,8 @@ class Debugger:
                 for pt in waypoints:
                     cv2.circle(thresh_color, pt, 4, (0, 255, 255), -1)
             
-            # Them chu thich
-            cv2.putText(thresh_color, "Threshold (Binary)", (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+            # Them chu thich (dời xuống y=40 để tránh đè lên text màu vàng)
+            cv2.putText(thresh_color, "Threshold (Binary)", (5, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
             combined_img[:, 600:900] = thresh_color
 
         # 4. Lidar
@@ -446,7 +446,7 @@ class Debugger:
 
         # ---- Ghi video và hiển thị ----
         # Ghi raw frame - ưu tiên dùng raw_camera_frame (frame gốc chưa vẽ overlay)
-        raw_img = blackboard.get('raw_camera_frame') or blackboard.get('latest_image')
+        raw_img = blackboard.get('raw_camera_frame') if blackboard.get('raw_camera_frame') is not None else blackboard.get('latest_image')
         if raw_img is not None and self.raw_writer:
             try:
                 raw_bgr = raw_img if raw_img.ndim == 3 else cv2.cvtColor(raw_img, cv2.COLOR_GRAY2BGR)

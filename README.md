@@ -149,3 +149,6 @@ Các thành viên phụ trách phần **Control** cần chạy các script test 
 
 ---
 *Chúc đội thi PromptEngineer có một mùa giải thành công rực rỡ! 🚀🏆*
+
+Lệnh chạy:
+sudo bash -c "source /opt/ros/melodic/setup.bash && source ~/catkin_ws/devel/setup.bash && python3 ros_joy_teleop.py"

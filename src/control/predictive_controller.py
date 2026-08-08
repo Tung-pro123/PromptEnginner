@@ -96,8 +96,13 @@ class PredictiveController(BaseController):
             poly_coeff = np.polyfit(ys, xs, 2)
             a, b, c = poly_coeff
             
-            # Chọn điểm nhìn xa (Lookahead point) sát camera hơn (sát đầu xe)
-            lookahead_y = 240 
+            # Chọn điểm nhìn xa (Lookahead point) - Đẩy lên node thứ 6 (từ dưới lên)
+            sorted_waypoints = sorted(waypoints, key=lambda pt: pt[1], reverse=True) # Sắp xếp y giảm dần (từ gần xe ra xa)
+            if len(sorted_waypoints) >= 6:
+                lookahead_y = sorted_waypoints[5][1]
+            else:
+                lookahead_y = sorted_waypoints[-1][1] if sorted_waypoints else 240
+
             predicted_x = a * (lookahead_y**2) + b * lookahead_y + c
             
             # GIỚI HẠN: Nếu điểm nhìn xa nằm ngoài ranh giới đường quét được ở lookahead_y
