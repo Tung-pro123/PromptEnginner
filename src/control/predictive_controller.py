@@ -67,7 +67,17 @@ class PredictiveController(BaseController):
             self.car.steering = value
 
     def process(self, blackboard):
-        waypoints = blackboard.get('lane_waypoints', [])
+        # Ưu tiên 1: Đè thẳng lên làn trung tâm (nếu có)
+        # Trong detect_lane.py, nếu center_detected = True, lane_waypoints chính là đường trung tâm (màu vàng)
+        center_detected = blackboard.get('center_detected', False)
+        if center_detected:
+            waypoints = blackboard.get('lane_waypoints', [])
+        else:
+            # Thuật toán cũ (fallback): Sử dụng trực tiếp đường màu cam (đường biên) để tính toán điều khiển
+            waypoints = blackboard.get('boundary_waypoints', [])
+            
+        if not waypoints:
+            waypoints = blackboard.get('lane_waypoints', [])
         
         if not waypoints or len(waypoints) < 2:
             # Fallback nếu không có đủ điểm
@@ -88,22 +98,34 @@ class PredictiveController(BaseController):
             return
 
         # Hồi quy đa thức bậc 2: x = a*y^2 + b*y + c
-        # Fit x theo y vì y tăng đều đặn từ trên xuống dưới ảnh
-        ys = [pt[1] for pt in waypoints]
-        xs = [pt[0] for pt in waypoints]
+        # Lấy mẫu lại khoảng 8 điểm (giống thuật toán gốc) để tránh việc các điểm bị nén đặc ở xa
+        # làm sai lệch phương trình parabol do hiệu ứng phối cảnh (perspective)
+        if len(waypoints) > 10:
+            step = len(waypoints) // 8
+            sampled_waypoints = waypoints[::step]
+        else:
+            sampled_waypoints = waypoints
+            
+        ys = [pt[1] for pt in sampled_waypoints]
+        xs = [pt[0] for pt in sampled_waypoints]
         try:
             # Hồi quy đa thức bậc 2: x = a*y^2 + b*y + c
             poly_coeff = np.polyfit(ys, xs, 2)
             a, b, c = poly_coeff
             
-            # Chọn điểm nhìn xa (Lookahead point) - Đẩy lên node thứ 6 (từ dưới lên)
+            # Chọn điểm nhìn xa (Lookahead point)
+            # Trước đây 8 điểm thì chọn node 6 từ dưới lên (index 5)
+            # Bây giờ có 60 điểm, ta chọn điểm tương đương về khoảng cách vật lý (index 42)
             sorted_waypoints = sorted(waypoints, key=lambda pt: pt[1], reverse=True) # Sắp xếp y giảm dần (từ gần xe ra xa)
-            if len(sorted_waypoints) >= 6:
-                lookahead_y = sorted_waypoints[5][1]
+            if len(sorted_waypoints) >= 43:
+                target_pt = sorted_waypoints[42]
             else:
-                lookahead_y = sorted_waypoints[-1][1] if sorted_waypoints else 240
-
-            predicted_x = a * (lookahead_y**2) + b * lookahead_y + c
+                target_pt = sorted_waypoints[-1] if sorted_waypoints else (settings.IMAGE_CENTER_X, 240)
+            
+            lookahead_y = target_pt[1]
+            # Thay vì dùng phương trình parabol (x = a*y^2+b*y+c) để tính predicted_x dễ bị sai số do phối cảnh,
+            # ta dùng luôn toạ độ x thực tế của điểm trên đường màu vàng/cam để nhắm bắn cực chuẩn.
+            predicted_x = target_pt[0]
             
             # GIỚI HẠN: Nếu điểm nhìn xa nằm ngoài ranh giới đường quét được ở lookahead_y
             road_boundaries = blackboard.get('road_boundaries', {})

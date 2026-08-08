@@ -341,8 +341,7 @@ class Debugger:
         curr_time = time.time()
         if self._last_time > 0:
             dt = curr_time - self._last_time
-            fps_current = 1.0 / dt if dt > 0 else 0.0
-            self._fps = 0.8 * self._fps + 0.2 * fps_current
+            self._fps = 1.0 / dt if dt > 0 else 0.0
         self._last_time = curr_time
 
         # ---- Hợp nhất 4 ảnh vào 1 frame (1200x300): [Camera | BEV | Threshold | Lidar] ----

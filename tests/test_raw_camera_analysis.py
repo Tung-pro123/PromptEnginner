@@ -3,6 +3,7 @@ import sys
 import os
 import cv2
 import numpy as np
+import time
 
 # Thêm project root vào sys.path để import
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -15,8 +16,9 @@ from src.config import settings
 def main():
     # 1. Tìm đường dẫn video đầu vào
     possible_dirs = [
-        os.path.join(project_root, 'logs', 'speed_track_no_obstacle'),
-        os.path.join(project_root, 'logs', 'no_speed_track'),
+        # os.path.join(project_root, 'logs', 'speed_track_no_obstacle'),
+        # os.path.join(project_root, 'logs', 'no_speed_track'),
+        os.path.join(project_root, 'logs', 'session_14'),
     ]
     
     video_dir = None
@@ -72,6 +74,8 @@ def main():
 
     print("[INFO] Bắt đầu phân tích khung hình video...")
     processed_count = 0
+    prev_time = time.time()
+    fps = 0.0
 
     while True:
         ret, frame = cap.read()
@@ -130,10 +134,18 @@ def main():
             direction_str = "STRAIGHT"
             dir_color = (255, 255, 255)  # Trắng cho đi thẳng
 
+        # Tính toán FPS dựa trên thời gian thực xử lý mỗi frame
+        current_time = time.time()
+        elapsed = current_time - prev_time
+        prev_time = current_time
+        if elapsed > 0:
+            fps = 1.0 / elapsed
+
         # Hiển thị các thông số điều khiển (Steer, Throttle, Direction, Deviation) lên màn hình
         cv2.putText(overlay, f"Steer: {steering:.2f}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
         cv2.putText(overlay, f"Throttle: {throttle:.2f}", (10, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
         cv2.putText(overlay, f"Dir: {direction_str}", (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.45, dir_color, 1)
+        cv2.putText(overlay, f"FPS: {fps:.1f}", (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (100, 255, 100), 1)
         cv2.putText(overlay, f"Dev: {deviation:.1f}px", (10, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
 
         # Lấy ảnh Bird's Eye View debug nếu có (chỉ tồn tại khi dùng USE_BOUNDARY_PATH)

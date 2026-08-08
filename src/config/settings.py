@@ -22,6 +22,49 @@ BEV_SRC_POINTS = [
     [5,   295],   # Bottom-left
 ]
 
+# 1c. Lane Detector — Tham số thuật toán (detect_boundary_path)
+# --- EMA Smoothing ---
+LANE_EMA_ALPHA          = 0.45   # Hệ số EMA chung [0-1]. 0=giữ cũ, 1=lấy mới hoàn toàn
+LANE_EMA_JUMP_THRESHOLD = 40     # Pixel. Nếu C thay đổi hơn mức này → giảm alpha tránh jump
+LANE_EMA_JUMP_FACTOR    = 0.3    # Hệ số nhân alpha khi phát hiện jump đột ngột
+
+# --- Boundary Fit Sanity Check ---
+LANE_BOUNDARY_A_MAX     = 0.025  # Hệ số cong A tối đa cho biên (quá lớn = nhiễu)
+LANE_BOUNDARY_MIN_PTS   = 20     # Số pixel tối thiểu để fit biên
+LANE_BOUNDARY_OVERSHOOT = 50     # Pixel. Cho phép fit lố ra ngoài ảnh tối đa bao nhiêu
+
+# --- Contour Filter ---
+LANE_CONTOUR_MIN_AREA   = 120    # Pixel². Diện tích contour biên tối thiểu
+
+# --- Dashed Center Line ---
+LANE_DASH_AREA_MIN      = 40     # Pixel². Diện tích dash tối thiểu (nhỏ hơn = nhiễu đốm)
+LANE_DASH_AREA_MAX      = 3000   # Pixel². Diện tích dash tối đa (lớn hơn = biên, không phải dash)
+LANE_DASH_H_MIN         = 5      # Pixel. Chiều cao tối thiểu để coi là dash hợp lệ
+LANE_DASH_ASPECT_MAX    = 5.0    # Tỉ lệ w/h tối đa (quá ngang → loại)
+LANE_DASH_MIN_COUNT     = 1      # Số đoạn dash tối thiểu để xác nhận nét đứt
+LANE_DASH_ALIGN_TOL     = 40     # Pixel. Dung sai căn thẳng hàng X giữa các dash
+LANE_DASH_CENTER_LO     = 0.22   # Tỉ lệ width. Cạnh trái vùng scan nét đứt
+LANE_DASH_CENTER_HI     = 0.78   # Tỉ lệ width. Cạnh phải vùng scan nét đứt
+LANE_DASH_VALID_LO      = 0.15   # Tỉ lệ width. Vùng X hợp lệ tại đáy ảnh (sanity check)
+LANE_DASH_VALID_HI      = 0.85   # Tỉ lệ width. Vùng X hợp lệ tại đáy ảnh (sanity check)
+LANE_DASH_A_MAX         = 0.03   # Hệ số cong A tối đa cho nét đứt
+LANE_DASH_MIN_PTS       = 10     # Số pixel tối thiểu để fit nét đứt
+LANE_DASH_LOST_TIMEOUT  = 15     # Frame. Sau bao nhiêu frame mất nét đứt thì reset EMA
+LANE_DASH_EMA_JUMP_THR  = 35     # Pixel. Ngưỡng jump C riêng cho nét đứt
+LANE_DASH_EMA_JUMP_FAC  = 0.25   # Hệ số nhân alpha khi phát hiện jump nét đứt
+LANE_DASH_BOUNDARY_MARGIN = 35   # Pixel. Khoảng cách tối thiểu từ dash đến biên (cross-check)
+
+# --- Image Enhancement ---
+LANE_ENHANCE_GAMMA_TARGET  = 128   # Mức sáng trung bình lý tưởng (0-255)
+LANE_ENHANCE_GAMMA_MIN     = 0.4   # Gamma tối thiểu (tránh tối quá mức)
+LANE_ENHANCE_GAMMA_MAX     = 2.5   # Gamma tối đa (tránh sáng quá mức)
+LANE_ENHANCE_CLAHE_CLIP    = 2.5   # CLAHE clipLimit (cao hơn = tương phản mạnh hơn)
+LANE_ENHANCE_CLAHE_GRID    = 4     # CLAHE tileGridSize (nhỏ hơn = cục bộ hơn)
+LANE_ENHANCE_BILATERAL_D   = 5     # Bilateral filter diameter (lớn hơn = mượt hơn, chậm hơn)
+LANE_ENHANCE_BILATERAL_SC  = 60    # Bilateral sigmaColor (lớn = chấp nhận màu khác nhau hơn)
+LANE_ENHANCE_BILATERAL_SS  = 60    # Bilateral sigmaSpace (lớn = ảnh hưởng xa hơn)
+
+
 # 2. Control (PID Controller)
 PID_KP = 1.0 # mặc định 0.5
 PID_KI = 0.0

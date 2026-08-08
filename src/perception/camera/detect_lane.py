@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import sys
 import os
+from src.perception.camera.utils import lane_utils
 
 class LaneDetector:
     """
@@ -14,6 +15,12 @@ class LaneDetector:
     def __init__(self, image_width=300, image_height=300):
         self.width = image_width
         self.height = image_height
+
+        # ==========================================
+        # KHỞI TẠO MÔ HÌNH ESPCN SUPER RESOLUTION VIA UTILS
+        # ==========================================
+        self.sr_scale = 2
+        self.sr = lane_utils.init_espcn(self.sr_scale)
 
         # Đọc cấu hình BEV_SRC_POINTS từ settings nếu có
         try:
@@ -29,11 +36,66 @@ class LaneDetector:
         # ==========================================
         # EMA COEFFICIENTS SMOOTHING (cho detect_boundary_path)
         # ==========================================
+        # Đọc từ settings — load một lần để dùng lại trong toàn bộ class
+        try:
+            from src.config import settings as _s
+        except ImportError:
+            _s = None
+
+        def _cfg(key, default):
+            return getattr(_s, key, default) if _s is not None else default
+
+        self._ema_alpha           = _cfg('LANE_EMA_ALPHA',          0.45)
+        self._ema_jump_threshold  = _cfg('LANE_EMA_JUMP_THRESHOLD', 40)
+        self._ema_jump_factor     = _cfg('LANE_EMA_JUMP_FACTOR',    0.3)
+
+        self._boundary_a_max      = _cfg('LANE_BOUNDARY_A_MAX',     0.025)
+        self._boundary_min_pts    = _cfg('LANE_BOUNDARY_MIN_PTS',   20)
+        self._boundary_overshoot  = _cfg('LANE_BOUNDARY_OVERSHOOT', 50)
+        self._contour_min_area    = _cfg('LANE_CONTOUR_MIN_AREA',   120)
+
+        self._dash_area_min       = _cfg('LANE_DASH_AREA_MIN',      40)
+        self._dash_area_max       = _cfg('LANE_DASH_AREA_MAX',      3000)
+        self._dash_h_min          = _cfg('LANE_DASH_H_MIN',         5)
+        self._dash_aspect_max     = _cfg('LANE_DASH_ASPECT_MAX',    5.0)
+        self._dash_min_count      = _cfg('LANE_DASH_MIN_COUNT',     2)
+        self._dash_align_tol      = _cfg('LANE_DASH_ALIGN_TOL',     40)
+        self._dash_center_lo      = _cfg('LANE_DASH_CENTER_LO',     0.22)
+        self._dash_center_hi      = _cfg('LANE_DASH_CENTER_HI',     0.78)
+        self._dash_valid_lo       = _cfg('LANE_DASH_VALID_LO',      0.15)
+        self._dash_valid_hi       = _cfg('LANE_DASH_VALID_HI',      0.85)
+        self._dash_a_max          = _cfg('LANE_DASH_A_MAX',         0.03)
+        self._dash_min_pts        = _cfg('LANE_DASH_MIN_PTS',       10)
+        self._dash_ema_jump_thr   = _cfg('LANE_DASH_EMA_JUMP_THR',  35)
+        self._dash_ema_jump_fac   = _cfg('LANE_DASH_EMA_JUMP_FAC',  0.25)
+
+        self._gamma_target        = _cfg('LANE_ENHANCE_GAMMA_TARGET', 128)
+        self._gamma_min           = _cfg('LANE_ENHANCE_GAMMA_MIN',    0.4)
+        self._gamma_max           = _cfg('LANE_ENHANCE_GAMMA_MAX',    2.5)
+        self._clahe_clip          = _cfg('LANE_ENHANCE_CLAHE_CLIP',   2.5)
+        self._clahe_grid          = _cfg('LANE_ENHANCE_CLAHE_GRID',   4)
+        self._bilateral_d         = _cfg('LANE_ENHANCE_BILATERAL_D',  5)
+        self._bilateral_sc        = _cfg('LANE_ENHANCE_BILATERAL_SC', 60)
+        self._bilateral_ss        = _cfg('LANE_ENHANCE_BILATERAL_SS', 60)
+
         # Làm mượt hệ số đa thức A, B, C qua nhiều frame để tránh rung lắc
         self._ema_boundary_fit = None   # fit trực tiếp vào biên đường
-        self._ema_alpha = 0.45          # 0 = hoàn toàn cũ, 1 = hoàn toàn mới
         self._last_good_boundary_fit = None  # Hệ số fit gần nhất còn hiệu lực
-        self._last_boundary_side = 'right'   # Bên biên gần nhất phát hiện được (mặc định phải)
+        self._last_good_boundary_side = 'right'
+        self._last_boundary_side = 'right'
+
+        # EMA cho đường trung tâm cũ (để tương thích ngược)
+        self._ema_center_fit = None
+        self._last_good_center_fit = None
+        self._center_detected = False
+
+        # EMA cho nét đứt trung tâm
+        self._ema_dash_fit = None
+        self._last_good_dash_fit = None
+        self._dash_detected = False
+        self._dash_lost_frames = 0
+        self._dash_boundary_margin = _cfg('LANE_DASH_BOUNDARY_MARGIN', 35)
+        self._dash_lost_timeout    = _cfg('LANE_DASH_LOST_TIMEOUT',    15)
 
         # Bird's Eye View - 4 điểm nguồn (góc phối cảnh) và 4 điểm đích (nhìn từ trên xuống)
         # Nếu BEV_SRC_POINTS được định nghĩa trong settings.py → dùng ngay.
@@ -63,32 +125,45 @@ class LaneDetector:
 
     def detect_boundary_path(self, frame, boundary_offset_px=55, debug=True):
         """
-        Thuật toán mới: Bám trực tiếp vào đường biên (vạch đỏ/cam) rồi offset vào trong
-        để tạo ra quỹ đạo xe song song và cách biên `boundary_offset_px` pixel.
+        Thuật toán nâng cấp: Ưu tiên bám nét đứt trung tâm (center dashed line),
+        fallback về offset biên (boundary) khi mất nét đứt.
+
+        Priority:
+          MODE A — Dashed Center (cao nhất): Phát hiện nét đứt cam/đỏ ở vùng giữa ảnh
+                   → Bám thẳng vào nét đứt, đường đi màu TRẮNG trong debug
+          MODE B — Boundary Offset (fallback chính): Dùng biên đường + offset vào trong
+                   → Đường đi màu XANH LÁ trong debug
+          MODE C — Fallback: Tâm ảnh (khi mất cả 2)
+                   → Đường đi màu ĐỎ trong debug
 
         Pipeline:
-          1. Resize + Bird's Eye View warp
-          2. HSV Mask lấy vạch đỏ/cam
-          3. Contour extraction → lọc contour biên lớn nhất
-          4. Polynomial fit bậc 2 trực tiếp vào contour pixels
-          5. Offset đường fit vào trong
-          6. Dark Road Center assist để cross-check
-          7. EMA làm mượt hệ số qua frame
-          8. Vẽ debug overlay và trả về kết quả
+          1. Image Enhancement (ESPCN + AutoGamma + CLAHE + Bilateral)
+          2. BEV warp
+          3. HSV Mask lấy vạch đỏ/cam
+          4. Contour extraction → lọc contour biên lớn nhất
+          4b. [MỚI] Detect nét đứt trung tâm (vị trí + hình dạng)
+          5. Polynomial fit + EMA biên
+          5b. Polynomial fit + EMA nét đứt
+          6. Xác định offset_sign
+          7. Tính waypoints theo mode priority
+          8. Warp về camera space
+          9. Vẽ debug overlay 3 màu
 
         Returns:
-          center_x      : float - tọa độ X tại y=target_y, dùng để tính steering
-          waypoints     : list[(x, y)] - 8 điểm dọc đường quỹ đạo (không phải Bird-eye, đã warp về camera)
-          debug_img     : np.ndarray (BGR) - ảnh gốc đã vẽ overlay để debug
-          bev_debug_img : np.ndarray (BGR) - ảnh Bird's Eye View debug
+          center_x       : float - tọa độ X tại y=target_y, dùng để tính steering
+          waypoints      : list[(x, y)] - điểm dọc đường quỹ đạo (camera space)
+          boundary_wps   : list[(x, y)] - điểm dọc đường biên (camera space)
+          dash_detected  : bool - True nếu đang ở Mode A (bám nét đứt)
+          debug_img      : np.ndarray (BGR) - ảnh gốc đã vẽ overlay
+          bev_debug_img  : np.ndarray (BGR) - ảnh Bird's Eye View debug
         """
         if frame is None:
-            return float(self.width // 2), [], None, None
+            return float(self.width // 2), [], [], False, None, None
 
         # -----------------------------------------------------------
-        # BƯỚC 1: Resize + Bird's Eye View
+        # BƯỚC 1: ESPCN Enhance + Bird's Eye View
         # -----------------------------------------------------------
-        resized = cv2.resize(frame, (self.width, self.height))
+        resized = lane_utils.enhance_image(frame, self.sr, self.sr_scale, self.width, self.height, self)
         bev     = cv2.warpPerspective(resized, self._M, (self.width, self.height))
 
         # -----------------------------------------------------------
@@ -126,7 +201,7 @@ class LaneDetector:
         contours  = cnts_data[0] if len(cnts_data) == 2 else cnts_data[1]
 
         # 3a. Lọc theo diện tích tối thiểu
-        MIN_AREA = 120
+        MIN_AREA = self._contour_min_area
         valid_cnts = [c for c in contours if cv2.contourArea(c) > MIN_AREA]
 
         # 3b. Lọc theo tỷ lệ khung hình (aspect ratio): Đường biên đường phải dọc
@@ -206,9 +281,8 @@ class LaneDetector:
         # BƯỚC 4: Polynomial fit + Sanity check chống nhiễu cực đoan
         # -----------------------------------------------------------
         boundary_fit = None
-        MIN_PTS_FOR_FIT = 20
-        # Hệ số cong A tối đa cho phép: |A| > A_MAX là đường bị nhiễu phi thực tế
-        A_MAX = 0.025   # Tương đương ~1 pixel lệch / (10px)^2 — đường cong vừa phải
+        MIN_PTS_FOR_FIT = self._boundary_min_pts
+        A_MAX = self._boundary_a_max
 
         if len(boundary_pts_y) >= MIN_PTS_FOR_FIT:
             try:
@@ -225,7 +299,7 @@ class LaneDetector:
                     x_at_bottom = (candidate_fit[0] * (self.height - 1)**2
                                    + candidate_fit[1] * (self.height - 1)
                                    + candidate_fit[2])
-                    if x_at_bottom < -50 or x_at_bottom > self.width + 50:
+                    if x_at_bottom < -self._boundary_overshoot or x_at_bottom > self.width + self._boundary_overshoot:
                         # Đường fit ra ngoài ảnh quá nhiều → nhiễu
                         candidate_fit = None
 
@@ -236,13 +310,14 @@ class LaneDetector:
                     else:
                         # Kiểm tra jump đột ngột: Nếu C thay đổi quá lớn so với EMA → giảm alpha
                         delta_c = abs(candidate_fit[2] - self._ema_boundary_fit[2])
-                        alpha   = self._ema_alpha if delta_c < 40 else (self._ema_alpha * 0.3)
+                        alpha   = self._ema_alpha if delta_c < self._ema_jump_threshold else (self._ema_alpha * self._ema_jump_factor)
                         self._ema_boundary_fit = (
                             alpha * candidate_fit
                             + (1.0 - alpha) * self._ema_boundary_fit
                         )
                     boundary_fit = self._ema_boundary_fit.copy()
                     self._last_good_boundary_fit = boundary_fit.copy()
+                    self._last_good_boundary_side = boundary_side # Ghi nhớ side tương ứng với fit hợp lệ
 
             except (np.linalg.LinAlgError, ValueError):
                 boundary_fit = None
@@ -250,7 +325,72 @@ class LaneDetector:
         # Dùng fit gần nhất nếu frame này không có (hoặc bị từ chối)
         if boundary_fit is None and self._last_good_boundary_fit is not None:
             boundary_fit = self._last_good_boundary_fit.copy()
+            boundary_side = self._last_good_boundary_side # Phục hồi side tương ứng với fit cũ
 
+
+        # -----------------------------------------------------------
+        # BƯỚC 4b: [MỚI] Phát hiện nét đứt trung tâm (Dashed Center Line)
+        # -----------------------------------------------------------
+        # Dùng raw red_mask (trước khi morphology Close lớn) để giữ tính gián đoạn của dash.
+        # Tạo raw_mask_open: chỉ dùng morphology Open nhỏ để lọc nhiễu đốm, KHÔNG Close.
+        k_open_dash = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        red_mask_for_dash = cv2.morphologyEx(
+            cv2.bitwise_and(cv2.bitwise_or(mask1, mask2), roi_mask),
+            cv2.MORPH_OPEN, k_open_dash
+        )
+        dash_pts_x, dash_pts_y, dash_raw_detected = lane_utils.detect_dashed_center(
+            hsv, red_mask_for_dash, self.width, self.height, self, boundary_fit, boundary_side
+        )
+
+        # Polyfit nét đứt + EMA smoothing
+        dash_fit = None
+        self._dash_detected = False
+
+        if dash_raw_detected and len(dash_pts_y) >= self._dash_min_pts:
+            try:
+                candidate_dash = np.polyfit(dash_pts_y, dash_pts_x, 2)
+
+                # Sanity check hệ số A
+                if abs(candidate_dash[0]) <= self._dash_a_max:
+                    # Sanity check vị trí X tại đáy ảnh (phải ở vùng trung tâm)
+                    x_dash_bottom = (candidate_dash[0] * (self.height - 1)**2
+                                     + candidate_dash[1] * (self.height - 1)
+                                     + candidate_dash[2])
+                    if int(self.width * self._dash_valid_lo) < x_dash_bottom < int(self.width * self._dash_valid_hi):
+                        # [MỚI] Cross-check: Dash phải cách biên ít nhất _dash_boundary_margin pixel
+                        # Tránh trường hợp biên cong vào vùng trung tâm bị nhầm thành nét đứt
+                        dash_too_close_to_boundary = False
+                        if boundary_fit is not None:
+                            ref_y = int(self.height * 0.7)  # Kiểm tra tại y=70% chiều cao
+                            x_boundary_ref = (boundary_fit[0]*ref_y**2
+                                              + boundary_fit[1]*ref_y
+                                              + boundary_fit[2])
+                            if abs(x_dash_bottom - x_boundary_ref) < self._dash_boundary_margin:
+                                dash_too_close_to_boundary = True
+
+                        if not dash_too_close_to_boundary:
+                            # EMA smoothing
+                            if self._ema_dash_fit is None:
+                                self._ema_dash_fit = candidate_dash.copy()
+                            else:
+                                delta_c = abs(candidate_dash[2] - self._ema_dash_fit[2])
+                                alpha = self._ema_alpha if delta_c < self._dash_ema_jump_thr else (self._ema_alpha * self._dash_ema_jump_fac)
+                                self._ema_dash_fit = (alpha * candidate_dash
+                                                      + (1.0 - alpha) * self._ema_dash_fit)
+                            dash_fit = self._ema_dash_fit.copy()
+                            self._last_good_dash_fit = dash_fit.copy()
+                            self._dash_detected = True
+                            self._dash_lost_frames = 0
+
+            except (np.linalg.LinAlgError, ValueError):
+                pass
+
+        # Quản lý timeout nét đứt: Nếu mất quá lâu → reset EMA để không bám fit cũ sai
+        if not self._dash_detected:
+            self._dash_lost_frames += 1
+            if self._dash_lost_frames >= self._dash_lost_timeout:
+                self._ema_dash_fit = None       # Reset EMA
+                self._last_good_dash_fit = None # Xóa cả last good để không dùng fallback sai
 
         # -----------------------------------------------------------
         # BƯỚC 5: Offset đường fit vào trong làn đường
@@ -268,36 +408,54 @@ class LaneDetector:
         # -----------------------------------------------------------
         # BƯỚC 6: Dark Road Center Assist - Tìm vùng đường tối làm cross-check
         # -----------------------------------------------------------
-        dark_centers = self._compute_dark_road_centers(bev)  # {y: cx}
+        # BƯỚC 7: Tính 60 waypoints — Priority Logic 3 Mode
+        # -----------------------------------------------------------
+        # MODE A: Bám nét đứt trung tâm (ưu tiên cao nhất)
+        # MODE B: Offset từ biên đường (fallback khi mất nét đứt)
+        # MODE C: Giữ fit cũ / tâm ảnh (fallback cuối cùng)
+        # -----------------------------------------------------------
+        y_lines_bev = np.linspace(int(self.height * 0.40), self.height - 15, 60).astype(int)
+        waypoints_bev = []
+        boundary_waypoints_bev = []
 
-        # -----------------------------------------------------------
-        # BƯỚC 7: Tính 8 waypoints dọc đường quỹ đạo (trong không gian BEV)
-        # -----------------------------------------------------------
-        y_lines_bev = np.linspace(int(self.height * 0.40), self.height - 15, 8).astype(int)
-        waypoints_bev = []  # [(x_bev, y_bev)] - trong không gian Bird's Eye View
+        # Xác định mode hoạt động
+        if self._dash_detected and dash_fit is not None:
+            active_mode = 'A_DASH'       # Bám trực tiếp nét đứt
+        elif boundary_fit is not None:
+            active_mode = 'B_BOUNDARY'   # Offset từ biên
+        else:
+            active_mode = 'C_FALLBACK'   # Fallback
 
         for y in y_lines_bev:
+            # --- Tính vị trí biên để vẽ debug ---
             if boundary_fit is not None:
                 x_boundary = float(boundary_fit[0]*y**2 + boundary_fit[1]*y + boundary_fit[2])
-                x_path     = x_boundary + offset_sign * boundary_offset_px
-
-                # Cross-check với dark road center: Kéo nhẹ về phía trung tâm đường tối nếu tồn tại
-                if y in dark_centers:
-                    dc = dark_centers[y]
-                    # Blend 20% về phía dark center để tránh lệch ra ngoài làn
-                    x_path = 0.80 * x_path + 0.20 * dc
-
-                # Clamp trong biên ảnh có padding nhỏ
-                x_path = float(np.clip(x_path, 5, self.width - 5))
-                waypoints_bev.append((int(x_path), int(y)))
+                x_boundary = float(np.clip(x_boundary, 5, self.width - 5))
             else:
-                # Fallback: Dùng tâm ảnh
-                waypoints_bev.append((self.width // 2, int(y)))
+                x_boundary = float(self.width // 2)
+            boundary_waypoints_bev.append((int(x_boundary), int(y)))
+
+            # --- MODE A: Bám thẳng nét đứt trung tâm ---
+            if active_mode == 'A_DASH':
+                x_path = float(dash_fit[0]*y**2 + dash_fit[1]*y + dash_fit[2])
+                x_path = float(np.clip(x_path, 5, self.width - 5))
+
+            # --- MODE B: Offset vào trong từ biên ---
+            elif active_mode == 'B_BOUNDARY':
+                x_path = x_boundary + offset_sign * boundary_offset_px
+                x_path = float(np.clip(x_path, 5, self.width - 5))
+
+            # --- MODE C: Fallback tâm ảnh ---
+            else:
+                x_path = float(self.width // 2)
+
+            waypoints_bev.append((int(x_path), int(y)))
 
         # -----------------------------------------------------------
         # BƯỚC 8: Warp waypoints từ BEV về camera space
         # -----------------------------------------------------------
         waypoints_cam = self._warp_points_back(waypoints_bev)
+        boundary_waypoints_cam = self._warp_points_back(boundary_waypoints_bev)
 
         # Lấy center_x tại y gần mũi xe nhất (y_bev lớn nhất → y_cam sát dưới)
         if waypoints_cam:
@@ -306,8 +464,19 @@ class LaneDetector:
             center_x = float(self.width // 2)
 
         # -----------------------------------------------------------
-        # BƯỚC 9: Vẽ debug overlay
+        # BƯỚC 9: Vẽ debug overlay — 3 màu phân biệt mode
         # -----------------------------------------------------------
+        # Màu path theo mode:
+        #   Mode A (nét đứt)  → Trắng  (255, 255, 255)
+        #   Mode B (biên)      → Xanh lá (0, 220, 60)
+        #   Mode C (fallback)  → Đỏ     (0, 0, 200)
+        MODE_COLORS = {
+            'A_DASH':     (255, 255, 255),   # Trắng — bám nét đứt
+            'B_BOUNDARY': (0, 220, 60),      # Xanh lá — offset biên
+            'C_FALLBACK': (0, 0, 200),       # Đỏ — fallback
+        }
+        path_color = MODE_COLORS[active_mode]
+
         debug_img     = None
         bev_debug_img = None
 
@@ -315,12 +484,12 @@ class LaneDetector:
             debug_img     = resized.copy()
             bev_debug_img = bev.copy()
 
-            # Vẽ mask biên đỏ lên BEV debug
+            # --- Vẽ mask biên đỏ lên BEV ---
             red_overlay = bev_debug_img.copy()
             red_overlay[red_mask > 0] = [0, 80, 255]
             bev_debug_img = cv2.addWeighted(bev_debug_img, 0.6, red_overlay, 0.4, 0)
 
-            # Vẽ đường fit biên (màu cam sáng) trên BEV
+            # --- Vẽ đường fit biên (màu cam sáng) ---
             if boundary_fit is not None:
                 ploty = np.linspace(int(self.height * 0.30), self.height - 1, 60).astype(int)
                 for y in ploty:
@@ -328,61 +497,67 @@ class LaneDetector:
                     x_b = int(np.clip(x_b, 0, self.width - 1))
                     cv2.circle(bev_debug_img, (x_b, y), 2, (0, 165, 255), -1)
 
-            # Vẽ 8 waypoints path (màu xanh lá) trên BEV
-            for i, pt in enumerate(waypoints_bev):
-                cv2.circle(bev_debug_img, pt, 5, (0, 255, 0), -1)
+            # --- [MỚI] Vẽ đường fit nét đứt (màu tím) ---
+            if dash_fit is not None:
+                ploty = np.linspace(int(self.height * 0.30), self.height - 1, 60).astype(int)
+                for y in ploty:
+                    x_d = int(dash_fit[0]*y**2 + dash_fit[1]*y + dash_fit[2])
+                    x_d = int(np.clip(x_d, 0, self.width - 1))
+                    cv2.circle(bev_debug_img, (x_d, y), 2, (200, 0, 200), -1)
+
+            # --- [MỚI] Vẽ các điểm nét đứt thô (màu vàng nhạt) ---
+            if dash_raw_detected and len(dash_pts_x) > 0:
+                for px, py in zip(dash_pts_x.astype(int), dash_pts_y.astype(int)):
+                    if 0 <= px < self.width and 0 <= py < self.height:
+                        cv2.circle(bev_debug_img, (px, py), 1, (0, 230, 230), -1)
+
+            # --- Vẽ waypoints path trên BEV ---
+            for pt in waypoints_bev:
+                cv2.circle(bev_debug_img, pt, 4, path_color, -1)
             if len(waypoints_bev) > 1:
                 for i in range(1, len(waypoints_bev)):
-                    cv2.line(bev_debug_img, waypoints_bev[i-1], waypoints_bev[i], (0, 255, 0), 2)
+                    cv2.line(bev_debug_img, waypoints_bev[i-1], waypoints_bev[i], path_color, 2)
 
-            # Vẽ trục tâm BEV (xanh dương)
+            # --- Vẽ trục tâm BEV (xanh dương) ---
             cv2.line(bev_debug_img, (self.width // 2, 0), (self.width // 2, self.height), (255, 100, 0), 1)
 
-            # Label BEV side
-            label_side = f"Boundary: {boundary_side.upper()}"
-            cv2.putText(bev_debug_img, label_side, (5, 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            # --- Label mode và biên ---
+            mode_label = {
+                'A_DASH':     'MODE A: DASH CENTER',
+                'B_BOUNDARY': f'MODE B: BOUNDARY {boundary_side.upper()}',
+                'C_FALLBACK': 'MODE C: FALLBACK',
+            }[active_mode]
+            cv2.putText(bev_debug_img, mode_label, (5, 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, path_color, 1)
             cv2.putText(bev_debug_img, "BEV (Bird Eye View)", (5, self.height - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.38, (200, 200, 200), 1)
 
-            # Vẽ waypoints đã warp về camera space trên debug_img gốc
-            for i, pt in enumerate(waypoints_cam):
-                cv2.circle(debug_img, pt, 5, (0, 255, 0), -1)
+            # --- Vẽ waypoints đã warp về camera space ---
+            for pt in waypoints_cam:
+                cv2.circle(debug_img, pt, 4, path_color, -1)
             if len(waypoints_cam) > 1:
                 for i in range(1, len(waypoints_cam)):
-                    cv2.line(debug_img, waypoints_cam[i-1], waypoints_cam[i], (0, 255, 0), 2)
+                    cv2.line(debug_img, waypoints_cam[i-1], waypoints_cam[i], path_color, 2)
 
-            # Mũi tên center_x
+            # --- Mũi tên center_x ---
             arrow_y = self.height - 30
             cv2.arrowedLine(debug_img,
                             (self.width // 2, arrow_y),
                             (int(center_x), arrow_y),
                             (0, 200, 255), 2, tipLength=0.35)
 
-        return center_x, waypoints_cam, debug_img, bev_debug_img
+            # --- Label mode trên camera frame ---
+            cv2.putText(debug_img, mode_label, (5, 18),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.40, path_color, 1)
+
+        return center_x, waypoints_cam, boundary_waypoints_cam, self._dash_detected, debug_img, bev_debug_img
+
 
     # ------------------------------------------------------------------
     # PRIVATE HELPERS
     # ------------------------------------------------------------------
 
-    def _compute_dark_road_centers(self, bev_frame):
-        """
-        Tìm tâm X của vùng đường tối (mặt nhựa/bê tông) tại mỗi scanline y trên BEV.
-        Trả về dict {y: center_x}.
-        """
-        gray   = cv2.cvtColor(bev_frame, cv2.COLOR_BGR2GRAY)
-        result = {}
-        y_scan = np.linspace(int(self.height * 0.40), self.height - 15, 12).astype(int)
 
-        for y in y_scan:
-            if y >= self.height:
-                continue
-            row = gray[y, :]
-            # Threshold: Vùng đường tối (V < 100)
-            dark_cols = np.where(row < 100)[0]
-            if len(dark_cols) >= 10:
-                result[y] = float(np.mean(dark_cols))
-        return result
 
     def _warp_points_back(self, pts_bev):
         """
@@ -417,9 +592,9 @@ class LaneDetector:
             return None, None, self.width // 2, None, None
             
         # ==========================================
-        # 1. TIỀN XỬ LÝ (PRE-PROCESSING)
+        # 1. TIỀN XỬ LÝ (PRE-PROCESSING) VỚI ESPCN
         # ==========================================
-        resized = cv2.resize(frame, (self.width, self.height))
+        resized = lane_utils.enhance_image(frame, self.sr, self.sr_scale, self.width, self.height, self)
         gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
         
         # Làm mờ và tăng tương phản (CLAHE) - Kế thừa kỹ thuật cũ để lọc nhiễu
@@ -431,123 +606,11 @@ class LaneDetector:
         _, thresh = cv2.threshold(enhanced, threshold_val, 255, cv2.THRESH_BINARY)
         
         # ==========================================
-        # 2. TÌM CHÂN VẠCH ĐƯỜNG (HISTOGRAM PEAKS)
+        # 2. SLIDING WINDOW & SEGMENTATION VIA UTILS
         # ==========================================
-        # Lấy histogram (tổng điểm ảnh trắng theo chiều dọc) của nửa dưới bức ảnh
-        # Nửa dưới bức ảnh chứa phần đường gần xe nhất.
-        histogram = np.sum(thresh[self.height//2:, :], axis=0)
-        
-        midpoint = int(histogram.shape[0] // 2)
-        # Đỉnh histogram bên trái là chân vạch trái, bên phải là chân vạch phải
-        leftx_base = np.argmax(histogram[:midpoint])
-        rightx_base = np.argmax(histogram[midpoint:]) + midpoint
-        
-        # Fallback (Nếu ảnh mù mịt không có vạch, giả định vị trí)
-        if histogram[leftx_base] < 50:
-            leftx_base = 30
-        if histogram[rightx_base] < 50:
-            rightx_base = self.width - 30
-            
-        # ==========================================
-        # 3. THUẬT TOÁN SLIDING WINDOW
-        # ==========================================
-        nwindows = 9  # Chia ảnh thành 9 lớp ngang
-        window_height = int(self.height // nwindows)
-        
-        # Trích xuất tất cả tọa độ pixel trắng (X, Y)
-        nonzero = thresh.nonzero()
-        nonzeroy = np.array(nonzero[0])
-        nonzerox = np.array(nonzero[1])
-        
-        leftx_current = leftx_base
-        rightx_current = rightx_base
-        margin = 35  # Độ rộng cửa sổ dò tìm
-        minpix = 15  # Số pixel trắng tối thiểu để dịch chuyển tâm cửa sổ
-        
-        left_lane_inds = []
-        right_lane_inds = []
-        
-        for window in range(nwindows):
-            # Tính giới hạn Y của cửa sổ hiện tại (Dò từ dưới lên trên)
-            win_y_low = self.height - (window + 1) * window_height
-            win_y_high = self.height - window * window_height
-            
-            # Tính giới hạn X cho cửa sổ trái và phải
-            win_xleft_low, win_xleft_high = leftx_current - margin, leftx_current + margin
-            win_xright_low, win_xright_high = rightx_current - margin, rightx_current + margin
-            
-            # Lọc lấy các pixel trắng rơi vào bên trong cửa sổ
-            good_left_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & 
-                              (nonzerox >= win_xleft_low) & (nonzerox < win_xleft_high)).nonzero()[0]
-            good_right_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & 
-                               (nonzerox >= win_xright_low) & (nonzerox < win_xright_high)).nonzero()[0]
-            
-            left_lane_inds.append(good_left_inds)
-            right_lane_inds.append(good_right_inds)
-            
-            # Cập nhật lại tâm của cửa sổ nếu gom đủ lượng pixel trắng
-            if len(good_left_inds) > minpix:
-                leftx_current = int(np.mean(nonzerox[good_left_inds]))
-            if len(good_right_inds) > minpix:
-                rightx_current = int(np.mean(nonzerox[good_right_inds]))
-                
-        left_lane_inds = np.concatenate(left_lane_inds)
-        right_lane_inds = np.concatenate(right_lane_inds)
-        
-        leftx, lefty = nonzerox[left_lane_inds], nonzeroy[left_lane_inds]
-        rightx, righty = nonzerox[right_lane_inds], nonzeroy[right_lane_inds]
-        
-        # ==========================================
-        # 4. HỒI QUY ĐA THỨC (CURVE FITTING) VÀ PHÂN ĐOẠN (SEGMENTATION)
-        # ==========================================
-        left_fit, right_fit = None, None
-        segmented_img = resized.copy()
-        
-        # Chỉ chạy nội suy khi có đủ số điểm ảnh làm cơ sở
-        if len(leftx) > 10:
-            left_fit = np.polyfit(lefty, leftx, 2)
-        if len(rightx) > 10:
-            right_fit = np.polyfit(righty, rightx, 2)
-            
-        # Ước lượng độ rộng làn đường (mặc định khoảng 140 pixel cho ảnh 300x300)
-        lane_width = 140.0
-        
-        # Nếu chỉ tìm thấy một bên, giả lập bên còn lại song song bằng cách dịch chuyển theo lane_width
-        if left_fit is not None and right_fit is None:
-            right_fit = left_fit.copy()
-            right_fit[2] += lane_width
-        elif right_fit is not None and left_fit is None:
-            left_fit = right_fit.copy()
-            left_fit[2] -= lane_width
-            
-        center_x = self.width // 2
-        
-        if left_fit is not None and right_fit is not None:
-            # Nội suy tọa độ X từ 0 đến height
-            ploty = np.linspace(0, self.height - 1, self.height)
-            left_fitx = left_fit[0]*ploty**2 + left_fit[1]*ploty + left_fit[2]
-            right_fitx = right_fit[0]*ploty**2 + right_fit[1]*ploty + right_fit[2]
-            
-            # --- ĐỔ MÀU PHÂN ĐOẠN LÀN ĐƯỜNG (DRIVABLE AREA) ---
-            # Tập hợp tọa độ bên trái và bên phải để tạo thành 1 Đa giác khép kín
-            pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))])
-            pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fitx, ploty])))]) # Lật mảng phải để khép hình
-            pts = np.hstack((pts_left, pts_right))
-            
-            # Phân đoạn: Phủ một lớp màu Xanh Lá Cây 30% alpha (Blend) vào ảnh gốc
-            color_mask = np.zeros_like(segmented_img)
-            cv2.fillPoly(color_mask, np.int_([pts]), (0, 255, 0)) # Tô màu xanh lá (0, 255, 0)
-            segmented_img = cv2.addWeighted(segmented_img, 1.0, color_mask, 0.4, 0) # 0.4 là độ đậm nhạt
-            
-            # Tính điểm mục tiêu để lái xe (Chính giữa vạch trái và vạch phải ở sát đầu xe)
-            target_y = self.height - 20 # Sát mũi xe
-            lx = left_fit[0]*target_y**2 + left_fit[1]*target_y + left_fit[2]
-            rx = right_fit[0]*target_y**2 + right_fit[1]*target_y + right_fit[2]
-            center_x = (lx + rx) / 2.0
-            
-            # Vẽ điểm lái màu đỏ
-            cv2.circle(segmented_img, (int(center_x), target_y), 6, (0, 0, 255), -1)
-
+        segmented_img, center_x, left_fit, right_fit = lane_utils.sliding_window_segment(
+            thresh, resized, self.width, self.height, limit_y_ratio=0.0
+        )
         return segmented_img, thresh, center_x, left_fit, right_fit
 
     def process_color_segment(self, frame):
@@ -560,9 +623,9 @@ class LaneDetector:
             return None, None, self.width // 2, None, None
             
         # ==========================================
-        # 1. TIỀN XỬ LÝ BẰNG HSV (COLOR FILTERING)
+        # 1. TIỀN XỬ LÝ ESPCN & HSV (COLOR FILTERING)
         # ==========================================
-        resized = cv2.resize(frame, (self.width, self.height))
+        resized = self._enhance_image(frame)
         hsv = cv2.cvtColor(resized, cv2.COLOR_BGR2HSV)
         
         # Ngưỡng màu Đỏ/Cam (Dải 1: Đỏ nhạt đến cam)
@@ -602,105 +665,9 @@ class LaneDetector:
         thresh = clean_thresh
 
         # ==========================================
-        # 2. TÌM CHÂN VẠCH ĐƯỜNG (HISTOGRAM PEAKS)
+        # 2. SLIDING WINDOW & SEGMENTATION VIA UTILS
         # ==========================================
-        histogram = np.sum(thresh[self.height//2:, :], axis=0)
-        midpoint = int(histogram.shape[0] // 2)
-        leftx_base = np.argmax(histogram[:midpoint])
-        rightx_base = np.argmax(histogram[midpoint:]) + midpoint
-        
-        if histogram[leftx_base] < 50:
-            leftx_base = 30
-        if histogram[rightx_base] < 50:
-            rightx_base = self.width - 30
-            
-        # ==========================================
-        # 3. THUẬT TOÁN SLIDING WINDOW
-        # ==========================================
-        nwindows = 9
-        window_height = int(self.height // nwindows)
-        
-        nonzero = thresh.nonzero()
-        nonzeroy = np.array(nonzero[0])
-        nonzerox = np.array(nonzero[1])
-        
-        leftx_current = leftx_base
-        rightx_current = rightx_base
-        margin = 35
-        minpix = 15
-        
-        left_lane_inds = []
-        right_lane_inds = []
-        
-        for window in range(nwindows):
-            win_y_low = self.height - (window + 1) * window_height
-            win_y_high = self.height - window * window_height
-            
-            win_xleft_low, win_xleft_high = leftx_current - margin, leftx_current + margin
-            win_xright_low, win_xright_high = rightx_current - margin, rightx_current + margin
-            
-            good_left_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & 
-                              (nonzerox >= win_xleft_low) & (nonzerox < win_xleft_high)).nonzero()[0]
-            good_right_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & 
-                               (nonzerox >= win_xright_low) & (nonzerox < win_xright_high)).nonzero()[0]
-            
-            left_lane_inds.append(good_left_inds)
-            right_lane_inds.append(good_right_inds)
-            
-            if len(good_left_inds) > minpix:
-                leftx_current = int(np.mean(nonzerox[good_left_inds]))
-            if len(good_right_inds) > minpix:
-                rightx_current = int(np.mean(nonzerox[good_right_inds]))
-                
-        left_lane_inds = np.concatenate(left_lane_inds)
-        right_lane_inds = np.concatenate(right_lane_inds)
-        
-        leftx, lefty = nonzerox[left_lane_inds], nonzeroy[left_lane_inds]
-        rightx, righty = nonzerox[right_lane_inds], nonzeroy[right_lane_inds]
-        
-        # ==========================================
-        # 4. HỒI QUY ĐA THỨC VÀ PHÂN ĐOẠN
-        # ==========================================
-        left_fit, right_fit = None, None
-        segmented_img = resized.copy()
-        
-        if len(leftx) > 10:
-            left_fit = np.polyfit(lefty, leftx, 2)
-        if len(rightx) > 10:
-            right_fit = np.polyfit(righty, rightx, 2)
-            
-        # Ước lượng độ rộng làn đường (mặc định khoảng 140 pixel cho ảnh 300x300)
-        lane_width = 140.0
-        
-        # Nếu chỉ tìm thấy một bên, giả lập bên còn lại song song bằng cách dịch chuyển theo lane_width
-        if left_fit is not None and right_fit is None:
-            right_fit = left_fit.copy()
-            right_fit[2] += lane_width
-        elif right_fit is not None and left_fit is None:
-            left_fit = right_fit.copy()
-            left_fit[2] -= lane_width
-            
-        center_x = self.width // 2
-        
-        if left_fit is not None and right_fit is not None:
-            # Giới hạn nội suy từ nửa dưới ảnh (self.height // 2) trở xuống để tránh điểm dự đoán xa bị lệch ra ngoài đường
-            ploty = np.linspace(self.height // 2, self.height - 1, self.height // 2)
-            left_fitx = left_fit[0]*ploty**2 + left_fit[1]*ploty + left_fit[2]
-            right_fitx = right_fit[0]*ploty**2 + right_fit[1]*ploty + right_fit[2]
-            
-            pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))])
-            pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fitx, ploty])))])
-            pts = np.hstack((pts_left, pts_right))
-            
-            color_mask = np.zeros_like(segmented_img)
-            cv2.fillPoly(color_mask, np.int_([pts]), (0, 255, 0))
-            segmented_img = cv2.addWeighted(segmented_img, 1.0, color_mask, 0.4, 0)
-            
-            target_y = self.height - 20
-            lx = left_fit[0]*target_y**2 + left_fit[1]*target_y + left_fit[2]
-            rx = right_fit[0]*target_y**2 + right_fit[1]*target_y + right_fit[2]
-            center_x = (lx + rx) / 2.0
-            
-            cv2.circle(segmented_img, (int(center_x), target_y), 6, (0, 0, 255), -1)
-
+        segmented_img, center_x, left_fit, right_fit = lane_utils.sliding_window_segment(
+            thresh, resized, self.width, self.height, limit_y_ratio=0.5
+        )
         return segmented_img, thresh, center_x, left_fit, right_fit

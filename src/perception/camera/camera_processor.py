@@ -125,7 +125,7 @@ class CameraProcessor(BaseCameraProcessor):
             
         # 3. Phân cụm quét hàng (Scanline) tìm biên đường đen (phương án C)
         # Thu hẹp cự ly quét và dùng 8 điểm cách nhau 5px
-        y_lines = [180, 185, 190, 195, 200, 205, 210, 215]
+        y_lines = [180, 185, 190, 195, 200, 205, 210, 215, 220, 225, 230, 235, 240]
         waypoints = []
         raw_waypoints = []
         road_boundaries = {}
@@ -225,7 +225,7 @@ class CameraProcessor(BaseCameraProcessor):
         # =====================================================================
         if getattr(settings, 'USE_BOUNDARY_PATH', False) and self.lane_detector is not None:
             boundary_offset_px = getattr(settings, 'BOUNDARY_OFFSET_PX', 55)
-            center_x, waypoints, debug_img, bev_debug_img = self.lane_detector.detect_boundary_path(
+            center_x, waypoints, boundary_waypoints, center_detected, debug_img, bev_debug_img = self.lane_detector.detect_boundary_path(
                 latest_image,
                 boundary_offset_px=boundary_offset_px,
                 debug=True
@@ -233,6 +233,8 @@ class CameraProcessor(BaseCameraProcessor):
             
             blackboard.set('center_x', center_x)
             blackboard.set('lane_waypoints', waypoints)
+            blackboard.set('boundary_waypoints', boundary_waypoints)
+            blackboard.set('center_detected', center_detected)
             
             # Ghi ảnh debug gốc (có overlay waypoints)
             if debug_img is not None:
