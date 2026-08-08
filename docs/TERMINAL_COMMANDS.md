@@ -51,14 +51,15 @@ source ~/catkin_ws/devel/setup.bash
 | **Bật phần cứng tổng hợp** | `roslaunch jetracer jetracer.launch` | Bật động cơ, IMU và Odometry EKF |
 | **Bật SLAM tự lái** | `roslaunch jetracer slam_nav.launch` | Bật chế độ quét bản đồ và tự lái nâng cao |
 
-### 💡 Khởi chạy riêng lẻ từng bộ phận (Khi cần test lẻ hoặc tránh xung đột)
-*Nếu chạy code Python điều khiển động cơ trực tiếp (I2C) mà không muốn bị ROS giành quyền, ta chỉ bật Master và Cảm biến:*
+### 💡 Khởi chạy cảm biến (Kết hợp hoặc Riêng lẻ)
+*Để điều khiển động cơ trực tiếp (I2C) mà không bị ROS giành quyền, ta chỉ cần bật cảm biến:*
 
-| Thành phần | Cú pháp lệnh khởi chạy riêng | Ghi chú |
+| Thành phần | Cú pháp lệnh khởi chạy | Ghi chú |
 | :--- | :--- | :--- |
-| **1. ROS Master** | `roscore` | Trung tâm điều phối (phải bật đầu tiên) |
-| **2. Cảm biến LiDAR** | `roslaunch jetracer lidar.launch` | Khởi động máy quét tia laser LiDAR |
-| **3. Camera CSI** | `roslaunch jetracer csi_camera.launch` | Khởi động mắt camera truyền ảnh lên ROS |
+| **Cả LiDAR & Camera (Khuyên dùng)** | `roslaunch src/speed_track/sensors.launch` | **Chạy 1 lệnh duy nhất** khởi động cả 2 cảm biến cùng lúc |
+| **Chỉ cảm biến LiDAR** | `roslaunch jetracer lidar.launch` | Khởi động máy quét tia laser LiDAR |
+| **Chỉ camera CSI** | `roslaunch jetracer csi_camera.launch` | Khởi động mắt camera truyền ảnh lên ROS |
+| **ROS Master** | `roscore` | Trung tâm điều phối (tự động chạy kèm theo launch) |
 
 ---
 

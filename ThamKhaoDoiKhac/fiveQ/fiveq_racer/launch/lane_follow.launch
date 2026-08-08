@@ -1,0 +1,23 @@
+<launch>
+  <!-- FiveQ reactive lane following.
+       Start jetracer.launch (chassis) and csi_camera.launch (camera) FIRST.
+       The node boots DISABLED; enable it with:
+         rostopic pub /fiveq/enable std_msgs/Bool "data: true"
+  -->
+  <node pkg="fiveq_racer" type="lane_follow_node.py" name="fiveq_lane_follow" output="screen">
+    <param name="image_topic"   value="/csi_cam_0/image_raw/compressed"/>
+    <param name="cmd_topic"     value="/cmd_vel"/>
+
+    <param name="cruise_speed"  value="0.30"/>   <!-- linear.x, start slow -->
+    <param name="kp"            value="0.9"/>
+    <param name="kd"            value="0.25"/>
+    <param name="max_yaw"       value="1.0"/>
+    <param name="mask_threshold" value="180"/>   <!-- lower if the mask is noisy -->
+    <param name="roi_top"       value="0.55"/>
+
+    <param name="use_lidar"     value="false"/>  <!-- true only if lidar.launch runs -->
+    <param name="stop_distance" value="0.35"/>
+
+    <param name="publish_debug" value="true"/>   <!-- rqt_image_view /fiveq/debug/compressed -->
+  </node>
+</launch>

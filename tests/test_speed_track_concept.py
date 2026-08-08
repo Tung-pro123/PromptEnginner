@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 DỰ THẢO CODE THỬ NGHIỆM SPEED TRACK: Bám vạch biên & Né vật cản (FSM)
 
@@ -95,9 +96,25 @@ class SpeedTrackConcept:
         y_near = int(h * 0.85)  # Dòng quét ở 85% chiều cao ảnh (gần xe)
         y_far = int(h * 0.55)   # Dòng quét ở 55% chiều cao ảnh (xa xe)
 
-        # Chuyển sang ảnh xám và nhị phân hóa để làm nổi bật vạch trắng biên
+        # Chuyển sang không gian màu HSV & Grayscale để lọc xa hình mới (Vạch màu ĐỎ + Nền TRẮNG)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        
+        # Lọc vạch màu ĐỎ (Red Lines: viền biên đỏ & vạch đứt đỏ ở giữa)
+        lower_red1 = np.array([0, 70, 70])
+        upper_red1 = np.array([10, 255, 255])
+        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        
+        lower_red2 = np.array([160, 70, 70])
+        upper_red2 = np.array([180, 255, 255])
+        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        red_mask = cv2.bitwise_or(mask1, mask2)
+
+        # Lọc nền TRẮNG bên ngoài lòng đường đen
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+        _, white_mask = cv2.threshold(gray, 170, 255, cv2.THRESH_BINARY)
+
+        # Tổng hợp mặt nạ biên (Vạch Đỏ + Nền Trắng = Vùng không phải lòng đường đen)
+        thresh = cv2.bitwise_or(red_mask, white_mask)
 
         def find_borders_at_y(y_line):
             # Tìm tất cả điểm trắng trên dòng quét

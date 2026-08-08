@@ -1,0 +1,16 @@
+source ~/catkin_ws/devel/setup.bash 
+
+cam
+rqt_image_view /fiveq/debug/compressed
+
+chassis
+roslaunch jetracer jetracer.launch
+
+lane follow:
+roslaunch fiveq_racer lane_follow.launch
+
+mo cam:
+roslaunch jetracer csi_camera.launch
+
+bat chay:
+rostopic pub /fiveq/enable std_msgs/Bool "data: true"
