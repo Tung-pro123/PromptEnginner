@@ -82,12 +82,12 @@ class CameraProcessor(BaseCameraProcessor):
         hsv = cv2.cvtColor(resized, cv2.COLOR_BGR2HSV)
         
         # Ngưỡng màu Đỏ/Cam (Dải 1: Đỏ nhạt đến cam)
-        lower_red1 = np.array([0, 60, 50])
+        lower_red1 = np.array([0, 110, 50])
         upper_red1 = np.array([22, 255, 255])
         mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
         
         # Ngưỡng màu Đỏ/Cam (Dải 2: Đỏ đậm)
-        lower_red2 = np.array([160, 60, 50])
+        lower_red2 = np.array([160, 110, 50])
         upper_red2 = np.array([180, 255, 255])
         mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
         
@@ -124,8 +124,8 @@ class CameraProcessor(BaseCameraProcessor):
             self.blackboard.set('canny_edges', masked_edges)
             
         # 3. Phân cụm quét hàng (Scanline) tìm biên đường đen (phương án C)
-        # Thu hẹp cự ly quét về sát camera hơn [220, 240, 260, 280]
-        y_lines = [220, 240, 260, 280]
+        # Thu hẹp cự ly quét và dùng 8 điểm cách nhau 5px
+        y_lines = [180, 185, 190, 195, 200, 205, 210, 215]
         waypoints = []
         raw_waypoints = []
         road_boundaries = {}
@@ -214,14 +214,51 @@ class CameraProcessor(BaseCameraProcessor):
         latest_image = blackboard.get('latest_image')
         dodge_direction = blackboard.get('dodge_direction', 0.0)
         
-        if getattr(self, 'use_advanced_segmentation', False) and self.lane_detector is not None:
+        # Lưu frame gốc chưa xử lý để debugger ghi vào raw_camera.avi
+        # (phải lưu trước khi latest_image bị ghi đè bởi debug_img)
+        if latest_image is not None:
+            blackboard.set('raw_camera_frame', latest_image)
+        
+        # =====================================================================
+        # NHÁNH 1: Thuật toán Boundary Following mới (detect_boundary_path)
+        # Ưu tiên cao nhất khi USE_BOUNDARY_PATH = True
+        # =====================================================================
+        if getattr(settings, 'USE_BOUNDARY_PATH', False) and self.lane_detector is not None:
+            boundary_offset_px = getattr(settings, 'BOUNDARY_OFFSET_PX', 55)
+            center_x, waypoints, debug_img, bev_debug_img = self.lane_detector.detect_boundary_path(
+                latest_image,
+                boundary_offset_px=boundary_offset_px,
+                debug=True
+            )
+            
+            blackboard.set('center_x', center_x)
+            blackboard.set('lane_waypoints', waypoints)
+            
+            # Ghi ảnh debug gốc (có overlay waypoints)
+            if debug_img is not None:
+                blackboard.set('latest_image', debug_img)
+            # Ghi thêm ảnh Bird's Eye View cho test script hiển thị
+            if bev_debug_img is not None:
+                blackboard.set('bev_debug_img', bev_debug_img)
+                blackboard.set('camera_thresh', cv2.cvtColor(bev_debug_img, cv2.COLOR_BGR2GRAY))
+                
+        # =====================================================================
+        # NHÁNH 2: Thuật toán cũ - HSV Sliding Window (USE_ADVANCED_SEGMENTATION)
+        # =====================================================================
+        elif getattr(self, 'use_advanced_segmentation', False) and self.lane_detector is not None:
             # 1. Sử dụng thuật toán phân đoạn ảnh (Sliding Window & Curve Fitting)
-            segmented_img, thresh, center_x, left_fit, right_fit = self.lane_detector.process_and_segment(latest_image, settings.THRESHOLD_VALUE)
+            if getattr(settings, 'USE_COLOR_SEGMENTATION', False):
+                # Sử dụng lọc màu HSV + Sliding Window & Curve Fitting
+                segmented_img, thresh, center_x, left_fit, right_fit = self.lane_detector.process_color_segment(latest_image)
+            else:
+                # Sử dụng Grayscale threshold + Sliding Window & Curve Fitting
+                segmented_img, thresh, center_x, left_fit, right_fit = self.lane_detector.process_and_segment(latest_image, settings.THRESHOLD_VALUE)
             
             # 2. Sinh ra danh sách waypoints để tương thích ngược với PredictiveController
             waypoints = []
             if left_fit is not None and right_fit is not None:
-                y_lines = [160, 200, 240, 280]
+                # Dùng 8 điểm quét với khoảng cách hẹp hơn (từ 180 đến 285, cách nhau 15px)
+                y_lines = [180, 195, 210, 225, 240, 255, 270, 285]
                 for y in y_lines:
                     lx = left_fit[0]*y**2 + left_fit[1]*y + left_fit[2]
                     rx = right_fit[0]*y**2 + right_fit[1]*y + right_fit[2]
@@ -235,6 +272,9 @@ class CameraProcessor(BaseCameraProcessor):
             if segmented_img is not None:
                 # Ghi đè biến latest_image bằng ảnh đã phân đoạn để Debugger hiển thị dải màu xanh lá
                 blackboard.set('latest_image', segmented_img)
+        # =====================================================================
+        # NHÁNH 3: Fallback - Pipeline đơn giản (Scanline quét hàng)
+        # =====================================================================
         else:
             # Chạy thuật toán dự phòng (Pipeline cũ, đơn giản)
             center_x, waypoints, thresh = self.process_frame(latest_image, dodge_direction)
@@ -243,3 +283,4 @@ class CameraProcessor(BaseCameraProcessor):
             blackboard.set('lane_waypoints', waypoints)
             if thresh is not None:
                 blackboard.set('camera_thresh', thresh)
+

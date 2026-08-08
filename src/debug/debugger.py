@@ -102,9 +102,10 @@ class Debugger:
             ])
 
             # Khởi tạo VideoWriter cho video debug đã xử lý (combined)
+            # 4 panels 300x300: [Camera | BEV | Threshold | Lidar] = 1200x300
             fourcc = cv2.VideoWriter_fourcc(*'XVID')
             combined_vid_path = os.path.join(session_dir, "combined_log.avi")
-            self.combined_writer = cv2.VideoWriter(combined_vid_path, fourcc, 20.0, (900, 300))
+            self.combined_writer = cv2.VideoWriter(combined_vid_path, fourcc, 20.0, (1200, 300))
 
             # Khởi tạo VideoWriter cho video thô chưa qua xử lý (raw camera)
             raw_vid_path = os.path.join(session_dir, "raw_camera.avi")
@@ -344,8 +345,8 @@ class Debugger:
             self._fps = 0.8 * self._fps + 0.2 * fps_current
         self._last_time = curr_time
 
-        # ---- Hop nhat 3 anh vao 1 frame (900x300) ----
-        combined_img = np.zeros((300, 900, 3), dtype=np.uint8)
+        # ---- Hợp nhất 4 ảnh vào 1 frame (1200x300): [Camera | BEV | Threshold | Lidar] ----
+        combined_img = np.zeros((300, 1200, 3), dtype=np.uint8)
 
         # 1. Camera goc
         latest_image = blackboard.get('latest_image')
@@ -397,7 +398,23 @@ class Debugger:
                 display_img = cv2.resize(display_img, (300, 300))
             combined_img[:, 0:300] = display_img
 
-        # 2. Camera Thresh
+        # 2. BEV Debug (chỉ có khi USE_BOUNDARY_PATH=True)
+        bev_debug_img = blackboard.get('bev_debug_img')
+        if bev_debug_img is not None:
+            bev_panel = bev_debug_img.copy()
+            if bev_panel.shape[:2] != (300, 300):
+                bev_panel = cv2.resize(bev_panel, (300, 300))
+            # Thêm nhãn nếu chưa có
+            cv2.putText(bev_panel, "BEV + Boundary Fit", (5, 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 255, 255), 1)
+        else:
+            # Placeholder: Hiển thị nền đen + chú thích khi không dùng BEV
+            bev_panel = np.zeros((300, 300, 3), dtype=np.uint8)
+            cv2.putText(bev_panel, "BEV (disabled)", (60, 150),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (80, 80, 80), 1)
+        combined_img[:, 300:600] = bev_panel
+
+        # 3. Camera Thresh
         camera_thresh = blackboard.get('camera_thresh')
         if camera_thresh is not None:
             thresh_resized = cv2.resize(camera_thresh, (300, 300))
@@ -415,21 +432,21 @@ class Debugger:
             
             # Them chu thich
             cv2.putText(thresh_color, "Threshold (Binary)", (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
-            combined_img[:, 300:600] = thresh_color
+            combined_img[:, 600:900] = thresh_color
 
-        # 3. Lidar
+        # 4. Lidar
         latest_scan = blackboard.get('latest_scan')
         if latest_scan is not None:
             lidar_img = self.visualize_lidar(latest_scan)
             cv2.putText(lidar_img, "Lidar Map", (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
-            combined_img[:, 600:900] = lidar_img
+            combined_img[:, 900:1200] = lidar_img
 
         # ---- Ve FPS chung ----
-        cv2.putText(combined_img, f"FPS: {self._fps:.1f}", (800, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        cv2.putText(combined_img, f"FPS: {self._fps:.1f}", (1100, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
         # ---- Ghi video và hiển thị ----
-        # Ghi raw frame trước khi vẽ đè thông tin lên
-        raw_img = blackboard.get('latest_image')
+        # Ghi raw frame - ưu tiên dùng raw_camera_frame (frame gốc chưa vẽ overlay)
+        raw_img = blackboard.get('raw_camera_frame') or blackboard.get('latest_image')
         if raw_img is not None and self.raw_writer:
             try:
                 raw_bgr = raw_img if raw_img.ndim == 3 else cv2.cvtColor(raw_img, cv2.COLOR_GRAY2BGR)
@@ -437,6 +454,7 @@ class Debugger:
                 self.raw_writer.write(raw_resized)
             except Exception as e:
                 self._dbg(f"[Debugger | RawVideo] Lỗi ghi raw frame: {e}")
+
 
         # Ghi canny frame sạch
         canny_img = blackboard.get('canny_edges')

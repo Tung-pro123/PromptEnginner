@@ -6,14 +6,28 @@ IMAGE_HEIGHT = 300
 IMAGE_CENTER_X = 150
 THRESHOLD_VALUE = 180
 MAX_GAP_BETWEEN_POINTS = 15
-USE_ADVANCED_SEGMENTATION = False # True: Dùng phân đoạn ảnh AI, False: Dùng HSV màu cam/đỏ truyền thống
+USE_ADVANCED_SEGMENTATION = True  # True: Dùng phân đoạn ảnh nâng cao (Sliding Window), False: Dùng quét quét hàng đơn giản
+USE_COLOR_SEGMENTATION = True     # True: Dùng lọc màu HSV + Sliding Window, False: Dùng Grayscale + Sliding Window
+USE_BOUNDARY_PATH = True          # True: Dùng thuật toán Boundary Following mới (detect_boundary_path)
+
+# 1b. Boundary Path Following (detect_boundary_path)
+BOUNDARY_OFFSET_PX = 55   # Pixel. Khoảng cách offset vào trong từ vạch biên đến quỹ đạo xe (tăng = xa biên hơn)
+# Bird's Eye View Perspective Transform - 4 điểm nguồn (camera space)
+# Thứ tự: [top-left, top-right, bottom-right, bottom-left]
+# Cần calibrate lại theo góc camera thực tế trên xe.
+BEV_SRC_POINTS = [
+    [30,  135],   # Top-left  (y ≈ 45% height)
+    [270, 135],   # Top-right
+    [295, 295],   # Bottom-right
+    [5,   295],   # Bottom-left
+]
 
 # 2. Control (PID Controller)
 PID_KP = 1.0 # mặc định 0.5
 PID_KI = 0.0
 PID_KD = 0.1
-BASE_SPEED = 0.4        # Tốc độ cơ bản
-MAX_THROTTLE = 0.40      # Giới hạn tốc độ
+BASE_SPEED = 0.45        # Tốc độ cơ bản
+MAX_THROTTLE = 0.50      # Giới hạn tốc độ
 MAX_STEERING = 1.0       # Giới hạn góc lái
 MIN_STEERING = -1.0
 STEERING_OFFSET = 0.0    # Bù lệch góc lái

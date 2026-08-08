@@ -26,10 +26,17 @@ class ROSJoyTeleopNode:
         self.controller = PIDController()
         self.controller.initialize()
         
-        # Khởi tạo các công cụ Debug & Camera
+        # Cấu hình phần cứng: Tăng hệ số bẻ lái (steering_gain) để góc cua lớn hơn
+        if hasattr(self.controller, 'car') and self.controller.car:
+            if hasattr(self.controller.car, 'steering_gain'):
+                self.controller.car.steering_gain = 0.8
+                rospy.loginfo(f"Đã cấu hình steering_gain = {self.controller.car.steering_gain}")
+        
+        # Khởi tạo các công cụ Debug & Camera (Đặt debug_mode=True để ghi video)
         self.blackboard = Blackboard()
         self.camera = CameraProcessor(self.blackboard)
         self.debugger = Debugger(debug_mode=True)
+        self.last_print_time = 0.0
         
         # Đăng ký nhận dữ liệu từ topic
         rospy.Subscriber(settings.ROS_TOPIC_JOY, Joy, self.joy_callback)
@@ -61,8 +68,14 @@ class ROSJoyTeleopNode:
             max_thr = settings.MAX_THROTTLE if self.turbo_mode else settings.BASE_SPEED
             self.throttle = raw_throttle * max_thr
             
-            # Góc lái tay cầm thường ngược một chút so với trục tọa độ, có thể cần đảo dấu (-)
+            # Góc lái tay cầm thường ngược một chút so với trục tọa độ, có thể   cần đảo dấu (-)
             self.steering = raw_steering * settings.MAX_STEERING
+            
+            # In thông tin nhận được từ Joystick để kiểm tra (tần suất 0.5s một lần để tránh ngập màn hình)
+            current_time = rospy.get_time()
+            if current_time - self.last_print_time >= 0.5:
+                rospy.loginfo(f"[JOYSTICK INPUT] Nhận dữ liệu điều khiển: Ga = {self.throttle:.2f} (raw: {raw_throttle:.2f}) | Lái = {self.steering:.2f} (raw: {raw_steering:.2f}) | Turbo = {self.turbo_mode}")
+                self.last_print_time = current_time
             
         except Exception as e:
             rospy.logerr(f"Lỗi đọc Joystick: {e}")
