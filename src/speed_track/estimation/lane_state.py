@@ -248,7 +248,7 @@ class LaneStateEstimator:
     def _predict(self, now):
         """Predict lane state when no valid measurement is available.
 
-        Keeps the previous state unchanged but decays confidence.
+        Keeps the previous state but decays confidence and steers towards straight ahead.
 
         Args:
             now: Current timestamp.
@@ -256,6 +256,12 @@ class LaneStateEstimator:
         self.state.confidence *= self.cfg.confidence_decay
         self.state.timestamp = now
         self.state.reconstruction_method = 'prediction'
+        
+        # Ý TƯỞNG 1: Trả lái về thẳng khi mất vạch
+        # Từ từ đưa độ cong và độ lệch về 0 (nhân 0.8) để vô lăng nhả thẳng
+        self.state.curvature *= 0.8
+        self.state.lateral_error_m *= 0.8
+        self.state.heading_error *= 0.8
 
     def _update_state_machine(self, now, measurement_accepted):
         """Update the tracking state based on confidence and timing.

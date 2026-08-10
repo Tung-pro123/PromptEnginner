@@ -7,4 +7,3 @@ adafruit-circuitpython-pca9685==3.3.4
 adafruit-platformdetect==3.19.0
 adafruit-circuitpython-typing==1.6.0
 traitlets==4.3.2
-traitlets-deprecated

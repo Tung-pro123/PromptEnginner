@@ -45,6 +45,10 @@ class BEVPipeline:
         self.H1_MIN, self.S1_MIN, self.V1_MIN = 0, 80, 80
         self.H1_MAX = 18
         self.H2_MIN, self.H2_MAX = 155, 180
+        
+        # 1.5. Thông số Màu HSV cho VẬT CẢN (Màu Nâu Vàng / Thùng Carton)
+        self.OBS_H_MIN, self.OBS_S_MIN, self.OBS_V_MIN = 20, 40, 50
+        self.OBS_H_MAX, self.OBS_S_MAX, self.OBS_V_MAX = 40, 255, 255
 
         # 2. Thông số BEV Transform (CẦN CALIBRATE bằng calib_bev.py)
         # Giả lập 4 điểm tạo thành hình thang trên ảnh gốc 640x480
@@ -96,11 +100,54 @@ class BEVPipeline:
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         
+        # --- TẦNG 2.5: PHÁT HIỆN VẬT CẢN (RADAR) ---
+        obs_mask = cv2.inRange(hsv, (self.OBS_H_MIN, self.OBS_S_MIN, self.OBS_V_MIN), (self.OBS_H_MAX, self.OBS_S_MAX, self.OBS_V_MAX))
+        obs_bev = cv2.warpPerspective(obs_mask, self.M, (self.W, self.H))
+        
+        obs_contours_info = cv2.findContours(obs_bev, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        obs_contours = obs_contours_info[0] if len(obs_contours_info) == 2 else obs_contours_info[1]
+        
+        repulsive_force = 0.0
+        obs_bbox_bev = None
+        
+        if obs_contours:
+            largest_obs = max(obs_contours, key=cv2.contourArea)
+            if cv2.contourArea(largest_obs) > 300: # Bỏ nhiễu li ti
+                x, y, w, h = cv2.boundingRect(largest_obs)
+                obs_bbox_bev = (x, y, w, h)
+                
+                obs_cx = x + w/2
+                obs_cy = y + h/2
+                
+                # Nếu vật cản nằm ở nửa dưới của BEV (Gần xe)
+                if obs_cy > self.H * 0.4:
+                    distance_y = self.H - obs_cy
+                    # Lực đẩy tỷ lệ nghịch với khoảng cách
+                    force = 10000.0 / max(5.0, distance_y)
+                    force = min(300.0, force) # Giới hạn lực đẩy 300px
+                    
+                    if obs_cx < self.W / 2: # Vật bên trái
+                        repulsive_force = force # Ép e_lat sang phải (+)
+                    else:
+                        repulsive_force = -force # Ép e_lat sang trái (-)
+        
         # --- TẦNG 3: BEV TRANSFORM & POLYNOMIAL FIT ---
         bev_mask = cv2.warpPerspective(mask, self.M, (self.W, self.H))
         
-        # Tìm các điểm ảnh sáng (trắng) trong mask BEV
-        y_idx, x_idx = np.nonzero(bev_mask)
+        # Tìm contour lớn nhất (Lọc bỏ hoàn toàn nhiễu khán giả/đồ vật)
+        contours_info = cv2.findContours(bev_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = contours_info[0] if len(contours_info) == 2 else contours_info[1]
+        
+        if contours:
+            largest_contour = max(contours, key=cv2.contourArea)
+            if cv2.contourArea(largest_contour) > 100:
+                clean_mask = np.zeros_like(bev_mask)
+                cv2.drawContours(clean_mask, [largest_contour], -1, 255, thickness=cv2.FILLED)
+                y_idx, x_idx = np.nonzero(clean_mask)
+            else:
+                y_idx, x_idx = [], []
+        else:
+            y_idx, x_idx = [], []
         
         e_lat, e_psi, kappa = 0.0, 0.0, 0.0
         poly_coeff = None
@@ -133,6 +180,12 @@ class BEVPipeline:
             
         # Vẽ BEV Viz
         bev_viz = cv2.cvtColor(bev_mask, cv2.COLOR_GRAY2BGR)
+        
+        if obs_bbox_bev is not None:
+            x, y, w, h = obs_bbox_bev
+            cv2.rectangle(bev_viz, (x, y), (x+w, y+h), (0, 0, 255), 2)
+            cv2.putText(bev_viz, f"FORCE: {repulsive_force:.0f}", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            
         if poly_coeff is not None:
             # Vẽ đường đa thức
             ploty = np.linspace(0, self.H-1, self.H)
@@ -151,7 +204,8 @@ class BEVPipeline:
             cv2.putText(bev_viz, f"e_psi: {math.degrees(e_psi):.1f}deg", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
             cv2.putText(bev_viz, f"kappa: {kappa:.5f}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
 
-        return e_lat, e_psi, kappa, bev_viz
+        # Trả về e_lat gốc và repulsive_force tách biệt
+        return e_lat, e_psi, kappa, bev_viz, obs_bbox_bev, repulsive_force
 
 
 # ==============================================================================
@@ -160,7 +214,7 @@ class BEVPipeline:
 class CurvatureAwareController:
     def __init__(self):
         # Hệ số khuếch đại Stanley (CẦN TUNE)
-        self.k_stanley = 0.15 
+        self.k_stanley = 0.3 
         
         # Chiều dài cơ sở xe (khoảng cách trục trước-sau, mét)
         self.wheelbase = 0.16 
@@ -248,7 +302,7 @@ class SpeedRacingV2:
         self.log_path = os.path.join(log_dir, f'{script_name}_{ts}.csv')
         self.log_file = open(self.log_path, 'w', newline='')
         self.csv_writer = csv.writer(self.log_file)
-        self.csv_writer.writerow(['timestamp', 'e_lat_px', 'e_psi_deg', 'kappa', 'steer', 'throttle'])
+        self.csv_writer.writerow(['timestamp', 'state', 'e_lat_px', 'e_psi_deg', 'kappa', 'rep_force', 'steer', 'throttle'])
         
         self.video_path = os.path.join(log_dir, f'{script_name}_{ts}.avi')
         fourcc = cv2.VideoWriter_fourcc(*'MJPG')
@@ -275,17 +329,27 @@ class SpeedRacingV2:
                 frame = self.latest_image.copy()
                 
                 # 1. Pipeline xử lý ảnh
-                e_lat, e_psi, kappa, bev_viz = self.pipeline.process(frame)
+                e_lat, e_psi, kappa, bev_viz, obs_bbox_bev, rep_force = self.pipeline.process(frame)
                 
                 # 2. Controller tính toán
                 steer, throttle = self.controller.compute(e_lat, e_psi, kappa, self.current_throttle)
                 self.current_throttle = throttle
                 
+                # --- CHẾ ĐỘ NÉ VẬT CẢN (GHI ĐÈ VÔ LĂNG) ---
+                if abs(rep_force) > 0:
+                    # Bẻ lái cùng hướng với lực đẩy, lực mạnh = bẻ gắt
+                    steer_override = (rep_force / 300.0) * 0.8
+                    steer = max(-1.0, min(1.0, steer + steer_override))
+                    throttle = max(0.15, throttle - 0.05)
+                
                 # 3. Xuất lệnh (ĐẢO DẤU STEER VÌ BỊ NGƯỢC SERVO)
                 self.racer.steer(-steer, throttle)
                 
-                # 4. Debug & Log
-                self.csv_writer.writerow([time.time(), e_lat, math.degrees(e_psi), kappa, steer, throttle])
+                # Trạng thái hiện tại
+                state = "AVOIDING" if abs(rep_force) > 0 else "TRACKING"
+                
+                # 4. Debug & Log (Thêm State và Rep Force)
+                self.csv_writer.writerow([time.time(), state, e_lat, math.degrees(e_psi), kappa, rep_force, steer, throttle])
                 
                 # Ghi video Dashboard (Original + BEV)
                 if self.video_writer is not None and bev_viz is not None:
@@ -294,8 +358,11 @@ class SpeedRacingV2:
                     
                     # 2. Hiển thị quyết định của xe lên ảnh gốc
                     color_steer = (0, 0, 255) if steer > 0.1 else ((255, 0, 0) if steer < -0.1 else (0, 255, 0))
-                    cv2.putText(frame, f"Steer: {steer:.2f}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color_steer, 2)
-                    cv2.putText(frame, f"Throttle: {throttle:.2f}", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+                    cv2.putText(frame, f"State: {state}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,0,255) if state=="AVOIDING" else (0,255,0), 3)
+                    cv2.putText(frame, f"Steer: {steer:.2f}", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color_steer, 2)
+                    cv2.putText(frame, f"Throttle: {throttle:.2f}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+                    if abs(rep_force) > 0:
+                        cv2.putText(frame, f"Obs Force: {rep_force:.0f}px", (10, 160), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
                     
                     # 3. Gộp 2 ảnh cạnh nhau (HStack)
                     if bev_viz.shape[:2] != (480, 640):
@@ -327,7 +394,7 @@ def run_offline_test():
         if not ret: break
         
         # Test pipeline
-        e_lat, e_psi, kappa, bev_viz = pipeline.process(frame)
+        e_lat, e_psi, kappa, bev_viz, obs_bbox_bev, rep_force = pipeline.process(frame)
         
         # Test controller
         steer, throttle = controller.compute(e_lat, e_psi, kappa, current_throttle)

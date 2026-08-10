@@ -13,17 +13,23 @@ echo "[1/4] Mở khóa quyền phần cứng (Motor/Servo)..."
 sudo chmod a+rw /dev/i2c-* /dev/gpiochip* 2>/dev/null
 echo "✅ Đã cấp quyền phần cứng."
 
-# 2. Cài đặt các thư viện hệ thống cần thiết
-echo "[2/4] Cài đặt thư viện hệ thống ROS & OpenCV..."
-sudo apt-get update -y
-sudo apt-get install -y python3-pip python3-opencv ros-melodic-gscam python3-rospkg python3-catkin-pkg
-echo "✅ Đã cài đặt thư viện hệ thống."
+# 2. Cài đặt các thư viện hệ thống cần thiết (Bao gồm LiDAR ROS)
+echo "[2/4] Kiểm tra Internet để tải thư viện hệ thống (ROS, Lidar, OpenCV)..."
+wget -q --spider http://google.com
+if [ $? -eq 0 ]; then
+    echo "Có Internet! Đang tải thư viện..."
+    sudo apt-get update -y
+    sudo apt-get install -y python3-pip python3-opencv ros-melodic-gscam python3-rospkg python3-catkin-pkg ros-melodic-rplidar-ros ros-melodic-urg-node
+    echo "✅ Đã cài đặt thư viện hệ thống và LiDAR ROS."
+else
+    echo "⚠️ BỎ QUA: Không có Internet. Sẽ sử dụng thư viện hệ thống đã cài sẵn trên xe!"
+fi
 
 # 3. Cài đặt Python Dependencies (Từ thư mục offline nếu có)
 echo "[3/4] Cài đặt Python Dependencies..."
-if [ -d "offline_packages" ]; then
-    echo "Phát hiện thư mục offline_packages! Đang cài đặt không cần mạng..."
-    pip3 install --no-index --find-links=offline_packages -r requirements_jetson.txt
+if [ -d "offline_libs" ]; then
+    echo "Phát hiện thư mục offline_libs! Đang cài đặt không cần mạng..."
+    pip3 install --no-index --find-links=offline_libs -r requirements_jetson.txt
 else
     echo "Đang cài đặt qua Internet..."
     pip3 install -r requirements_jetson.txt

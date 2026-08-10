@@ -140,17 +140,17 @@ class V3Config:
     # ================================================================
     # TEMPORAL FILTER (alpha-beta / EMA)
     # ================================================================
-    alpha_position: float = 0.3     # [TUNE] EMA for centerline position
-    alpha_heading: float = 0.3      # [TUNE]
-    alpha_curvature: float = 0.2    # [TUNE]
-    alpha_width: float = 0.1        # [TUNE]
+    alpha_position: float = 1.0     # [TUNE] EMA for centerline position (1.0 = no delay)
+    alpha_heading: float = 1.0      # [TUNE]
+    alpha_curvature: float = 1.0    # [TUNE]
+    alpha_width: float = 1.0        # [TUNE]
     confidence_decay: float = 0.95  # per-frame decay when no measurement
 
     # ================================================================
     # MEASUREMENT GATING
     # ================================================================
-    max_lateral_jump_m: float = 0.15       # [TUNE] meters
-    max_curvature_jump: float = 0.5        # [TUNE] 1/m
+    max_lateral_jump_m: float = 0.40       # [TUNE] meters (increased to prevent false rejections)
+    max_curvature_jump: float = 2.0        # [TUNE] 1/m (increased to allow RANSAC wiggles)
     min_confidence_gate: float = 0.15      # reject observations below this
 
     # ================================================================
@@ -184,9 +184,9 @@ class V3Config:
     # ================================================================
     # SPEED CONTROL
     # ================================================================
-    max_speed: float = 0.65                # [TUNE] throttle
+    max_speed: float = 0.40                # [TUNE] throttle
     min_speed: float = 0.18                # [TUNE]
-    cruise_speed: float = 0.50             # [TUNE] default straight-line speed
+    cruise_speed: float = 0.30             # [TUNE] default straight-line speed
     a_lat_max: float = 2.0                 # [TUNE] lateral accel limit (m/s²)
     speed_confidence_thresh: float = 0.5   # reduce speed below this confidence
     speed_to_throttle_factor: float = 1.0  # [CALIBRATE] TĂNG HỆ SỐ NÀY ĐỂ XE BỐC HƠN (v(m/s) → throttle)
@@ -203,7 +203,7 @@ class V3Config:
     uncertain_timeout: float = 0.5         # seconds before PREDICTING
     predicting_timeout: float = 2.0        # seconds before RECOVERY
     recovery_timeout: float = 3.0          # seconds before E_STOP
-    search_timeout: float = 30.0           # seconds in SEARCH before E_STOP
+    search_timeout: float = 999.0          # seconds in SEARCH before E_STOP
 
     # State transition thresholds
     tracking_confidence_min: float = 0.5   # need this to enter/stay TRACKING

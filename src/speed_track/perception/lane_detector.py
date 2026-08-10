@@ -77,31 +77,29 @@ class MultiLaneDetector:
         Returns:
             LaneDetectionResult containing left, center, right detections.
         """
-        # Step 1: Histogram of bottom 75% (để bắt được các vạch biên bị cắt sớm)
+        # Step 1: Histogram of bottom 75%
         histogram = np.sum(bev_mask[self.bev_h // 4:, :], axis=0)
 
-        # Step 2: Find peaks
+        # Step 2: Find peaks in the overall ROI
         peaks = self._find_peaks(histogram)
+        
+        # NEW: Bottom-Anchor (Bottom 10%)
+        # Vì 2 vạch biên xéo ra ngoài, ở vùng sát đầu xe (đáy camera) CHỈ CÓ THỂ là vạch giữa.
+        bottom_hist = np.sum(bev_mask[int(self.bev_h * 0.9):, :], axis=0)
+        bottom_peaks = self._find_peaks(bottom_hist)
+        
+        if bottom_peaks:
+            # Gắn mỏ neo thời gian: Lấy đỉnh sát tâm nhất ở vùng đáy làm Center Line
+            true_center = min(bottom_peaks, key=lambda p: abs(p - self.bev_w // 2))
+            self._last_center_x = true_center
 
-        # Step 3: Assign peaks to L/C/R
+        # Step 3: Assign peaks to L/C/R using the Temporal Anchor
         left_base, center_base, right_base = self._assign_peaks(peaks)
 
         # Step 4-6: Sliding window + RANSAC + confidence for each line
         left = self._detect_line(bev_mask, left_base) if left_base is not None else LineDetection()
         center = self._detect_line(bev_mask, center_base) if center_base is not None else LineDetection()
         right = self._detect_line(bev_mask, right_base) if right_base is not None else LineDetection()
-
-        # Update last center x for temporal consistency in peak assignment
-        if center_base is not None:
-            # Slowly decay the last center x towards the middle to prevent permanent drift if errors occur
-            if self._last_center_x is None:
-                self._last_center_x = center_base
-            else:
-                self._last_center_x = int(self._last_center_x * 0.7 + center_base * 0.3)
-        else:
-            # If no center line detected, decay towards the actual middle of the screen
-            if self._last_center_x is not None:
-                self._last_center_x = int(self._last_center_x * 0.95 + (self.bev_w // 2) * 0.05)
 
         return LaneDetectionResult(
             left=left, center=center, right=right,
@@ -141,74 +139,34 @@ class MultiLaneDetector:
         return sorted(peaks)
 
     def _assign_peaks(self, peaks):
-        """Assign detected peaks to left, center, and right lines.
-
-        Heuristic:
-        - 3 peaks → left, center, right (sorted by x)
-        - 2 peaks → left and right (center dashed line often missing)
-        - 1 peak  → assign based on position in image
-        - 0 peaks → all None
-
+        """Assign detected peaks to left, center, and right lines using Temporal Anchor.
+        
         Args:
-            peaks: Sorted list of peak x-positions.
-
+            peaks: Sorted list of peak x-positions from the main histogram.
         Returns:
-            (left_base, center_base, right_base) — each int or None.
+            (left_base, center_base, right_base)
         """
-        # Sử dụng vị trí tâm của frame trước (nếu có) thay vì cố định ở giữa màn hình
-        mid = self._last_center_x if self._last_center_x is not None else self.bev_w // 2
-
-        if len(peaks) >= 3:
-            # Take the 3 most prominent (sorted by x)
-            # If more than 3, pick the 3 most spread out
-            if len(peaks) == 3:
-                return peaks[0], peaks[1], peaks[2]
-            else:
-                # Take leftmost, rightmost, and the one closest to middle
-                left = peaks[0]
-                right = peaks[-1]
-                # Find the peak closest to the midpoint of left and right
-                mid_expected = (left + right) // 2
-                center_candidates = [p for p in peaks[1:-1]]
-                if center_candidates:
-                    center = min(center_candidates, key=lambda p: abs(p - mid_expected))
-                else:
-                    center = None
-                return left, center, right
-
-        elif len(peaks) == 2:
-            # Two peaks detected. Are they (Left + Right) or (Center + Boundary)?
-            # We can tell by the distance between them!
-            p0, p1 = peaks[0], peaks[1]
-            dist = p1 - p0
-            
-            expected_full_w = self.cfg.expected_lane_width_m * self.cfg.px_per_meter_x
-            expected_half_w = expected_full_w / 2.0
-            
-            # If the distance is closer to the full width, they are L + R
-            if abs(dist - expected_full_w) < abs(dist - expected_half_w):
-                return p0, None, p1
-            else:
-                # The distance is closer to half width, so it's Center + Boundary.
-                # The one closest to the middle of the camera is the Center line.
-                if abs(p0 - mid) < abs(p1 - mid):
-                    return None, p0, p1  # p0 is Center, p1 is Right
-                else:
-                    return p0, p1, None  # p0 is Left, p1 is Center
-
-        elif len(peaks) == 1:
-            # Only one line visible
-            p = peaks[0]
-            # If it's near the middle of the screen, it's highly likely the center line
-            if abs(p - mid) < 100:
-                return None, p, None
-            elif p < mid:
-                return p, None, None
-            else:
-                return None, None, p
-
-        else:
+        if not peaks:
             return None, None, None
+            
+        # Dùng Mỏ neo thời gian. Nếu chưa có, giả định vạch giữa ở tâm ảnh.
+        anchor = self._last_center_x if self._last_center_x is not None else self.bev_w // 2
+        
+        # Vạch nào gần Mỏ neo nhất chắc chắn là Vạch Giữa!
+        c_idx = min(range(len(peaks)), key=lambda i: abs(peaks[i] - anchor))
+        center = peaks[c_idx]
+        
+        left, right = None, None
+        
+        # Vạch nằm bên trái nó là Left
+        if c_idx > 0:
+            left = peaks[c_idx - 1]
+            
+        # Vạch nằm bên phải nó là Right
+        if c_idx < len(peaks) - 1:
+            right = peaks[c_idx + 1]
+            
+        return left, center, right
 
     def _detect_line(self, bev_mask, base_x):
         """Run sliding window + RANSAC for one lane line.

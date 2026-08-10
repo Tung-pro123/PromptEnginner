@@ -220,6 +220,28 @@ class SpeedRacingV3:
         # ---- 10. Steering filter ----
         steer_filtered = self.steering_filter.filter(steer_raw)
 
+        # ---- 10.5. Area Heuristic (Ý TƯỞNG 2: Mạng lưới an toàn diện tích) ----
+        if lane_state.centerline_poly is not None:
+            # Tìm vị trí vạch vàng ở đáy BEV
+            bottom_y = self.cfg.image_height
+            center_x_bottom = int(np.polyval(lane_state.centerline_poly, bottom_y))
+            center_x_bottom = max(0, min(self.cfg.image_width, center_x_bottom))
+            
+            # Cắt đôi bức ảnh bằng vạch vàng và đếm điểm ảnh trắng
+            area_left = np.count_nonzero(bev_mask[:, :center_x_bottom])
+            area_right = np.count_nonzero(bev_mask[:, center_x_bottom:])
+            
+            # Heuristic: Nếu một bên có quá nhiều vạch (diện tích > 175%), ép vô lăng bẻ về hướng ngược lại
+            # Lưu ý: Do steering của xe có thể đảo chiều (steer_invert), ta điều chỉnh steer_filtered.
+            # Với convention của V3, bẻ trái là âm (-), bẻ phải là dương (+)
+            if area_right > area_left * 1.75:
+                steer_filtered -= 0.3  # Ép bẻ Trái
+            elif area_left > area_right * 1.75:
+                steer_filtered += 0.3  # Ép bẻ Phải
+                
+            # Đảm bảo steering không vượt ngưỡng [-1.0, 1.0]
+            steer_filtered = max(-1.0, min(1.0, steer_filtered))
+
         # ---- 11. Speed controller ----
         throttle = self.speed_controller.compute(
             traj.curvature,
@@ -275,9 +297,10 @@ class SpeedRacingV3:
 
             # Send commands
             if lane_state.tracking_state == TrackingState.E_STOP:
-                self.racer.stop()
-                rospy.logwarn("E_STOP — all motors stopped.")
-                break
+                # self.racer.stop()
+                # rospy.logwarn("E_STOP — all motors stopped.")
+                # break
+                continue
             else:
                 self.racer.steer(steer_out, throttle)
 

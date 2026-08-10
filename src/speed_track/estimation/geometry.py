@@ -105,16 +105,8 @@ class LaneGeometry:
                 return obs
 
             if has_C:
-                # Case 1: All three lines — fuse center observation with boundary-derived center
-                boundary_weight = (left.confidence + right.confidence) / 2.0
-                center_weight = center.confidence
-                total = boundary_weight + center_weight
-                if total > 0:
-                    w_b = boundary_weight / total
-                    w_c = center_weight / total
-                    obs.centerline_poly = w_b * center_from_boundaries + w_c * center.poly
-                else:
-                    obs.centerline_poly = center_from_boundaries
+                # Case 1: All three lines — force centerline to exactly match the yellow line
+                obs.centerline_poly = center.poly
                 obs.method = 'L+C+R_fused'
             else:
                 # Case 2: L + R only (center dashed line not visible)
@@ -189,7 +181,7 @@ class LaneGeometry:
             obs.centerline_poly = center.poly
             obs.lane_width_px = self._prev_width_px
             obs.lane_width_m = self._prev_width_px / self.cfg.px_per_meter_x
-            obs.overall_confidence = center.confidence * 0.4
+            obs.overall_confidence = center.confidence * 0.8
             obs.valid = True
             obs.method = 'C_only'
 
