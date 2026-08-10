@@ -220,69 +220,27 @@ class CameraProcessor(BaseCameraProcessor):
             blackboard.set('raw_camera_frame', latest_image)
         
         # =====================================================================
-        # NHÁNH 1: Thuật toán Boundary Following mới (detect_boundary_path)
-        # Ưu tiên cao nhất khi USE_BOUNDARY_PATH = True
+        # ÁP DỤNG KỸ THUẬT PROCESSOR (HYBRID LANE DETECTION) TỪ NHÁNH QUYEN
         # =====================================================================
-        if getattr(settings, 'USE_BOUNDARY_PATH', False) and self.lane_detector is not None:
-            boundary_offset_px = getattr(settings, 'BOUNDARY_OFFSET_PX', 55)
-            center_x, waypoints, boundary_waypoints, center_detected, debug_img, bev_debug_img = self.lane_detector.detect_boundary_path(
-                latest_image,
-                boundary_offset_px=boundary_offset_px,
-                debug=True
-            )
+        if self.lane_detector is not None and latest_image is not None:
+            # 1. Chạy thuật toán dò đường lai (Hybrid)
+            target_x, L_n, R_n, has_center, debug_img = self.lane_detector.process(latest_image)
             
-            blackboard.set('center_x', center_x)
-            blackboard.set('lane_waypoints', waypoints)
-            blackboard.set('boundary_waypoints', boundary_waypoints)
-            blackboard.set('center_detected', center_detected)
+            # 2. Lưu vào Blackboard cho PredictiveController đọc
+            blackboard.set('target_x', target_x)
+            blackboard.set('left_border', L_n)
+            blackboard.set('right_border', R_n)
+            blackboard.set('has_center', has_center)
             
-            # Ghi ảnh debug gốc (có overlay waypoints)
+            # Xóa các biến cũ để tránh xung đột hoặc nhầm lẫn
+            blackboard.set('center_x', target_x)
+            blackboard.set('lane_waypoints', [])
+            blackboard.set('boundary_waypoints', [])
+            blackboard.set('exec_center', target_x)
+            blackboard.set('look_center', target_x)
+            
+            # 3. Ghi ảnh Debug (hiển thị biên, fallback, vạch kẻ)
             if debug_img is not None:
                 blackboard.set('latest_image', debug_img)
-            # Ghi thêm ảnh Bird's Eye View cho test script hiển thị
-            if bev_debug_img is not None:
-                blackboard.set('bev_debug_img', bev_debug_img)
-                blackboard.set('camera_thresh', cv2.cvtColor(bev_debug_img, cv2.COLOR_BGR2GRAY))
-                
-        # =====================================================================
-        # NHÁNH 2: Thuật toán cũ - HSV Sliding Window (USE_ADVANCED_SEGMENTATION)
-        # =====================================================================
-        elif getattr(self, 'use_advanced_segmentation', False) and self.lane_detector is not None:
-            # 1. Sử dụng thuật toán phân đoạn ảnh (Sliding Window & Curve Fitting)
-            if getattr(settings, 'USE_COLOR_SEGMENTATION', False):
-                # Sử dụng lọc màu HSV + Sliding Window & Curve Fitting
-                segmented_img, thresh, center_x, left_fit, right_fit = self.lane_detector.process_color_segment(latest_image)
-            else:
-                # Sử dụng Grayscale threshold + Sliding Window & Curve Fitting
-                segmented_img, thresh, center_x, left_fit, right_fit = self.lane_detector.process_and_segment(latest_image, settings.THRESHOLD_VALUE)
-            
-            # 2. Sinh ra danh sách waypoints để tương thích ngược với PredictiveController
-            waypoints = []
-            if left_fit is not None and right_fit is not None:
-                # Dùng 8 điểm quét với khoảng cách hẹp hơn (từ 180 đến 285, cách nhau 15px)
-                y_lines = [180, 195, 210, 225, 240, 255, 270, 285]
-                for y in y_lines:
-                    lx = left_fit[0]*y**2 + left_fit[1]*y + left_fit[2]
-                    rx = right_fit[0]*y**2 + right_fit[1]*y + right_fit[2]
-                    waypoints.append((int((lx + rx) / 2.0), y))
-            
-            # 3. Ghi dữ liệu vào Blackboard
-            blackboard.set('center_x', center_x)
-            blackboard.set('lane_waypoints', waypoints)
-            if thresh is not None:
-                blackboard.set('camera_thresh', thresh)
-            if segmented_img is not None:
-                # Ghi đè biến latest_image bằng ảnh đã phân đoạn để Debugger hiển thị dải màu xanh lá
-                blackboard.set('latest_image', segmented_img)
-        # =====================================================================
-        # NHÁNH 3: Fallback - Pipeline đơn giản (Scanline quét hàng)
-        # =====================================================================
-        else:
-            # Chạy thuật toán dự phòng (Pipeline cũ, đơn giản)
-            center_x, waypoints, thresh = self.process_frame(latest_image, dodge_direction)
-            
-            blackboard.set('center_x', center_x)
-            blackboard.set('lane_waypoints', waypoints)
-            if thresh is not None:
-                blackboard.set('camera_thresh', thresh)
+
 
