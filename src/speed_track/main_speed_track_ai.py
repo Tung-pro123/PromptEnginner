@@ -129,7 +129,7 @@ class SpeedTrackAIController:
         time.sleep(3)
         rospy.loginfo("=== BẮT ĐẦU ĐIỀU KHIỂN BẰNG AI ===")
         
-        rate = rospy.Rate(30) # Vòng lặp 30 FPS
+        rate = rospy.Rate(20) # Vòng lặp 30 FPS
         
         while not rospy.is_shutdown():
             if self.latest_image is None:
