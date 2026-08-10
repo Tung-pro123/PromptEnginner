@@ -4,34 +4,15 @@ import numpy as np
 
 def init_espcn(sr_scale=2):
     """
-    Khởi tạo đối tượng siêu độ phân giải ESPCN nếu được hỗ trợ.
+    Khởi tạo đối tượng siêu độ phân giải ESPCN nếu được hỗ trợ. (Đã vô hiệu hóa)
     """
-    sr = None
-    try:
-        if hasattr(cv2, 'dnn_superres'):
-            sr = cv2.dnn_superres.DnnSuperResImpl_create()
-            model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ESPCN_x2.pb")
-            
-            if not os.path.exists(model_path):
-                import urllib.request
-                print(f"[INFO] Đang tải mô hình ESPCN (x{sr_scale}) về {model_path}...")
-                url = "https://github.com/fannymonori/TF-ESPCN/raw/master/export/ESPCN_x2.pb"
-                urllib.request.urlretrieve(url, model_path)
-                print("[INFO] Tải mô hình thành công.")
-                
-            sr.readModel(model_path)
-            sr.setModel("espcn", sr_scale)
-            print("[INFO] ESPCN Super Resolution được khởi tạo thành công.")
-        else:
-            print("[WARN] OpenCV không có module dnn_superres. Hãy cài 'pip install opencv-contrib-python'")
-    except Exception as e:
-        print(f"[WARN] Lỗi khi khởi tạo ESPCN: {e}")
-        sr = None
-    return sr
+    print("[INFO] DNN Super Resolution đã bị vô hiệu hóa theo cấu hình.")
+    return None
 
 def enhance_image(frame, sr, sr_scale, width, height, detector):
     """
     Pipeline tăng cường chất lượng ảnh trước khi xử lý lane detection.
+    Sử dụng Auto Gamma Correction (đã sửa công thức chuẩn) + CLAHE + Bilateral Filter.
     """
     if sr is not None:
         try:
@@ -44,23 +25,47 @@ def enhance_image(frame, sr, sr_scale, width, height, detector):
     else:
         img = cv2.resize(frame, (width, height))
 
-    # --- Auto Gamma Correction ---
-    gray_mean = float(np.mean(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)))
-    if gray_mean > 5:
-        gamma = np.log(float(detector._gamma_target) / gray_mean) / np.log(0.5)
-        gamma = float(np.clip(gamma, detector._gamma_min, detector._gamma_max))
-        inv_gamma = 1.0 / gamma
-        lut = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)], dtype=np.uint8)
-        img = cv2.LUT(img, lut)
+    # --- Lấy tham số an toàn từ detector ---
+    gamma_target  = getattr(detector, '_gamma_target', 128)
+    gamma_min     = getattr(detector, '_gamma_min', 0.4)
+    gamma_max     = getattr(detector, '_gamma_max', 2.5)
+    clahe_clip    = getattr(detector, '_clahe_clip', 2.5)
+    clahe_grid    = getattr(detector, '_clahe_grid', 4)
+    bilateral_d   = getattr(detector, '_bilateral_d', 5)
+    bilateral_sc  = getattr(detector, '_bilateral_sc', 60)
+    bilateral_ss  = getattr(detector, '_bilateral_ss', 60)
 
-    # --- CLAHE trên kênh V ---
-    hsv_temp = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    clahe = cv2.createCLAHE(clipLimit=detector._clahe_clip, tileGridSize=(detector._clahe_grid, detector._clahe_grid))
-    hsv_temp[:, :, 2] = clahe.apply(hsv_temp[:, :, 2])
-    img = cv2.cvtColor(hsv_temp, cv2.COLOR_HSV2BGR)
+    # --- Auto Gamma Correction (Chuẩn hóa công thức tỷ lệ log) ---
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray_mean = float(np.mean(gray))
+    if 5 < gray_mean < 250:
+        # Công thức chuẩn: gamma = log(mean / 255) / log(target / 255)
+        # Giúp ảnh tối (mean thấp) -> gamma > 1.0 (sáng lên)
+        # Giúp ảnh sáng (mean cao) -> gamma < 1.0 (tối đi)
+        try:
+            gamma = np.log(gray_mean / 255.0) / np.log(gamma_target / 255.0)
+            gamma = float(np.clip(gamma, gamma_min, gamma_max))
+            inv_gamma = 1.0 / gamma
+            lut = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)], dtype=np.uint8)
+            img = cv2.LUT(img, lut)
+        except Exception:
+            pass
 
-    # --- Bilateral Filter ---
-    img = cv2.bilateralFilter(img, d=detector._bilateral_d, sigmaColor=detector._bilateral_sc, sigmaSpace=detector._bilateral_ss)
+    # --- CLAHE trên kênh V (HSV) để tối ưu độ tương phản cục bộ ---
+    try:
+        hsv_temp = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_grid, clahe_grid))
+        hsv_temp[:, :, 2] = clahe.apply(hsv_temp[:, :, 2])
+        img = cv2.cvtColor(hsv_temp, cv2.COLOR_HSV2BGR)
+    except Exception:
+        pass
+
+    # --- Bilateral Filter khử nhiễu hạt giữ nguyên cạnh của làn đường ---
+    try:
+        img = cv2.bilateralFilter(img, d=bilateral_d, sigmaColor=bilateral_sc, sigmaSpace=bilateral_ss)
+    except Exception:
+        pass
+
     return img
 
 def detect_dashed_center(bev_hsv, red_mask, width, height, detector, boundary_fit=None, boundary_side='none'):

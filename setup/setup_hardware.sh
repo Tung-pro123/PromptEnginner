@@ -42,23 +42,52 @@ if [ ! -f "$ROS_MELODIC_SETUP" ]; then
     if [[ "$INSTALL_ROS" =~ ^[Yy]$ ]]; then
         echo -e "${BLUE}Bắt đầu cài đặt ROS Melodic...${NC}"
         
+        # Tạo file log tạm thời
+        ROS_LOG="/tmp/ros_install_error.log"
+        > "$ROS_LOG"
+
         echo -e "${YELLOW}1. Cấu hình apt sources.list cho ROS...${NC}"
-        sudo sh -c 'echo "deb http://packages.ros.org/ros/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/ros-latest.list'
+        if ! sudo sh -c 'echo "deb http://packages.ros.org/ros/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/ros-latest.list' 2>> "$ROS_LOG"; then
+            echo -e "${RED}[ERROR] Cấu hình apt sources.list thất bại!${NC}"
+            echo -e "${RED}Chi tiết lỗi:${NC}"
+            cat "$ROS_LOG"
+            exit 1
+        fi
         
         echo -e "${YELLOW}2. Thiết lập khóa bảo mật apt-key...${NC}"
-        sudo apt-key adv --keyserver 'hkp://keyserver.ubuntu.com:80' --recv-key C1CF6E31E6BADE8868B172B4F42ED0E1
+        if ! sudo apt-key adv --keyserver 'hkp://keyserver.ubuntu.com:80' --recv-key C1CF6E31E6BADE8868B172B4F42ED0E1 2>&1 | tee -a "$ROS_LOG"; then
+            echo -e "${RED}[ERROR] Thiết lập khóa bảo mật apt-key thất bại!${NC}"
+            echo -e "${RED}Vui lòng kiểm tra kết nối mạng hoặc tường lửa của xe.${NC}"
+            exit 1
+        fi
         
         echo -e "${YELLOW}3. Cập nhật danh sách gói hệ thống...${NC}"
-        sudo apt-get update
+        if ! sudo apt-get update 2>&1 | tee -a "$ROS_LOG"; then
+            echo -e "${RED}[ERROR] Cập nhật danh sách gói hệ thống (apt-get update) thất bại!${NC}"
+            echo -e "${RED}Vui lòng kiểm tra lại kết nối internet của xe.${NC}"
+            exit 1
+        fi
         
-        echo -e "${YELLOW}4. Cài đặt ROS Melodic Base và các gói build liên quan...${NC}"
-        sudo apt-get install -y ros-melodic-ros-base python-rosdep python-rosinstall python-rosinstall-generator python-wstool build-essential
+        echo -e "${YELLOW}4. Cài đặt ROS Melodic Base và các gói liên quan...${NC}"
+        if ! sudo apt-get install -y ros-melodic-ros-base python-rosdep python-rosinstall python-rosinstall-generator python-wstool build-essential 2>&1 | tee -a "$ROS_LOG"; then
+            echo -e "${RED}[ERROR] Cài đặt các gói ROS thất bại!${NC}"
+            echo -e "${RED}Chi tiết lỗi được lưu ở: $ROS_LOG${NC}"
+            exit 1
+        fi
         
         if [ ! -f "/etc/ros/rosdep/sources.list.d/20-default.list" ]; then
             echo -e "${YELLOW}5. Khởi tạo cơ sở dữ liệu rosdep...${NC}"
-            sudo rosdep init
+            if ! sudo rosdep init 2>&1 | tee -a "$ROS_LOG"; then
+                echo -e "${RED}[ERROR] Khởi tạo rosdep thất bại!${NC}"
+                exit 1
+            fi
         fi
-        rosdep update
+        
+        echo -e "${YELLOW}6. Cập nhật cơ sở dữ liệu rosdep...${NC}"
+        if ! rosdep update 2>&1 | tee -a "$ROS_LOG"; then
+            echo -e "${RED}[ERROR] Cập nhật rosdep thất bại!${NC}"
+            exit 1
+        fi
         
         ROS_MELODIC_SETUP="/opt/ros/melodic/setup.bash"
         if [ -f "$ROS_MELODIC_SETUP" ]; then
@@ -68,7 +97,7 @@ if [ ! -f "$ROS_MELODIC_SETUP" ]; then
                 echo "source /opt/ros/melodic/setup.bash" >> ~/.bashrc
             fi
         else
-            echo -e "${RED}[ERROR] Cài đặt ROS thất bại. Hãy kiểm tra kết nối internet của xe.${NC}"
+            echo -e "${RED}[ERROR] Không tìm thấy file setup của ROS sau khi cài đặt tại $ROS_MELODIC_SETUP.${NC}"
             exit 1
         fi
     else

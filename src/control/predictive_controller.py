@@ -11,10 +11,10 @@ class PredictiveController(BaseController):
     def __init__(self, blackboard=None):
         self.blackboard = blackboard
         # Tăng mạnh độ nhạy lái của bộ điều khiển Predictive (nhân 6.0)
-        # Vì điểm nhìn ở rất gần cam (y=240), sai số lệch pixel rất nhỏ, cần hệ số kp lớn để bẻ lái gắt
         self.kp = settings.PID_KP * 6.0
         self.car = None
         self._mock = False
+        self.last_predicted_x = settings.IMAGE_CENTER_X
         
     def initialize(self):
         """Khởi tạo phần cứng JetRacer hoặc chế độ Mock."""
@@ -67,17 +67,9 @@ class PredictiveController(BaseController):
             self.car.steering = value
 
     def process(self, blackboard):
-        # Ưu tiên 1: Đè thẳng lên làn trung tâm (nếu có)
-        # Trong detect_lane.py, nếu center_detected = True, lane_waypoints chính là đường trung tâm (màu vàng)
-        center_detected = blackboard.get('center_detected', False)
-        if center_detected:
-            waypoints = blackboard.get('lane_waypoints', [])
-        else:
-            # Thuật toán cũ (fallback): Sử dụng trực tiếp đường màu cam (đường biên) để tính toán điều khiển
-            waypoints = blackboard.get('boundary_waypoints', [])
-            
-        if not waypoints:
-            waypoints = blackboard.get('lane_waypoints', [])
+        # Lấy quỹ đạo mục tiêu (target path) đã được tính toán từ camera_processor
+        # (lane_waypoints đã bao gồm offset an toàn nếu ở Mode B, hoặc bám nét đứt ở Mode A)
+        waypoints = blackboard.get('lane_waypoints', [])
         
         if not waypoints or len(waypoints) < 2:
             # Fallback nếu không có đủ điểm
@@ -135,6 +127,15 @@ class PredictiveController(BaseController):
                 min_safe_x = left_b + margin
                 max_safe_x = right_b - margin
                 predicted_x = max(min_safe_x, min(max_safe_x, predicted_x))
+            
+            # CHỐI BỎ NHẢY ĐỘT NGỘT: Nếu độ lệch so với khung hình trước quá lớn
+            if abs(predicted_x - self.last_predicted_x) > 60:
+                # Dùng lại dự đoán liền trước và ép vào khoảng an toàn ở trung tâm
+                safe_min = settings.IMAGE_CENTER_X - 45
+                safe_max = settings.IMAGE_CENTER_X + 45
+                predicted_x = max(safe_min, min(safe_max, self.last_predicted_x))
+                
+            self.last_predicted_x = predicted_x
             
             # --- TÍNH TOÁN ĐỘ CONG VÀ GÓC HƯỚNG ĐƯỜNG CONG ---
             # Đạo hàm bậc 1: dx/dy = 2*a*y + b
