@@ -30,3 +30,5 @@ models/*.onnx
 
 # Restructure script (already ran)
 # restructure.py
+
+logs/*
