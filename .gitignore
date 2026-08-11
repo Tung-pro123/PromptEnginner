@@ -32,3 +32,6 @@ models/*.onnx
 # restructure.py
 
 logs/*
+sam_method/*
+
+experiments/weights/*
