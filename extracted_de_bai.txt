@@ -1,0 +1,385 @@
+ĐỀ BÀI CHI TIẾT
+VÒNG CHUNG KẾT CUỘC THI
+JETSON AI RACER CHALLENGE 2026
+Mục lục
+1. Mục tiêu cuộc thi 2
+2. Quy định chung 2
+2.1. Quy định thiết bị 2
+2.2. Quy định phần mềm và dữ liệu 2
+2.3. Quy trình thi đấu chung 3
+2.4. Định nghĩa thuật ngữ 3
+3. Bài 1 - Speed Track 3
+3.1. Mục tiêu 3
+3.2. Mô tả sa bàn 3
+3.3. Nhiệm vụ đội thi cần thực hiện 4
+3.4. Thể thức thi đấu 5
+3.5. Điều kiện hoàn thành lượt chạy 5
+3.6. Công thức tính điểm Speed Track 5
+3.7. Bảng lỗi và hình thức xử lý Speed Track 6
+4. Bài 2 - Smart City 6
+4.1. Mục tiêu 6
+4.2. Mô tả sa bàn 6
+4.3. Loại biển báo và quy ước hướng 7
+4.4. Nhiệm vụ đội thi cần thực hiện 8
+4.5. Thể thức thi đấu 8
+4.6. Điều kiện hoàn thành lượt chạy 8
+4.7. Công thức tính điểm Smart City 8
+4.8. Bảng lỗi và hình thức xử lý Smart City 9
+4.9. Yêu cầu kỹ thuật về thời gian xử lý 9
+5. Cách tính điểm chung cuộc và xếp hạng 9
+6. Quy định xử lý sự cố 9
+7. Dataset, log và tài nguyên được cung cấp 10
+8. Ví dụ tính điểm 11
+1
+1. Mục tiêu cuộc thi
+Vòng chung kết đánh giá khả năng xây dựng hệ thống xe tự hành dựa trên JetRacer. Hệ thống
+cần sử dụng dữ liệu từ camera để nhận diện môi trường, đưa ra quyết định điều khiển và hoàn
+thành các yêu cầu trên sa bàn mà không cần điều khiển thủ công trong lượt thi chính thức.
+- Speed Track đánh giá khả năng bám lane, duy trì tốc độ, vượt checkpoint và tránh
+chướng ngại vật.
+- Smart City đánh giá khả năng nhận diện biển báo, tuân thủ tín hiệu giao thông và điều
+hướng trong mạng đường đô thị mô phỏng.
+- Các tiêu chí chấm điểm ưu tiên tính tự động, độ chính xác, độ ổn định, thời gian hoàn
+thành và khả năng xử lý tình huống.
+2. Quy định chung
+2.1. Quy định thiết bị
+● Xe thi đấu là NVIDIA JetRacer do BTC cung cấp, lắp ráp và cài đặt cấu hình ban đầu.
+● Đội thi không được thay đổi phần cứng của xe so với cấu hình BTC đã setup, bao gồm
+camera, board xử lý, động cơ, servo, khung xe, pin và các linh kiện gắn trên xe.
+● Đội thi được phép chỉnh sửa phần mềm điều khiển, thuật toán xử lý ảnh, mô hình nhận diện
+và cấu hình chương trình trong phạm vi BTC cho phép.
+● Đội thi không được can thiệp vào hệ thống đếm giờ, cảm biến, đèn hiệu, sa bàn hoặc thiết bị
+chấm điểm của BTC.
+● Thành phần xe có thể tham khảo theo tài liệu lắp ráp JetRacer ROS AI Kit của Waveshare.
+2.2. Quy định phần mềm và dữ liệu
+● Đội thi được phép sử dụng mô hình đã huấn luyện trước nếu mô hình đó không vi phạm quy
+định dữ liệu của BTC.
+● Đội thi được phép sử dụng dataset mẫu do BTC cung cấp để huấn luyện hoặc kiểm thử
+trước cuộc thi.
+● Trong lượt thi chính thức, xe phải tự vận hành. Đội thi không được điều khiển xe bằng tay,
+joystick, bàn phím, remote hoặc bất kỳ kênh điều khiển thủ công nào.
+● Đội thi nên ghi log tối thiểu gồm FPS, thời gian xử lý, kết quả nhận diện, lệnh điều khiển và
+sự kiện lỗi để BTC có thể kiểm tra khi cần.
+2
+2.3. Quy trình thi đấu chung
+1. Trước thời điểm thi 10 phút, BTC bàn giao xe cho đội thi để kiểm tra kết nối, khởi chạy
+chương trình và chuẩn bị cấu hình.
+2. Sau thời gian chuẩn bị ngoài sa bàn, đội thi có thêm 05 phút chuẩn bị trực tiếp trên sa bàn
+theo hướng dẫn của BTC.
+3. Tổng thời gian thi đấu chính thức của mỗi đội là 25 phút, không bao gồm thời gian chuẩn bị.
+Trong đó Speed Track tối đa 15 phút và Smart City tối đa 10 phút.
+4. Mỗi lượt chạy bắt đầu khi đèn hoặc hiệu lệnh xuất phát của BTC cho phép xe di chuyển.
+5. Trong quá trình thi, đội thi chỉ được thao tác theo phạm vi BTC cho phép, chẳng hạn khởi
+chạy lại chương trình khi được BTC xác nhận.
+6. Khi hết thời gian tối đa của lượt chạy, xe phải dừng ngay lập tức và BTC ghi nhận kết quả
+tại trạng thái cuối cùng hợp lệ.
+2.4. Định nghĩa thuật ngữ
+Thuật ngữ Định nghĩa sử dụng trong đề
+Một lần xe xuất phát và thực hiện bài thi cho đến khi hoàn
+Lượt chạy
+thành, hết giờ hoặc bị hủy kết quả.
+Lane Phần đường đua hợp lệ mà xe được phép di chuyển bên trong.
+Lệch khỏi lane Xe có từ hai bánh cùng một bên vượt ra khỏi mép lane.
+Mốc kiểm tra trên sa bàn. Checkpoint hợp lệ khi toàn bộ 4 bánh
+Checkpoint
+xe đã vượt qua vạch checkpoint theo đúng chiều quy định.
+Thời gian hoàn Khoảng thời gian từ lúc xe xuất phát hợp lệ đến khi xe hoàn
+thành thành lượt chạy, sau khi cộng thời gian phạt nếu có.
+Mọi hành động điều khiển trực tiếp hướng lái, tốc độ hoặc vị trí
+Can thiệp thủ công
+xe bởi đội thi trong lượt chạy chính thức.
+Lượt chạy được tính 0 điểm hoặc không được dùng để xếp
+Hủy kết quả
+hạng, tùy quy định cụ thể của từng lỗi.
+3. Bài 1 - Speed Track
+3.1. Mục tiêu
+Xe phải tự động hoàn thành một vòng đường đua theo đúng chiều quy định, bám lane ổn định,
+vượt qua các checkpoint theo thứ tự và tránh các chướng ngại vật trên đường.
+3.2. Mô tả sa bàn
+● Sa bàn mô phỏng đường đua có ngoài thực tế được thu nhỏ.
+● Đường đua gồm một lane màu tối, có line trắng đứt khúc ở giữa.
+● Trên đường đua có 03 checkpoint được đánh số và đánh dấu rõ ràng.
+● Trên đường đua có các chướng ngại vật. Số lượng, vị trí và kích thước chướng ngại vật do
+BTC công bố trong briefing hoặc tại thời điểm thi.
+● Vạch xuất phát đồng thời là vạch kết thúc của một vòng chạy.
+3
+Hình 1. Minh họa sa bàn Speed Track.
+3.3. Nhiệm vụ đội thi cần thực hiện
+Đầu ra mong Điều kiện được công
+Nhiệm vụ Đầu vào chính
+muốn nhận
+Đèn/hiệu lệnh Xe chỉ di chuyển sau hiệu
+Xuất phát đúng Xe bắt đầu di
+xuất phát của lệnh và vượt qua vạch xuất
+hiệu lệnh chuyển đúng chiều
+BTC phát theo đúng hướng.
+Xe di chuyển trong lane,
+Hình ảnh camera Lệnh tốc độ và
+Bám lane không có từ hai bánh cùng
+từ sa bàn góc lái ổn định
+một bên ra khỏi mép lane.
+Toàn bộ 4 bánh vượt qua
+Xe đi qua
+Vượt Vị trí checkpoint checkpoint theo đúng chiều
+checkpoint theo
+checkpoint trên sa bàn và không bỏ qua
+thứ tự
+checkpoint trước đó.
+Xe không chạm, đẩy, kéo
+Tránh chướng Hình ảnh vật cản Xe điều chỉnh
+hoặc làm dịch chuyển
+ngại vật trên đường hướng đi phù hợp
+chướng ngại vật.
+Vạch xuất Xe vượt đủ checkpoint theo
+Hoàn thành Xe hoàn thành
+phát/kết thúc và thứ tự và quay về vạch kết
+vòng một vòng hợp lệ
+checkpoint thúc trong thời gian tối đa.
+Đội có thể hiển thị hoặc
+Ghi log hiệu Thông tin FPS trung bình và
+cung cấp log khi BTC yêu
+năng pipeline xử lý sự kiện điều khiển
+cầu.
+4
+3.4. Thể thức thi đấu
+1. Mỗi đội có 03 lượt chạy độc lập cho bài Speed Track.
+2. Mỗi lượt chạy tối đa 05 phút.
+3. Điểm Speed Track của đội là điểm cao nhất trong 03 lượt chạy.
+4. Các đội thi lần lượt. Một đội hoàn thành đủ 03 lượt Speed Track trước khi chuyển lượt cho
+đội tiếp theo, trừ khi BTC công bố cách tổ chức khác.
+3.5. Điều kiện hoàn thành lượt chạy
+Một lượt Speed Track được xem là hoàn thành hợp lệ khi đồng thời thỏa mãn các điều kiện
+sau:
+1. Xe xuất phát sau hiệu lệnh của BTC.
+2. Xe di chuyển đúng chiều quy định.
+3. Xe vượt qua checkpoint 1, checkpoint 2 và checkpoint 3 theo đúng thứ tự.
+4. Xe trở về và vượt qua vạch kết thúc.
+5. Xe không bị hủy kết quả do lỗi nghiêm trọng hoặc can thiệp thủ công.
+3.6. Công thức tính điểm Speed Track
+Công thức / quy ước
+Điểm một lượt = max(0, Điểm Checkpoint + Điểm FPS + Điểm thời gian - Penalty)
+Điểm Checkpoint = số checkpoint hợp lệ x 10 điểm, tối đa 30 điểm.
+Điểm FPS = 10 điểm nếu FPS trung bình của pipeline xử lý >= 20 FPS trong lượt
+chạy; ngược lại bằng 0 điểm.
+Penalty = tổng điểm trừ do vi phạm trong lượt chạy.
+Điểm thời gian = tối đa 60 điểm, mỗi 10 giây trừ 2 điểm.
+Điểm Speed Track cuối cùng = điểm cao nhất trong 03 lượt chạy.
+FPS được tính là tốc độ xử lý trung bình của pipeline điều khiển trong lượt chạy, bao gồm đọc
+ảnh camera, xử lý nhận diện và phát sinh lệnh điều khiển. Đội thi phải hiển thị hoặc ghi log FPS
+để BTC xác nhận khi cần.
+5
+3.7. Bảng lỗi và hình thức xử lý Speed Track
+Thời gian
+Vi phạm Điểm trừ Cách xử lý
+phạt
+Xe tiếp tục chạy nếu còn khả
+Đụng chướng ngại năng di chuyển. Nếu vật cản bị
+-5 điểm/lần +10 giây/lần
+vật dịch chuyển nhiều, BTC có quyền
+đặt lại vật cản.
+BTC đưa xe về checkpoint hợp lệ
+Lệch khỏi đường
+-10 điểm/lần +15 giây/lần gần nhất. Đồng hồ dừng trong
+đua
+thời gian BTC can thiệp.
+Xuất phát trước BTC yêu cầu xuất phát lại nếu xe
+-10 điểm/lần +10 giây/lần
+hiệu lệnh chưa vượt xa vạch xuất phát.
+Đi ngược chiều quy Hủy lượt Không áp
+Lượt chạy không được tính điểm.
+định chạy dụng
+Can thiệp thủ công
+Hủy lượt Không áp Lượt chạy không được tính điểm,
+vào xe khi đang
+chạy dụng trừ thao tác được BTC cho phép.
+chạy
+4. Bài 2 - Smart City
+4.1. Mục tiêu
+Xe phải tự động di chuyển trong mô hình đô thị, nhận diện biển báo và đèn giao thông, chọn
+hướng đi phù hợp tại các giao lộ và đến đúng vùng kết thúc.
+4.2. Mô tả sa bàn
+● Sa bàn Smart City là mạng đường đô thị mô phỏng gồm các đoạn đường và giao lộ.
+● Mỗi giao lộ được xem là một đỉnh. Mỗi đoạn đường nối giữa hai giao lộ được xem là một
+cạnh.
+● Tại một số đỉnh có biển báo hoặc đèn giao thông. Xe phải xử lý biển báo/tín hiệu trước khi
+rời khỏi đỉnh đó.
+● Vùng xuất phát và vùng kết thúc được đánh dấu rõ ràng trên sa bàn.
+● Vị trí biển báo, hướng biển báo và đèn giao thông phải nằm trong vùng quan sát hợp lý của
+camera trên xe.
+6
+Hình 2. Minh họa sa bàn Smart City.
+4.3. Loại biển báo và quy ước hướng
+Loại tín hiệu Ý nghĩa Yêu cầu xe thực hiện
+Bắt buộc xe rời giao lộ X thuộc một trong các hướng: đi
+Biển báo lệnh
+theo hướng X. thẳng, rẽ trái, rẽ phải.
+Xe phải chọn hướng khác hợp lệ
+Cấm xe rời giao lộ theo
+Biển báo cấm theo bố trí sa bàn và lộ trình. Chỉ có
+hướng bị cấm.
+hai hướng.
+Đèn giao thông Cho phép xe tiếp tục di Xe được phép vượt qua vạch dừng
+xanh chuyển. và đi tiếp.
+Xe phải dừng trước vạch dừng cho
+Không cho phép xe vượt
+Đèn giao thông đỏ đến khi tín hiệu chuyển xanh hoặc
+qua vạch dừng.
+theo quy định BTC.
+Lưu ý: Trái, phải và thẳng được xác định theo hướng di chuyển hiện tại của xe khi tiến vào
+giao lộ, không xác định theo hướng tuyệt đối của bản đồ.
+7
+4.4. Nhiệm vụ đội thi cần thực hiện
+Điều kiện được công
+Nhiệm vụ Đầu vào chính Đầu ra mong muốn
+nhận
+Xe đưa ra hành động
+Nhận diện biển Ảnh biển báo từ phù hợp với ý nghĩa
+Nhãn biển báo đúng
+báo camera biển báo tại giao lộ
+tương ứng.
+Xe rời giao lộ theo
+Chọn hướng
+Ra quyết định Kết quả nhận diện đúng hướng được yêu
+thẳng/trái/phải hợp
+tại giao lộ biển báo, vị trí xe cầu hoặc tránh hướng
+lệ
+bị cấm.
+Xe dừng trước vạch khi
+Tuân thủ đèn Tín hiệu đèn Dừng hoặc tiếp tục
+đèn đỏ và chỉ đi khi
+giao thông xanh/đỏ di chuyển
+được phép.
+Toàn bộ thân xe đi vào
+Đi đến vùng kết Sa bàn, biển báo, Xe đến đúng vùng
+vùng kết thúc trong thời
+thúc đèn tín hiệu kết thúc
+gian tối đa.
+Đội có thể cung cấp log
+Thời gian xử lý và Log quyết định và độ khi BTC yêu cầu kiểm
+Ghi log xử lý
+kết quả nhận diện trễ xử lý tra thời gian xử lý <=
+300 ms.
+4.5. Thể thức thi đấu
+1. Mỗi đội có 02 lượt chạy thực tế cho bài Smart City.
+2. Mỗi lượt chạy tối đa 05 phút.
+3. Hành trình kết thúc khi toàn bộ thân xe đi vào vùng kết thúc.
+4. Điểm Smart City của đội là điểm cao nhất trong 02 lượt chạy, trừ khi BTC công bố cách tính
+trung bình hoặc tổng điểm.
+4.6. Điều kiện hoàn thành lượt chạy
+Một lượt Smart City được xem là hoàn thành hợp lệ khi xe xuất phát đúng hiệu lệnh, tuân thủ
+các biển báo/đèn giao thông bắt buộc, không bị hủy kết quả và đi vào đúng vùng kết thúc trong
+thời gian tối đa.
+4.7. Công thức tính điểm Smart City
+Công thức / quy ước
+Điểm một lượt Smart City = max(0, Điểm biển báo + Điểm thời gian - Penalty)
+Điểm biển báo = Số lượng biển báo đọc được * (Tổng số lượng biển báo / 70), tối đa
+70 điểm.
+Điểm thời gian: tối đa 30 điểm. Ban đầu là 30 điểm; cứ mỗi 10 giây tính từ lúc xuất
+phát, trừ 1 điểm; không nhỏ hơn 0.
+Penalty: tổng điểm trừ do vi phạm trong lượt chạy.
+Điểm Smart City cuối cùng = điểm cao nhất trong 02 lượt chạy.
+8
+4.8. Bảng lỗi và hình thức xử lý Smart City
+Vi phạm Điểm trừ / Kết quả Cách xử lý
+Lượt chạy không được tính điểm.
+Vượt đèn đỏ Hủy lượt chạy BTC ghi nhận lỗi và chuyển sang
+lượt tiếp theo nếu còn.
+Xe phải được BTC đưa về vị trí
+Không dừng trước vạch
+-10 điểm/lần trước vạch dừng hoặc xử lý theo
+dừng khi gặp đèn đỏ
+tình huống thực tế.
+Can thiệp thủ công vào Lượt chạy không được tính điểm,
+Hủy lượt chạy
+xe khi đang chạy trừ thao tác được BTC cho phép.
+Tính điểm tới biển báo đúng xa
+Đi sai lộ trình Kết thúc lượt chạy
+vạch xuất phát nhất
+4.9. Yêu cầu kỹ thuật về thời gian xử lý
+Hệ thống nên nhận diện biển báo và phát sinh quyết định điều khiển trong thời gian <= 300 ms.
+Thời gian này được tính từ thời điểm biển báo/tín hiệu xuất hiện rõ trong vùng quan sát của
+camera đến thời điểm chương trình phát sinh lệnh điều khiển tương ứng. Đội thi cần ghi log
+thời gian xử lý để BTC kiểm tra khi có tranh chấp.
+5. Cách tính điểm chung cuộc và xếp hạng
+Công thức / quy ước
+Tổng điểm chung cuộc = Điểm Speed Track * 30% + Điểm Smart City * 40%
+Điểm tối đa Speed Track = 100 điểm * 30% = 30 điểm.
+Điểm tối đa Smart City = 100 điểm * 40% = 40 điểm.
+Tổng điểm tối đa = 70 điểm.
+Nếu hai hoặc nhiều đội có tổng điểm bằng nhau, thứ tự ưu tiên xếp hạng được xác định như
+sau:
+1. Đội có điểm Smart City cao hơn xếp trên.
+2. Nếu vẫn bằng điểm, đội có điểm Speed Track cao hơn xếp trên.
+3. Nếu vẫn bằng điểm, đội có tổng thời gian hoàn thành thấp hơn, sau khi cộng thời gian phạt,
+xếp trên.
+4. Nếu vẫn bằng điểm, đội có ít lỗi vi phạm hơn xếp trên.
+5. Nếu vẫn bằng điểm, BTC có thể tổ chức lượt chạy phụ hoặc dùng tiêu chí bổ sung được
+công bố tại cuộc thi.
+9
+6. Quy định xử lý sự cố
+Tình huống Điều kiện xác định Cách xử lý chuẩn
+BTC đưa xe về checkpoint hợp lệ
+Xe lệch khỏi đường Hai bánh cùng một bên ra
+gần nhất. Áp dụng điểm phạt và
+đua khỏi mép lane.
+thời gian phạt theo bảng lỗi.
+Đội có quyền yêu cầu restart. Xe
+Xe đứng yên hoặc không restart từ checkpoint/giao lộ hợp
+Xe bị kẹt hoặc dừng
+thể tiếp tục di chuyển lệ gần nhất. Đồng hồ không dừng
+không di chuyển
+trong 10 giây. trong quá trình restart, trừ khi lỗi
+do thiết bị BTC.
+Lỗi phần cứng hoặc hệ BTC xem xét cho chạy lại lượt
+Lỗi thiết bị do BTC
+thống chấm điểm không hoặc tạm dừng đồng hồ. Quyết
+cung cấp
+do đội thi gây ra. định cuối cùng thuộc BTC.
+Xe dừng ngay lập tức. BTC tính
+Hết thời gian lượt
+Đạt giới hạn 05 phút/lượt. điểm đến checkpoint/giao lộ cuối
+chạy
+cùng hợp lệ.
+Đội thi gửi yêu cầu trong thời gian
+Đội thi không đồng ý với 5 phút sau khi công bố điểm lượt.
+Tranh chấp kết quả điểm hoặc lỗi được ghi BTC kiểm tra log, camera hoặc
+nhận. biên bản để ra quyết định cuối
+cùng.
+7. Dataset, log và tài nguyên được cung cấp
+● Các đội được cung cấp dataset mẫu: Dataset . Tuy nhiên, khi vào vòng thi chính thức, các
+đội buộc phải tự tạo do dataset được cung cấp sẽ không hoàn toàn giống với sa bàn thực
+tế.
+● Đội thi nên chuẩn bị cơ chế xuất log ở dạng file .txt/.csv.
+Attribute log khuyến nghị Ý nghĩa
+timestamp Thời điểm phát sinh sự kiện.
+fps FPS hiện tại hoặc FPS trung bình của pipeline xử lý.
+Biển báo, lane, chướng ngại vật hoặc tín hiệu được
+detected_object/sign
+nhận diện.
+confidence Độ tin cậy của mô hình nếu có.
+Quyết định điều khiển: đi thẳng, rẽ trái, rẽ phải, dừng,
+decision
+tránh vật cản.
+latency_ms Thời gian xử lý tính bằng mili giây.
+control_output Lệnh điều khiển tốc độ và góc lái.
+Sự kiện đặc biệt: vượt checkpoint, lệch lane, restart,
+event
+hoàn thành lượt.
+10
+8. Ví dụ tính điểm
+Bài thi Tình huống ví dụ Cách tính
+Điểm Checkpoint = 90; Điểm FPS
+Xe vượt đủ 3 checkpoint, FPS = 10; Penalty = 5 + 10 = 15;
+Speed Track trung bình 22, đụng 1 vật cản và Score = 85 điểm. Thời gian hoàn
+lệch lane 1 lần. thành cộng thêm 30 + 60 = 90
+giây.
+Điểm biển báo = 70; Điểm thời
+Xe đến đích, thời gian 80 giây,
+Smart City gian = 30 - 8 = 22; Tổng điểm =
+không có lỗi khác.
+92 điểm.
+Xe vượt đèn đỏ ở lượt chạy thứ Lượt chạy bị hủy kết quả. Đội sử
+Smart City
+nhất. dụng lượt chạy thứ hai nếu còn.
+Hết
+11
