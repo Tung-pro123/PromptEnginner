@@ -89,9 +89,17 @@ class MultiLaneDetector:
         bottom_peaks = self._find_peaks(bottom_hist)
         
         if bottom_peaks:
-            # Gắn mỏ neo thời gian: Lấy đỉnh sát tâm nhất ở vùng đáy làm Center Line
-            true_center = min(bottom_peaks, key=lambda p: abs(p - self.bev_w // 2))
-            self._last_center_x = true_center
+            if self._last_center_x is None:
+                # Khởi tạo ban đầu: vạch gần tâm nhất
+                true_center = min(bottom_peaks, key=lambda p: abs(p - self.bev_w // 2))
+                self._last_center_x = true_center
+            else:
+                # Các frame sau: vạch phải gần với Mỏ neo cũ nhất (chống nhảy sang vạch biên khi vào cua)
+                true_center = min(bottom_peaks, key=lambda p: abs(p - self._last_center_x))
+                # Giới hạn nhảy: vạch biên cách vạch giữa 30cm (300 pixel). 
+                # Nếu nhảy quá 150 pixel trong 1 frame, chắc chắn là nhận nhầm vạch biên!
+                if abs(true_center - self._last_center_x) < 150:
+                    self._last_center_x = true_center
 
         # Step 3: Assign peaks to L/C/R using the Temporal Anchor
         left_base, center_base, right_base = self._assign_peaks(peaks)

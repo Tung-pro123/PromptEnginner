@@ -221,23 +221,30 @@ class SpeedRacingV3:
         steer_filtered = self.steering_filter.filter(steer_raw)
 
         # ---- 10.5. Area Heuristic (Ý TƯỞNG 2: Mạng lưới an toàn diện tích) ----
+        # ---- 10.5. Area Heuristic (Ý TƯỞNG 2: Mạng lưới an toàn diện tích hình học) ----
         if lane_state.centerline_poly is not None:
-            # Tìm vị trí vạch vàng ở đáy BEV
-            bottom_y = self.cfg.image_height
-            center_x_bottom = int(np.polyval(lane_state.centerline_poly, bottom_y))
-            center_x_bottom = max(0, min(self.cfg.image_width, center_x_bottom))
+            # Không đếm pixel trắng nữa. 
+            # Xem vạch vàng là ranh giới chia cắt hoàn toàn bức ảnh BEV thành 2 vùng Trái/Phải.
+            y_vals = np.arange(0, self.cfg.image_height)
+            poly_x = np.polyval(lane_state.centerline_poly, y_vals)
             
-            # Cắt đôi bức ảnh bằng vạch vàng và đếm điểm ảnh trắng
-            area_left = np.count_nonzero(bev_mask[:, :center_x_bottom])
-            area_right = np.count_nonzero(bev_mask[:, center_x_bottom:])
+            # Cắt giá trị X nằm trong khung hình (0 -> W)
+            poly_x_clipped = np.clip(poly_x, 0, self.cfg.image_width)
             
-            # Heuristic: Nếu một bên có quá nhiều vạch (diện tích > 175%), ép vô lăng bẻ về hướng ngược lại
-            # Lưu ý: Do steering của xe có thể đảo chiều (steer_invert), ta điều chỉnh steer_filtered.
-            # Với convention của V3, bẻ trái là âm (-), bẻ phải là dương (+)
-            if area_right > area_left * 1.75:
-                steer_filtered -= 0.3  # Ép bẻ Trái
-            elif area_left > area_right * 1.75:
-                steer_filtered += 0.3  # Ép bẻ Phải
+            # Diện tích vùng Trái chính là tích phân (tổng) khoảng cách từ mép trái (x=0) đến vạch vàng (poly_x)
+            area_left = np.sum(poly_x_clipped)
+            
+            # Diện tích vùng Phải là phần còn lại của bức ảnh
+            total_area = self.cfg.image_width * self.cfg.image_height
+            area_right = total_area - area_left
+            
+            if total_area > 0:
+                # delta_area > 0 (Trái rộng hơn Phải) -> Vạch vàng nằm bên Phải -> Xe đang ở bên Trái -> Cần bẻ Phải (+)
+                area_ratio = (area_left - area_right) / total_area
+                
+                # Áp dụng trực tiếp tỷ lệ diện tích thành lực bẻ lái bù trừ
+                k_area = 0.15 
+                steer_filtered += k_area * area_ratio
                 
             # Đảm bảo steering không vượt ngưỡng [-1.0, 1.0]
             steer_filtered = max(-1.0, min(1.0, steer_filtered))

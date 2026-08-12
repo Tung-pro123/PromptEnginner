@@ -131,9 +131,16 @@ class SpeedRacingV3_1:
         bottom_peaks = self._find_peaks_1d(bottom_hist, min_height=self.H * 0.1 * 0.1 * 255)
         
         if bottom_peaks:
-            # Vạch sát tâm ảnh nhất ở vùng đáy chính là Vạch Giữa. Cập nhật Mỏ neo.
-            true_center = min(bottom_peaks, key=lambda p: abs(p - self.W_mid))
-            self._last_center_x = true_center
+            if self._last_center_x is None:
+                # Khởi tạo: vạch sát tâm ảnh nhất
+                true_center = min(bottom_peaks, key=lambda p: abs(p - self.W_mid))
+                self._last_center_x = true_center
+            else:
+                # Tránh nhảy nhầm sang vạch biên khi vào cua cực gắt
+                true_center = min(bottom_peaks, key=lambda p: abs(p - self._last_center_x))
+                # Giới hạn nhảy (tương đương 150 pixel của BEV)
+                if abs(true_center - self._last_center_x) < int(self.W * 0.15):
+                    self._last_center_x = true_center
             
         # 2. Tìm tất cả các vạch trong vùng ROI
         min_height = (y_end - y_start) * 255 * 0.1

@@ -77,14 +77,13 @@ class V3Config:
     # Source points on the original image (trapezoid on road surface)
     # Order: bottom-left, bottom-right, top-right, top-left
     # [CALIBRATE] using calib_bev.py on the real car
-    # Adjusted for the low-mounted, downward-angled camera:
-    # - Mở rộng tối đa đáy (0 -> 640) để không cắt mất vạch sát xe.
-    # - Hạ thấp đỉnh BEV xuống y=300 để né vùng lóa sáng phản chiếu mặt sàn.
+    # BEV Source points (Perspective) - tuned for Jetson camera mount
+    # Trả lại cấu hình cắt ở y=300 của bạn để né vùng lóa sáng (tránh mù camera)
     bev_src_pts: np.ndarray = field(default_factory=lambda: np.float32([
-        [0,   480],   # bottom-left (mở rộng tối đa)
-        [640, 480],   # bottom-right (mở rộng tối đa)
-        [540, 300],   # top-right (hạ xuống y=300 để né vùng lóa)
-        [100, 300],   # top-left (hạ xuống y=300 để né vùng lóa)
+        [0, 480],       # bottom-left
+        [640, 480],     # bottom-right
+        [540, 300],     # top-right
+        [100, 300]      # top-left
     ]))
 
     # Destination rectangle in BEV space
@@ -115,8 +114,8 @@ class V3Config:
     # RANSAC POLYNOMIAL FITTING
     # ================================================================
     poly_degree: int = 2
-    ransac_residual_threshold: float = 5.0    # pixels
-    ransac_max_trials: int = 50 # có thể tăng lên <= 100
+    ransac_residual_threshold: float = 20.0
+    ransac_max_trials: int = 10     # [TUNE] Giảm từ 50 xuống 10 để Jetson Nano chạy siêu mượt (Tăng FPS)
     ransac_min_samples: int = 10
 
     # ================================================================
@@ -167,7 +166,7 @@ class V3Config:
     # PURE PURSUIT CONTROLLER (V1 — baseline)
     # ================================================================
     wheelbase: float = 0.16                # [CALIBRATE] meters (axle-to-axle)
-    max_steer_angle_rad: float = 0.45      # [CALIBRATE] Giảm số này = TĂNG lực bẻ lái của servo
+    max_steer_angle_rad: float = 0.8       # [TUNE] TĂNG số này lên để vô lăng bẻ êm hơn (không bị max 1.0 ngay lập tức)
 
     # ================================================================
     # STANLEY CONTROLLER (V2 — after PP is stable)
@@ -178,15 +177,15 @@ class V3Config:
     # ================================================================
     # STEERING FILTER
     # ================================================================
-    max_steer_rate: float = 1.0           # [TUNE] max change per frame (cho phép servo xoay gắt hơn)
-    steer_lpf_alpha: float = 1.0          # [TUNE] 1.0 = no filter (phản hồi vô lăng tức thì)
+    max_steer_rate: float = 1.0           # [TUNE] Trả lại 1.0: Không giới hạn tốc độ bẻ lái để vào cua gắt
+    steer_lpf_alpha: float = 1.0          # [TUNE] Trả lại 1.0: Phản hồi vô lăng tức thì, không bị trễ
 
     # ================================================================
     # SPEED CONTROL
     # ================================================================
-    max_speed: float = 0.40                # [TUNE] throttle
+    max_speed: float = 0.50                # [TUNE] throttle
     min_speed: float = 0.18                # [TUNE]
-    cruise_speed: float = 0.30             # [TUNE] default straight-line speed
+    cruise_speed: float = 0.40             # [TUNE] default straight-line speed
     a_lat_max: float = 2.0                 # [TUNE] lateral accel limit (m/s²)
     speed_confidence_thresh: float = 0.5   # reduce speed below this confidence
     speed_to_throttle_factor: float = 1.0  # [CALIBRATE] TĂNG HỆ SỐ NÀY ĐỂ XE BỐC HƠN (v(m/s) → throttle)
@@ -218,7 +217,7 @@ class V3Config:
     # ================================================================
     # DEBUG & LOGGING
     # ================================================================
-    record_video: bool = True
+    record_video: bool = False             # [TUNE] TẮT QUAY VIDEO ĐỂ XE CHẠY KHÔNG BỊ DELAY (Tăng FPS)
     video_fps: int = 5
     log_csv: bool = True
     loop_rate: int = 20                    # Hz
