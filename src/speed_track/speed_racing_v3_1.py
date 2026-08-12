@@ -122,36 +122,65 @@ class SpeedRacingV3_1:
         return mask
 
     def _find_multilane_peaks(self, mask, y_start, y_end):
-        """Find Left, Center, Right peaks using a 1D Histogram on a specific ROI."""
+        """
+        Nhận diện Vạch Giữa Nét Đứt Đỏ + 2 Vạch Biên Nét Liền Đỏ.
+        Nếu Vạch Giữa nét đứt bị khuất (vào khoảng trống gap), tự động tái tạo
+        tâm từ 2 vạch biên (left + right) / 2 để không bao giờ bị bám nhầm vào biên!
+        """
         roi_mask = mask[y_start:y_end, :]
         histogram = np.sum(roi_mask, axis=0)
         
-        # 1. Quét vùng đáy (Bottom-Anchor) để tìm Vạch Giữa đích thực
-        bottom_hist = np.sum(mask[int(self.H * 0.9):, :], axis=0)
-        bottom_peaks = self._find_peaks_1d(bottom_hist, min_height=self.H * 0.1 * 0.1 * 255)
-        
-        if bottom_peaks:
-            # Vạch sát tâm ảnh nhất ở vùng đáy chính là Vạch Giữa. Cập nhật Mỏ neo.
-            true_center = min(bottom_peaks, key=lambda p: abs(p - self.W_mid))
-            self._last_center_x = true_center
-            
-        # 2. Tìm tất cả các vạch trong vùng ROI
-        min_height = (y_end - y_start) * 255 * 0.1
+        min_height = (y_end - y_start) * 255 * 0.08
         peaks = self._find_peaks_1d(histogram, min_height)
         
-        # 3. Phân loại bằng Mỏ neo thời gian
         left_x, center_x, right_x = None, None, None
+        expected_half_track = int(self.W * 0.28)  # Ước lượng nửa chiều rộng đường đua (pixels)
+        
         if not peaks:
             return left_x, center_x, right_x
             
-        # Vạch gần mỏ neo nhất là Vạch Giữa
-        c_idx = min(range(len(peaks)), key=lambda i: abs(peaks[i] - self._last_center_x))
-        center_x = peaks[c_idx]
-        
-        if c_idx > 0:
-            left_x = peaks[c_idx - 1]
-        if c_idx < len(peaks) - 1:
-            right_x = peaks[c_idx + 1]
+        if len(peaks) >= 3:
+            # Tìm thấy đủ 3 vạch: [Biên trái, Vạch Giữa Nét Đứt, Biên phải]
+            c_idx = min(range(len(peaks)), key=lambda i: abs(peaks[i] - self._last_center_x))
+            center_x = peaks[c_idx]
+            if c_idx > 0:
+                left_x = peaks[c_idx - 1]
+            if c_idx < len(peaks) - 1:
+                right_x = peaks[c_idx + 1]
+        elif len(peaks) == 2:
+            p0, p1 = peaks[0], peaks[1]
+            gap = p1 - p0
+            # Nếu 2 vạch cách nhau khoảng 1 đường đua (~0.35 - 0.85 chiều rộng ảnh)
+            if int(self.W * 0.35) <= gap <= int(self.W * 0.85):
+                # Đây chính là 2 VẠCH BIÊN (Trái & Phải), vạch nét đứt ở giữa đang vào khoảng trống!
+                left_x = p0
+                right_x = p1
+                center_x = (p0 + p1) // 2  # Tái tạo vạch giữa nét đứt bằng trung điểm 2 biên!
+            else:
+                # 1 vạch biên + 1 vạch giữa
+                c_idx = min(range(2), key=lambda i: abs(peaks[i] - self._last_center_x))
+                center_x = peaks[c_idx]
+                if c_idx == 0:
+                    right_x = peaks[1]
+                else:
+                    left_x = peaks[0]
+        elif len(peaks) == 1:
+            p0 = peaks[0]
+            # Nếu đỉnh duy nhất gần mỏ neo -> chính là Vạch Giữa
+            if abs(p0 - self._last_center_x) < expected_half_track * 0.7:
+                center_x = p0
+            elif p0 < self._last_center_x:
+                # Vạch biên trái -> Tính vạch giữa ước lượng
+                left_x = p0
+                center_x = p0 + expected_half_track
+            else:
+                # Vạch biên phải -> Tính vạch giữa ước lượng
+                right_x = p0
+                center_x = p0 - expected_half_track
+                
+        if center_x is not None:
+            # Làm mượt Mỏ neo thời gian (EMA filter)
+            self._last_center_x = int(0.7 * self._last_center_x + 0.3 * center_x)
             
         return left_x, center_x, right_x
 
