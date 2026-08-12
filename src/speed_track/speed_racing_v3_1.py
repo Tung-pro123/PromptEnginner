@@ -123,69 +123,61 @@ class SpeedRacingV3_1:
 
     def _find_multilane_peaks(self, mask, y_start, y_end):
         """
-        Nhận diện Vạch Giữa Nét Đứt Đỏ + 2 Vạch Biên Nét Liền Đỏ.
-        Nếu Vạch Giữa nét đứt bị khuất (vào khoảng trống gap), tự động tái tạo
-        tâm từ 2 vạch biên (left + right) / 2 để không bao giờ bị bám nhầm vào biên!
+        Nhận diện Phân vùng Không gian (Spatial Zoning):
+        - Vùng Biên Trái: x < 0.35 * W
+        - Vùng Vạch Đứt Giữa (Target): 0.35 * W <= x <= 0.65 * W
+        - Vùng Biên Phải: x > 0.65 * W
+        Triệt tiêu hoàn toàn lỗi bám nhầm vào Vạch Biên!
         """
         roi_mask = mask[y_start:y_end, :]
         histogram = np.sum(roi_mask, axis=0)
         
-        min_height = (y_end - y_start) * 255 * 0.08
-        peaks = self._find_peaks_1d(histogram, min_height)
+        min_height = (y_end - y_start) * 255 * 0.05
+        # Giảm min_distance xuống 7% (~45px) để không bao giờ nuốt vạch giữa sát biên
+        peaks = self._find_peaks_1d(histogram, min_height, min_dist=int(self.W * 0.07))
         
         left_x, center_x, right_x = None, None, None
-        expected_half_track = int(self.W * 0.28)  # Ước lượng nửa chiều rộng đường đua (pixels)
+        expected_half_track = int(self.W * 0.28)  # Nửa chiều rộng đường đua (~180px)
         
         if not peaks:
             return left_x, center_x, right_x
             
-        if len(peaks) >= 3:
-            # Tìm thấy đủ 3 vạch: [Biên trái, Vạch Giữa Nét Đứt, Biên phải]
-            c_idx = min(range(len(peaks)), key=lambda i: abs(peaks[i] - self._last_center_x))
-            center_x = peaks[c_idx]
-            if c_idx > 0:
-                left_x = peaks[c_idx - 1]
-            if c_idx < len(peaks) - 1:
-                right_x = peaks[c_idx + 1]
-        elif len(peaks) == 2:
-            p0, p1 = peaks[0], peaks[1]
-            gap = p1 - p0
-            # Nếu 2 vạch cách nhau khoảng 1 đường đua (~0.35 - 0.85 chiều rộng ảnh)
-            if int(self.W * 0.35) <= gap <= int(self.W * 0.85):
-                # Đây chính là 2 VẠCH BIÊN (Trái & Phải), vạch nét đứt ở giữa đang vào khoảng trống!
-                left_x = p0
-                right_x = p1
-                center_x = (p0 + p1) // 2  # Tái tạo vạch giữa nét đứt bằng trung điểm 2 biên!
-            else:
-                # 1 vạch biên + 1 vạch giữa
-                c_idx = min(range(2), key=lambda i: abs(peaks[i] - self._last_center_x))
-                center_x = peaks[c_idx]
-                if c_idx == 0:
-                    right_x = peaks[1]
-                else:
-                    left_x = peaks[0]
-        elif len(peaks) == 1:
+        # Phân loại đỉnh theo vùng không gian trên ảnh
+        left_peaks = [p for p in peaks if p < self.W * 0.35]
+        center_peaks = [p for p in peaks if self.W * 0.35 <= p <= self.W * 0.65]
+        right_peaks = [p for p in peaks if p > self.W * 0.65]
+        
+        left_x = left_peaks[-1] if left_peaks else None
+        right_x = right_peaks[0] if right_peaks else None
+        
+        if center_peaks:
+            # 1. Có vạch ở VÙNG TRUNG TÂM -> ĐÂY CHÍNH LÀ VẠCH NÉT ĐỨT MỤC TIÊU!
+            center_x = min(center_peaks, key=lambda p: abs(p - self._last_center_x))
+        elif left_x is not None and right_x is not None:
+            # 2. Vạch nét đứt chui vào khoảng trống -> Tái tạo tâm giữa từ 2 vạch biên!
+            center_x = (left_x + right_x) // 2
+        elif left_x is not None:
+            # 3. Chỉ thấy vạch biên trái -> Tính vạch giữa ước lượng
+            center_x = left_x + expected_half_track
+        elif right_x is not None:
+            # 4. Chỉ thấy vạch biên phải -> Tính vạch giữa ước lượng
+            center_x = right_x - expected_half_track
+        else:
+            # Fallback nếu đỉnh duy nhất ngoài vùng center
             p0 = peaks[0]
-            # Nếu đỉnh duy nhất gần mỏ neo -> chính là Vạch Giữa
-            if abs(p0 - self._last_center_x) < expected_half_track * 0.7:
+            if abs(p0 - self._last_center_x) < expected_half_track * 0.6:
                 center_x = p0
-            elif p0 < self._last_center_x:
-                # Vạch biên trái -> Tính vạch giữa ước lượng
-                left_x = p0
-                center_x = p0 + expected_half_track
-            else:
-                # Vạch biên phải -> Tính vạch giữa ước lượng
-                right_x = p0
-                center_x = p0 - expected_half_track
                 
         if center_x is not None:
-            # Làm mượt Mỏ neo thời gian (EMA filter)
-            self._last_center_x = int(0.7 * self._last_center_x + 0.3 * center_x)
+            # Giới hạn center_x không bao giờ nhảy ra lề ngoài
+            center_x = max(int(self.W * 0.22), min(int(self.W * 0.78), center_x))
+            # Làm mượt EMA cho mỏ neo
+            self._last_center_x = int(0.75 * self._last_center_x + 0.25 * center_x)
             
         return left_x, center_x, right_x
 
-    def _find_peaks_1d(self, histogram, min_height):
-        min_distance = int(self.W * 0.2)
+    def _find_peaks_1d(self, histogram, min_height, min_dist=None):
+        min_distance = min_dist if min_dist is not None else int(self.W * 0.07)
         peaks = []
         for i in range(1, len(histogram) - 1):
             if histogram[i] < min_height:
