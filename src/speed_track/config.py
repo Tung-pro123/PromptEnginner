@@ -43,8 +43,8 @@ class V3Config:
     hsv_h1_max: int = 10        
     hsv_h2_min: int = 170       
     hsv_h2_max: int = 179       
-    hsv_s_min: int = 100        
-    hsv_v_min: int = 100        
+    hsv_s_min: int = 60         # [TUNE] Lowered to 60 to capture red lines under shadows
+    hsv_v_min: int = 60         # [TUNE] Lowered to 60 for low-light robustness
 
     # Use CLAHE preprocessing for lighting robustness
     use_clahe: bool = False #nếu dùng cân bằng ánh sáng cục bộ thì True

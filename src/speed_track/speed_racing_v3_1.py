@@ -243,9 +243,9 @@ class SpeedRacingV3_1:
                 error_px = center_x - target_x
                 error_norm = error_px / (self.W / 2.0)
                 
-                # Steering
+                # Steering (Positive error = line is to the right = steer right)
                 steer_raw = self._pid_compute(error_norm)
-                steer_out = -steer_raw # Invert if necessary (depends on hardware, matching V3)
+                steer_out = steer_raw
                 
                 if self.cfg.steer_invert:
                     steer_out = -steer_out
