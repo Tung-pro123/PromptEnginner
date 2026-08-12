@@ -47,7 +47,7 @@ class V3Config:
     hsv_v_min: int = 60         # [TUNE] Lowered to 60 for low-light robustness
 
     # Use CLAHE preprocessing for lighting robustness
-    use_clahe: bool = False #nếu dùng cân bằng ánh sáng cục bộ thì True
+    use_clahe: bool = True #nếu dùng cân bằng ánh sáng cục bộ thì True
     clahe_clip_limit: float = 2.0
     clahe_tile_size: int = 8
 
@@ -192,9 +192,9 @@ class V3Config:
     speed_to_throttle_factor: float = 1.0  # [CALIBRATE] hệ số ga chuẩn mượt
 
     # Steering PID
-    steer_pid_kp: float = 2.2              # [TUNE] High proportional gain for sharp curve steering (0.8 -> 2.2)
-    steer_pid_ki: float = 0.0
-    steer_pid_kd: float = 0.02             # [TUNE] Clamped derivative gain for smooth curve transitions
+    steer_pid_kp: float = 1.8              # [TUNE] High proportional gain for sharp curve steering
+    steer_pid_ki: float = 0.0              # [MUST BE 0.0] Integral term causes severe wheel oscillation
+    steer_pid_kd: float = 0.08             # [TUNE] Damping term to stop wheel wobble and stabilize steering
     
     # Speed PID (for encoder feedback)
     speed_pid_kp: float = 0.5

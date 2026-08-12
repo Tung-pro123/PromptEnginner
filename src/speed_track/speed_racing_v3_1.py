@@ -261,11 +261,9 @@ class SpeedRacingV3_1:
             throttle_out = 0.0
             error_norm = 0.0
             
-            # Smart Center Selection with Apex Lookahead for smooth cornering
-            if c_x is not None and look_c is not None:
-                # Blend 40% near center + 60% lookahead center for early apex steering into curves
-                center_x = int(0.4 * c_x + 0.6 * look_c)
-            elif c_x is not None:
+            # Stable Center Selection: prioritize near center (c_x) for rock-solid tracking
+            # Fall back to lookahead center (look_c) only when near center is hidden
+            if c_x is not None:
                 center_x = c_x
             elif look_c is not None:
                 center_x = look_c
