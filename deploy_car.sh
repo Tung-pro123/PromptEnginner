@@ -40,7 +40,13 @@ echo "✅ Đã cài đặt thư viện Motor (Adafruit)."
 echo "[4/4] Vá lỗi mã nguồn tương thích tự động..."
 python3 -c "
 import os
-files_to_patch = ['src/speed_track/main_speed_simple.py', 'src/speed_track/main_speed_competition.py']
+files_to_patch = [
+    'src/speed_track/main_speed_simple.py',
+    'src/speed_track/main_speed_competition.py',
+    'src/speed_track/main_speed_track.py',
+    'src/speed_track/speed_racing_v3.py',
+    'src/speed_track/speed_racing_v3_1.py'
+]
 for file_path in files_to_patch:
     if os.path.exists(file_path):
         with open(file_path, 'r') as f:
@@ -61,6 +67,6 @@ echo "✅ Đã vá lỗi thành công."
 
 echo "=================================================="
 echo "🎉 HOÀN TẤT! XE ĐÃ SẴN SÀNG THI ĐẤU."
-echo "Bạn có thể chạy thử lệnh:"
-echo "python3 src/speed_track/main_speed_competition.py"
+echo "Bạn có thể chạy thử lệnh đua V3 mới nhất:"
+echo "python3 src/speed_track/speed_racing_v3_1.py"
 echo "=================================================="
