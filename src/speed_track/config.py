@@ -184,12 +184,12 @@ class V3Config:
     # ================================================================
     # SPEED CONTROL
     # ================================================================
-    max_speed: float = 0.55                # [TUNE] throttle
-    min_speed: float = 0.25                # [TUNE]
-    cruise_speed: float = 0.45             # [TUNE] default straight-line speed
+    max_speed: float = 0.35                # [TUNE] throttle
+    min_speed: float = 0.15                # [TUNE]
+    cruise_speed: float = 0.25             # [TUNE] tốc độ vừa phải chuẩn để bám line mượt mà
     a_lat_max: float = 2.0                 # [TUNE] lateral accel limit (m/s²)
     speed_confidence_thresh: float = 0.5   # reduce speed below this confidence
-    speed_to_throttle_factor: float = 1.3  # [CALIBRATE] TĂNG HỆ SỐ NÀY ĐỂ XE BỐC HƠN (v(m/s) → throttle)
+    speed_to_throttle_factor: float = 1.0  # [CALIBRATE] hệ số ga chuẩn mượt
 
     # Steering PID
     steer_pid_kp: float = 2.2              # [TUNE] High proportional gain for sharp curve steering (0.8 -> 2.2)
