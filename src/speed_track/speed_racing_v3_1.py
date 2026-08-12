@@ -100,21 +100,29 @@ class SpeedRacingV3_1:
             rospy.logerr_throttle(5, f"Cam err: {e}")
 
     def _get_hsv_mask(self, img):
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        if getattr(self.cfg, 'use_clahe', False):
+            ycrcb = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
+            y, cr, cb = cv2.split(ycrcb)
+            clahe = cv2.createCLAHE(clipLimit=self.cfg.clahe_clip_limit, tileGridSize=(self.cfg.clahe_tile_size, self.cfg.clahe_tile_size))
+            y_eq = clahe.apply(y)
+            img_eq = cv2.cvtColor(cv2.merge([y_eq, cr, cb]), cv2.COLOR_YCrCb2BGR)
+            hsv = cv2.cvtColor(img_eq, cv2.COLOR_BGR2HSV)
+        else:
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         
-        # Mask 1
+        # Mask 1 (Lower Red Range 0-10)
         lower1 = np.array([self.cfg.hsv_h1_min, self.cfg.hsv_s_min, self.cfg.hsv_v_min])
         upper1 = np.array([self.cfg.hsv_h1_max, 255, 255])
         mask1 = cv2.inRange(hsv, lower1, upper1)
         
-        # Mask 2 (wrap-around)
+        # Mask 2 (Upper Red Range 170-179)
         lower2 = np.array([self.cfg.hsv_h2_min, self.cfg.hsv_s_min, self.cfg.hsv_v_min])
         upper2 = np.array([self.cfg.hsv_h2_max, 255, 255])
         mask2 = cv2.inRange(hsv, lower2, upper2)
         
         mask = cv2.bitwise_or(mask1, mask2)
         
-        # Cleanup
+        # Cleanup morphology
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
