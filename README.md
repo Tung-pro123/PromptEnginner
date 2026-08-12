@@ -75,6 +75,20 @@ python3 -m venv --system-site-packages ~/my_env
 
 # Kích hoạt môi trường ảo (Cần chạy mỗi khi mở Terminal mới)
 source ~/my_env/bin/activate
+
+# 2. Bật LiDAR
+roslaunch jetracer lidar.launch
+
+# 3. Bật Camera (mở terminal mới)
+roslaunch jetracer csi_camera.launch
+
+# 4a. Chạy Speed Track (mở terminal mới)
+cd src/speed_track
+python3 main_speed_track.py
+
+# 4b. HOẶC chạy Smart City
+cd src/smart_city
+python3 main_smart_city.py
 ```
 
 ### 2. Cài Đặt ONNX Runtime GPU (Tải bản build riêng của NVIDIA)
