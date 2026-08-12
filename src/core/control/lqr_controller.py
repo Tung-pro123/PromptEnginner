@@ -70,7 +70,7 @@ class LQRController:
         else:
             self.current_offset = self.target_offset
 
-    def compute_steering(self, C_near, C_far, Y_near, Y_far, speed, image_width=300, auto_ramp=False):
+    def compute_steering(self, C_near, C_far, Y_near, Y_far, speed, image_width=300):
         """
         Tính toán góc đánh lái tối ưu bằng LQR dựa trên thông tin đường từ Camera.
         
@@ -79,9 +79,8 @@ class LQRController:
             C_far: Tọa độ X của tâm đường ở vùng ROI xa (0 -> image_width)
             Y_near: Tọa độ dòng Y của ROI gần (ví dụ 260)
             Y_far: Tọa độ dòng Y của ROI xa (ví dụ 140)
-            speed: Tốc độ hiện tại của xe (có thể là throttle 0->1.0 hoặc m/s)
+            speed: Tốc độ hiện tại của xe (m/s)
             image_width: Chiều rộng ảnh camera (mặc định 300px)
-            auto_ramp: Nếu True, LQR tự ramp offset. Nếu False, nhận current_offset trực tiếp từ FSM.
         """
         current_time = time.time()
         dt = current_time - self.last_time
@@ -89,15 +88,12 @@ class LQRController:
             dt = 0.05
         self.last_time = current_time
 
-        # 1. Cập nhật đường dịch vạch ảo né vật cản nếu bật auto_ramp
-        if auto_ramp:
-            self.update_offset(dt)
+        # 1. Cập nhật đường dịch vạch ảo né vật cản (Ramping offset)
+        self.update_offset(dt)
 
-        # 2. Tính sai số khoảng cách (e) quy ra mét với DẤU CHUẨN VẬT LÝ (cộng offset):
-        # Khi xe lách sang phải (offset > 0), vạch đỏ sẽ bị trôi sang trái trong ảnh (C_near < image_width/2 -> e_pixel < 0).
-        # Do đó e = e_pixel * scale + current_offset sẽ đưa sai số tổng về 0 tại vị trí né mới.
+        # 2. Tính sai số khoảng cách (e) quy ra mét, có cộng thêm offset né
         e_pixel = C_near - (image_width / 2.0)
-        e = e_pixel * self.scale_factor + self.current_offset
+        e = e_pixel * self.scale_factor - self.current_offset
 
         # 3. Tính sai số góc hướng (e_theta) quy ra radian
         dx = (C_far - C_near) * self.scale_factor
@@ -115,17 +111,14 @@ class LQRController:
         if speed < 0.05:
             return 0.0
 
-        # Ước tính tốc độ thực (m/s): Nếu speed <= 1.0 (throttle), quy đổi sang m/s (JetRacer max speed ~1.5 m/s)
-        v_ms = speed if speed > 1.0 else max(0.1, speed * 1.5)
-
-        # 6. Xây dựng mô hình không gian trạng thái của xe (State-Space matrices) dựa trên v_ms (m/s)
+        # 6. Xây dựng mô hình không gian trạng thái của xe (State-Space matrices)
         A = np.array([
             [1.0, dt, 0.0, 0.0],
-            [0.0, 0.0, v_ms, 0.0],
+            [0.0, 0.0, speed, 0.0],
             [0.0, 0.0, 1.0, dt],
             [0.0, 0.0, 0.0, 1.0]
         ])
-        B = np.array([[0.0], [0.0], [v_ms / self.L], [0.0]])
+        B = np.array([[0.0], [0.0], [speed / self.L], [0.0]])
 
         # 7. Tính ma trận K tối ưu bằng LQR
         try:
@@ -139,6 +132,7 @@ class LQRController:
         steering_rad = -(K @ x)[0, 0]
 
         # 9. Quy đổi từ radian góc lái thực tế sang tỷ lệ điều khiển của JetRacer [-1.0, 1.0]
+        # Thường góc lái tối đa của JetRacer khoảng 30 độ (0.52 rad)
         max_steering_rad = math.radians(30)
         steering_command = np.clip(steering_rad / max_steering_rad, -1.0, 1.0)
 
@@ -181,8 +175,6 @@ class ObstacleDetector:
             angle = scan_msg.angle_min + i * scan_msg.angle_increment
             angle_deg = math.degrees(angle)
             
-            # Bù 180 độ do góc xoay lắp đặt LiDAR ngược trên xe JetRacer
-            angle_deg = angle_deg + 180.0
             # Chuẩn hóa góc về [-180, 180]
             angle_deg = (angle_deg + 180) % 360 - 180
             

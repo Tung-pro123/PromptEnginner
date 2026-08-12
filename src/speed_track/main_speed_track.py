@@ -1,627 +1,618 @@
 #!/usr/bin/env python3
 """
-Jetson AI Racer Challenge 2026 - Speed Track (Bài 1)
-Hệ thống điều khiển hoàn toàn tự động không sử dụng bản đồ (Mapless Autonomous).
-- Bám vạch màu đỏ nét đứt (~2cm) trên sa bàn vòng tròn bằng Camera với thuật toán:
-  * Biến đổi góc nhìn chim bay (IPM - Inverse Perspective Mapping)
-  * Lọc màu YCrCb + CLAHE chống nhiễu bóng râm / chói sáng
-  * Cửa sổ trượt (Sliding Windows) & Fit đa thức bậc 2 (Polynomial Fitting) nối liền khoảng hở nét đứt
-- Sử dụng bộ điều khiển tối ưu LQR (Linear Quadratic Regulator) bám đuổi tâm đường & góc cua.
-- Tránh vật cản bằng LiDAR thông qua máy trạng thái (FSM) 3 bước dịch vạch ảo mượt mà (S-Curve Ramp).
-- Tự động điều chỉnh tốc độ mượt mà khi vào cua gắt để bắt đúng các Checkpoint điểm số.
-
-Chạy trên xe:
-    python3 src/speed_track/main_speed_track.py
+Speed Track Controller - JetRacer (Ackermann Steering) - Single File
+Hybrid lane detection: Tìm 2 biên trắng + vạch giữa đứt khúc
 """
-
 import sys
-# Sắp xếp lại sys.path để ưu tiên các thư viện Python 3 trước, tránh xung đột với ROS Python 2.7
-py3_paths = [p for p in sys.path if 'python2.7' not in p]
-py2_paths = [p for p in sys.path if 'python2.7' in p]
-sys.path = py3_paths + py2_paths
+py3 = [p for p in sys.path if 'python2.7' not in p]
+py2 = [p for p in sys.path if 'python2.7' in p]
+sys.path = py3 + py2
 
-import os
-import rospy
-import cv2
-import numpy as np
-import time
-import math
+import os, time, math, csv
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+import rospy, cv2, numpy as np
 from enum import Enum
 from sensor_msgs.msg import LaserScan, Image
-
-# Import các module điều khiển nội bộ
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from src.core.control.racer_controller import RacerController
-from src.core.control.lqr_controller import LQRController, ObstacleDetector
 
+# ============================================================
+# ENUMS
+# ============================================================
+class TrackState(Enum):
+    WAITING = 0; KEEP_LANE = 1
+    RECOVERING = 3; CHECKPOINT_CD = 4; E_STOP = 5; FINISHED = 6
 
-class RobotState(Enum):
-    STATE_NORMAL = 1       # Bám làn bình thường
-    STATE_DODGING = 2      # Đang lách né vật cản
-    STATE_REENTERING = 3   # Đang lượn quay trở lại làn cũ
-    STATE_BLOCKED = 4      # Đường bị khóa 2 phía / Nguy cơ đâm -> Phanh dừng an toàn
-
-
-class LaneDetector:
-    """
-    Bộ nhận diện vạch đường nâng cao (Computer Vision Engine):
-    - Kháng ánh sáng tự nhiên bằng YCrCb + CLAHE
-    - Biến đổi góc nhìn chim bay (IPM)
-    - Nối liền khoảng hở vạch nét đứt bằng Sliding Windows & Polyfit Bậc 2
-    """
-    def __init__(self, width=300, height=300):
-        self.width = width
-        self.height = height
-
-        # 1. Khởi tạo ma trận Homography biến đổi góc nhìn chim bay (IPM)
-        # 4 điểm nguồn trên camera nghiêng (hình thang sa bàn)
-        src_pts = np.float32([
-            [15, 290],    # Dưới - Trái
-            [285, 290],   # Dưới - Phải
-            [205, 140],   # Trên - Phải
-            [95, 140]     # Trên - Trái
-        ])
-        
-        # 4 điểm đích trên ảnh Top-Down (hình chữ nhật chuẩn)
-        dst_pts = np.float32([
-            [60, 300],    # Dưới - Trái
-            [240, 300],   # Dưới - Phải
-            [240, 0],     # Trên - Phải
-            [60, 0]       # Trên - Trái
-        ])
-
-        self.M = cv2.getPerspectiveTransform(src_pts, dst_pts)
-        self.M_inv = cv2.getPerspectiveTransform(dst_pts, src_pts)
-
-        # 2. Cân bằng tương phản cục bộ CLAHE trên kênh Y (Độ sáng)
-        self.clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-
-        # 3. Trạng thái đa thức và tâm đường lưu trữ (Temporal Tracking)
-        self.last_coeffs = None
-        self.last_c_near = 150.0
-        self.last_c_far = 150.0
-        self.alpha_smooth = 0.35  # Hệ số làm mượt tâm đường giữa các frame
-
-    def transform_ipm(self, frame):
-        """Chuyển đổi ảnh camera nghiêng sang góc nhìn Chim bay Top-Down chuẩn 2D"""
-        return cv2.warpPerspective(frame, self.M, (self.width, self.height), flags=cv2.INTER_LINEAR)
-
-    def extract_red_mask_ycrcb(self, warped_frame):
-        """
-        Tách màu vạch đỏ nét đứt bằng YCrCb + CLAHE.
-        Giúp lọc ổn định bất chấp bóng râm, nhà che hay chói sáng tự nhiên.
-        """
-        ycrcb = cv2.cvtColor(warped_frame, cv2.COLOR_BGR2YCrCb)
-        y, cr, cb = cv2.split(ycrcb)
-
-        # Cân bằng tương phản kênh độ sáng Y
-        y_eq = self.clahe.apply(y)
-
-        # Lọc ngưỡng màu Đỏ trên kênh Cr (Độ chênh lệch màu Đỏ)
-        # Kênh Cr cho vạch đỏ nét đứt thường có giá trị đậm trong khoảng 148 - 255
-        _, mask_cr = cv2.threshold(cr, 148, 255, cv2.THRESH_BINARY)
-
-        # Kết hợp lọc thêm ngưỡng HSV phụ để loại bỏ tuyệt đối màu trắng sáng bị lóa
-        hsv = cv2.cvtColor(warped_frame, cv2.COLOR_BGR2HSV)
-        lower_red1 = np.array([0, 50, 50])
-        upper_red1 = np.array([12, 255, 255])
-        lower_red2 = np.array([155, 50, 50])
-        upper_red2 = np.array([180, 255, 255])
-        mask_hsv1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        mask_hsv2 = cv2.inRange(hsv, lower_red2, upper_red2)
-        mask_hsv = cv2.bitwise_or(mask_hsv1, mask_hsv2)
-
-        # Giao 2 mặt nạ YCrCb và HSV để đạt độ chính xác tối đa
-        combined_mask = cv2.bitwise_and(mask_cr, mask_hsv)
-
-        # Lọc nhiễu hạt nhỏ bằng Morphological Opening
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        mask_clean = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
-        return mask_clean
-
-    def fit_polynomial_sliding_windows(self, binary_warped):
-        """
-        Thuật toán Cửa sổ Trượt (Sliding Windows) & Fit Đa thức Bậc 2:
-        Nối liền các khoảng trống nét đứt (~2cm) và loại bỏ nhiễu điểm ngoại lai.
-        """
-        # 1. Tính Histogram của nửa dưới ảnh để tìm chân vạch đỏ
-        histogram = np.sum(binary_warped[binary_warped.shape[0] // 2:, :], axis=0)
-        base_x = np.argmax(histogram)
-
-        # Nếu không tìm thấy vạch đỏ trong histogram
-        if histogram[base_x] < 30:
-            return self.last_coeffs, False
-
-        # 2. Cấu hình Cửa sổ Trượt (9 windows từ chân ảnh lên đỉnh)
-        nwindows = 9
-        window_height = binary_warped.shape[0] // nwindows
-        
-        nonzero = binary_warped.nonzero()
-        nonzeroy = np.array(nonzero[0])
-        nonzerox = np.array(nonzero[1])
-
-        current_x = base_x
-        margin = 45          # Độ rộng nửa cửa sổ (pixel)
-        minpix = 15          # Số điểm pixel tối thiểu để cập nhật tâm cửa sổ
-        lane_inds = []
-
-        # 3. Lặp trượt cửa sổ
-        for window in range(nwindows):
-            win_y_low = binary_warped.shape[0] - (window + 1) * window_height
-            win_y_high = binary_warped.shape[0] - window * window_height
-            win_x_low = current_x - margin
-            win_x_high = current_x + margin
-
-            good_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) &
-                         (nonzerox >= win_x_low) & (nonzerox < win_x_high)).nonzero()[0]
-            lane_inds.append(good_inds)
-
-            if len(good_inds) > minpix:
-                current_x = int(np.mean(nonzerox[good_inds]))
-
-        lane_inds = np.concatenate(lane_inds)
-
-        # Nếu tổng số pixel gom được quá ít -> Không đủ tin cậy để fit đa thức mới
-        if len(lane_inds) < 40:
-            return self.last_coeffs, False
-
-        x_pts = nonzerox[lane_inds]
-        y_pts = nonzeroy[lane_inds]
-
-        # 4. Nội suy đa thức bậc 2: x = a*y^2 + b*y + c
-        try:
-            fit_coeffs = np.polyfit(y_pts, x_pts, 2)
-            self.last_coeffs = fit_coeffs
-            return fit_coeffs, True
-        except Exception:
-            return self.last_coeffs, False
-
-    def get_track_centers(self, frame):
-        """
-        Hàm xử lý chính: Chuyển IPM -> Lọc YCrCb -> Sliding Windows -> Tính C_near & C_far mượt mà
-        """
-        warped = self.transform_ipm(frame)
-        mask = self.extract_red_mask_ycrcb(warped)
-        coeffs, found = self.fit_polynomial_sliding_windows(mask)
-
-        y_near = 230
-        y_far = 150
-
-        if coeffs is None:
-            # Nếu mù vạch hoàn toàn -> Giữ nguyên vị trí tâm cũ
-            return self.last_c_near, self.last_c_far, y_near, y_far, True, warped
-
-        # Tính tọa độ X từ đa thức bậc 2: x = a*y^2 + b*y + c
-        a, b, c = coeffs
-        raw_c_near = a * (y_near ** 2) + b * y_near + c
-        raw_c_far = a * (y_far ** 2) + b * y_far + c
-
-        # Giới hạn tọa độ trong khoảng ảnh [0, width]
-        raw_c_near = max(0.0, min(float(self.width), raw_c_near))
-        raw_c_far = max(0.0, min(float(self.width), raw_c_far))
-
-        # Làm mượt tâm đường bằng Exponential Moving Average
-        c_near = self.alpha_smooth * raw_c_near + (1 - self.alpha_smooth) * self.last_c_near
-        c_far = self.alpha_smooth * raw_c_far + (1 - self.alpha_smooth) * self.last_c_far
-
-        self.last_c_near = c_near
-        self.last_c_far = c_far
-
-        # --- VẼ NỀN DEBUG ĐỂ GHI VIDEO LOG ---
-        debug_img = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-        ploty = np.linspace(0, self.height - 1, self.height)
-        fitx = a * (ploty ** 2) + b * ploty + c
-        
-        # Vẽ đường cong đa thức màu xanh lá
-        pts = np.asarray([np.transpose(np.vstack([fitx, ploty]))], dtype=np.int32)
-        cv2.polylines(debug_img, pts, isClosed=False, color=(0, 255, 0), thickness=3)
-
-        # Vẽ điểm tâm C_near và C_far
-        cv2.circle(debug_img, (int(c_near), y_near), 6, (0, 0, 255), -1)
-        cv2.circle(debug_img, (int(c_far), y_far), 6, (255, 0, 0), -1)
-
-        return c_near, c_far, y_near, y_far, not found, debug_img
-
-
+# ============================================================
+# MAIN CONTROLLER
+# ============================================================
 class SpeedTrackController:
     def __init__(self):
-        rospy.init_node('speed_track_node', anonymous=True)
-        rospy.loginfo("=== KHỞI TẠO BỘ ĐIỀU KHIỂN SPEED TRACK (IPM + YCrCb + LQR) ===")
-        self.setup_parameters()
-        self.initialize_hardware()
+        rospy.loginfo("=== KHOI TAO SPEED TRACK (Hybrid Lane + Ackermann) ===")
+        # --- Params ---
+        self.W, self.H = 300, 300
+        self.BASE_SPEED = 0.22
+        self.AVOID_SPEED = 0.13
+        self.RECOVER_SPEED = 0.15
+        self.AVOID_TIMEOUT = 3.5
+        self.RECOVER_TIMEOUT = 3.0
+        self.CP_COOLDOWN = 2.0
+        self.WAIT_TIMEOUT = 30.0
+        self.LOOP_RATE = 20
+        # PID (steering output) - Tăng Kp, Kd để phản hồi cua nhanh hơn
+        self.Kp = 0.020; self.Ki = 0.000; self.Kd = 0.005
+        self._pid_integral = 0.0; self._pid_prev_err = 0.0; self._pid_last_t = None
+        # APF (Artificial Potential Field) - thay thế FSM né vật cản
+        self.LIDAR_OFFSET_DEG = 180.0
+        self.APF_GAIN = 0.15               # Hệ số lực đẩy
+        self.APF_INFLUENCE_DIST = 0.80     # Bán kính ảnh hưởng (m)
+        self.APF_FRONTAL_BIAS = 0.3        # Lực bias cho vật cản chính diện
+        self.E_STOP_DIST = 0.25            # Phanh khẩn cấp
+        self.apf_last_steer = 0.0          # Lưu giá trị APF frame trước
+        # Checkpoint
+        self.CP_WHITE_RATIO = 0.45
+        self.CP_ROI_Y = int(self.H * 0.88)
+        self.CP_ROI_H = int(self.H * 0.10)
+        self.cp_count = 0; self.cp_last_time = 0.0
+        self.CP_COOLDOWN_SEC = 3.0
+        # Lane detection params (Áp dụng lọc màu HSV từ simple)
+        self.RED_LOWER_1 = np.array([0, 80, 80])
+        self.RED_UPPER_1 = np.array([18, 255, 255])
+        self.RED_LOWER_2 = np.array([155, 80, 80])
+        self.RED_UPPER_2 = np.array([180, 255, 255])
+        
+        self.CURVE_STEER_THRESH = 0.40    # Ngưỡng đánh lái để nhận diện đang cua
+        self.CURVE_SPEED_FACTOR = 0.75    # Giảm 25% tốc độ khi cua
+        
+        self.BORDER_SAFETY_MARGIN = 0.15  # Giữ 15% khoảng cách tới biên
+        # --- Hardware ---
+        self.racer = RacerController(); self.racer.stop()
+        # --- ROS ---
+        self.latest_image = None; self.latest_scan = None
+        rospy.Subscriber('/csi_cam_0/image_raw', Image, self._cam_cb)
+        rospy.Subscriber('/scan', LaserScan, self._lidar_cb)
+        # --- State ---
+        self.state = TrackState.WAITING
+        self.state_time = rospy.get_time()
+        # --- CSV Logger ---
+        log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        ts = time.strftime('%Y%m%d_%H%M%S')
+        self.log_path = os.path.join(log_dir, f'speed_{ts}.csv')
+        self._log_file = open(self.log_path, 'w', newline='')
+        self._csv = csv.writer(self._log_file)
+        self._csv.writerow(['timestamp','state','steer','speed','front_dist','offset','event'])
+        self._frame_count = 0; self._fps_start = time.time()
+        rospy.loginfo(f"Log: {self.log_path}")
 
-        # Trạng thái ban đầu
-        self.state = RobotState.STATE_NORMAL
-        self.latest_scan = None
-        self.latest_image = None
-        self.last_image_time = rospy.get_time()
-        self.last_scan_time = rospy.get_time()
-        self.state_change_time = rospy.get_time()
-        self.dodge_direction = 1.0  # 1.0 = Tránh phải, -1.0 = Tránh trái
-
-        # Khởi tạo Engine Thị giác Máy tính
-        self.lane_detector = LaneDetector(self.WIDTH, self.HEIGHT)
-
-        # Video Recorder để debug
+        # --- Video Logger ---
+        self.video_path = os.path.join(log_dir, f'speed_{ts}.avi')
         self.video_writer = None
         self.initialize_video_writer()
 
-        # Đăng ký ROS Topics
-        rospy.Subscriber('/scan', LaserScan, self.lidar_callback)
-        rospy.Subscriber('/csi_cam_0/image_raw', Image, self.camera_callback)
-        rospy.Subscriber('/camera/image_raw', Image, self.camera_callback)
-        rospy.loginfo("Đã đăng ký nhận dữ liệu từ LiDAR (/scan) và Camera")
+        rospy.loginfo("=== SAN SANG ===")
 
-    def setup_parameters(self):
-        """Cấu hình tham số di chuyển và né vật cản"""
-        self.BASE_SPEED = 0.22         # Tốc độ ga cơ bản
-        self.MIN_CORNER_SPEED = 0.14   # Tốc độ an toàn khi cua gắt hoặc né vật cản
-        
-        self.TRIGGER_DIST = 0.85       # Khoảng cách kích hoạt né né tránh (m)
-        self.FRONT_SCAN_ANGLE_DEG = 20.0 # Cung quét trước mặt (±20 độ)
-        self.LIDAR_MOUNT_OFFSET_DEG = 180.0 # Góc bù xoay LiDAR JetRacer (180 độ)
-        
-        self.DODGE_OFFSET_PX = 75      # Độ rộng dịch vạch ảo để né (pixel)
-        self.RAMP_STEP_PX = 5          # Tốc độ dịch vạch ảo (pixel/frame)
-        self.SIDE_CLEAR_DIST = 0.45    # Khoảng cách sườn an toàn (m)
-        self.MIN_DODGE_DURATION = 1.8  # Thời gian né tối thiểu (s)
-        self.MAX_DODGE_DURATION = 3.5  # Thời gian né tối đa chống kẹt (s)
+    # ============================================================
+    # ROS CALLBACKS
+    # ============================================================
+    def _cam_cb(self, msg):
+        try:
+            if 'compressed' in msg.encoding:
+                self.latest_image = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
+            else:
+                img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
+                self.latest_image = cv2.cvtColor(img, cv2.COLOR_RGB2BGR) if 'rgb' in msg.encoding else img
+        except Exception as e:
+            rospy.logerr_throttle(5, f"Cam err: {e}")
 
-        self.WIDTH = 300
-        self.HEIGHT = 300
-
-        self.current_offset_px = 0.0
-        self.target_offset_px = 0.0
-
-        self.VIDEO_OUTPUT_FILENAME = 'speed_track_run.avi'
-        self.VIDEO_FPS = 20
-        self.VIDEO_FOURCC = cv2.VideoWriter_fourcc(*'MJPG')
-
-    def initialize_hardware(self):
-        """Khởi tạo phần cứng RacerController & LQRController"""
-        self.racer = RacerController()
-        # Scale factor quy đổi 1 pixel trên ảnh IPM Top-down sang mét thực tế
-        self.lqr = LQRController(wheelbase=0.18, scale_factor=0.0020)
-        self.detector = ObstacleDetector(reaction_time=0.5, safe_distance=0.20)
-        self.racer.stop()
+    def _lidar_cb(self, msg):
+        self.latest_scan = msg
 
     def initialize_video_writer(self):
-        """Khởi tạo VideoWriter để lưu log video debug"""
+        """Khởi tạo VideoWriter để ghi log video."""
         try:
-            self.video_writer = cv2.VideoWriter(
-                self.VIDEO_OUTPUT_FILENAME,
-                self.VIDEO_FOURCC,
-                self.VIDEO_FPS,
-                (self.WIDTH, self.HEIGHT)
-            )
-            rospy.loginfo(f"Bắt đầu ghi video debug vào file: '{self.VIDEO_OUTPUT_FILENAME}'")
+            fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+            self.video_writer = cv2.VideoWriter(self.video_path, fourcc, self.LOOP_RATE, (self.W * 2, self.H))
+            if self.video_writer.isOpened():
+                rospy.loginfo(f"Ghi video debug vào file: {self.video_path}")
+            else:
+                rospy.logerr("Không thể mở file video để ghi.")
+                self.video_writer = None
         except Exception as e:
             rospy.logerr(f"Lỗi khởi tạo VideoWriter: {e}")
             self.video_writer = None
 
-    def lidar_callback(self, msg):
-        self.latest_scan = msg
-        self.last_scan_time = rospy.get_time()
+    def _record_frame(self, frame):
+        """Ghi khung hình camera + BEV Map Lidar vào video log."""
+        if self.video_writer is not None:
+            try:
+                bev = self.draw_bev_map()
+                if frame is not None:
+                    if frame.shape[0] != self.H or frame.shape[1] != self.W:
+                        frame = cv2.resize(frame, (self.W, self.H))
+                else:
+                    frame = np.zeros((self.H, self.W, 3), dtype=np.uint8)
+                
+                combined = cv2.hconcat([frame, bev])
+                self.video_writer.write(combined)
+            except Exception as e:
+                rospy.logerr_throttle(5, f"Lỗi ghi video: {e}")
 
-    def camera_callback(self, msg):
+    def draw_bev_map(self):
+        """Vẽ bản đồ nhìn từ trên xuống (Bird's Eye View) của Lidar."""
+        bev = np.zeros((self.H, self.W, 3), dtype=np.uint8)
+        
+        # Grid lines
+        for i in range(1, 4): cv2.line(bev, (0, i*100), (self.W, i*100), (40,40,40), 1)
+        for i in range(1, 3): cv2.line(bev, (i*100, 0), (i*100, self.H), (40,40,40), 1)
+
+        cx, cy = self.W // 2, int(self.H * 0.85)
+        scale = 100.0  # 1m = 100px
+        
+        # Vehicle marker
+        cv2.rectangle(bev, (cx - 10, cy - 20), (cx + 10, cy + 20), (255, 255, 255), -1)
+        
+        if self.latest_scan:
+            msg = self.latest_scan
+            for i, d in enumerate(msg.ranges):
+                if msg.range_min < d < msg.range_max and d < 1.5:
+                    deg = math.degrees(msg.angle_min + i * msg.angle_increment) + self.LIDAR_OFFSET_DEG
+                    a = math.radians((deg + 180) % 360 - 180)
+                    x, y = d * math.cos(a), d * math.sin(a)
+                    
+                    px = int(cx - y * scale)
+                    py = int(cy - x * scale)
+                    if 0 <= px < self.W and 0 <= py < self.H:
+                        if d < 0.3: col = (0,0,255)
+                        elif d < 0.6: col = (0,165,255)
+                        elif d < 1.0: col = (0,255,255)
+                        else: col = (0,255,0)
+                        cv2.circle(bev, (px, py), 2, col, -1)
+                        
+        # Info overlays
+        cv2.putText(bev, f"APF: {self.apf_last_steer:.2f}", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
+        cv2.putText(bev, f"State: {self.state.name}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
+            
+        return bev
+
+    # ============================================================
+    # HYBRID LANE DETECTION (Cải tiến)
+    # Tìm biên trái và phải bằng cách scan toàn bộ dòng, dùng 3 điểm lookahead
+    # ============================================================
+    def detect_lane(self, frame):
+        """Returns (target_x, left_border, right_border, has_line, debug_img)"""
+        resized = cv2.resize(frame, (self.W, self.H))
+        
+        # [HỌC TỪ main_speed_simple] Lọc màu ĐỎ CAM (HSV) chính xác hơn thay vì Grayscale
+        hsv = cv2.cvtColor(resized, cv2.COLOR_BGR2HSV)
+        mask1 = cv2.inRange(hsv, self.RED_LOWER_1, self.RED_UPPER_1)
+        mask2 = cv2.inRange(hsv, self.RED_LOWER_2, self.RED_UPPER_2)
+        mask = cv2.bitwise_or(mask1, mask2)
+        
+        # [HỌC TỪ main_speed_simple] Dùng Morphology loại bỏ nhiễu và nối các vạch đứt khúc
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        thresh = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+        y_n = int(self.H * 0.70)  # Near
+        y_m = int(self.H * 0.55)  # Mid
+        y_f = int(self.H * 0.40)  # Far
+
+        def find_outer_borders(y):
+            pts = np.where(thresh[y, :] == 255)[0]
+            if len(pts) == 0:
+                return 0, self.W - 1, False
+            return pts[0], pts[-1], True
+
+        def get_robust_mid(L, R):
+            if R - L < 30: # Chỉ thấy 1 vạch (có thể do đứt nét hoặc khuất)
+                if L > self.W // 2: return max(self.W // 4, L - 120)
+                else: return min(self.W * 3 // 4, R + 120)
+            return (L + R) // 2
+
+        L_n, R_n, has_line_n = find_outer_borders(y_n)
+        mid_n = get_robust_mid(L_n, R_n)
+        
+        L_m, R_m, _ = find_outer_borders(y_m)
+        mid_m = get_robust_mid(L_m, R_m)
+        
+        L_f, R_f, _ = find_outer_borders(y_f)
+        mid_f = get_robust_mid(L_f, R_f)
+
+        # Target: Blend giữa các điểm để tạo đường cong mượt.
+        # Ưu tiên far (0.5) để lookahead ôm cua sớm.
+        target_x = mid_n * 0.2 + mid_m * 0.3 + mid_f * 0.5
+
+        # Debug image
+        dbg = resized.copy()
+        
+        # Vẽ các vùng quét ROI
+        cv2.line(dbg, (0, y_n), (self.W, y_n), (100, 100, 100), 1)
+        cv2.line(dbg, (0, y_m), (self.W, y_m), (100, 100, 100), 1)
+        cv2.line(dbg, (0, y_f), (self.W, y_f), (100, 100, 100), 1)
+        
+        # Vẽ các điểm biên và trung điểm
+        cv2.circle(dbg, (L_n, y_n), 4, (0, 0, 255), -1)
+        cv2.circle(dbg, (R_n, y_n), 4, (0, 0, 255), -1)
+        cv2.circle(dbg, (int(mid_n), y_n), 4, (0, 255, 0), -1)
+        
+        cv2.circle(dbg, (L_m, y_m), 4, (0, 0, 255), -1)
+        cv2.circle(dbg, (R_m, y_m), 4, (0, 0, 255), -1)
+        cv2.circle(dbg, (int(mid_m), y_m), 4, (0, 255, 0), -1)
+        
+        cv2.circle(dbg, (L_f, y_f), 4, (0, 0, 255), -1)
+        cv2.circle(dbg, (R_f, y_f), 4, (0, 0, 255), -1)
+        cv2.circle(dbg, (int(mid_f), y_f), 4, (0, 255, 0), -1)
+        
+        # Vẽ đường polyline thể hiện dự đoán quỹ đạo cong
+        pts_curve = np.array([[mid_n, y_n], [mid_m, y_m], [mid_f, y_f]], np.int32)
+        pts_curve = pts_curve.reshape((-1, 1, 2))
+        cv2.polylines(dbg, [pts_curve], False, (0, 255, 255), 2)
+        
+        cv2.putText(dbg, "MODE: Dynamic Lookahead", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+
+        return target_x, L_n, R_n, has_line_n, dbg
+
+    def is_line_visible(self, frame):
+        """Check nhanh xem có thấy đường không."""
         try:
-            img = np.frombuffer(msg.data, dtype=np.uint8)
-            if msg.encoding == 'bgr8':
-                self.latest_image = img.reshape((msg.height, msg.width, 3))
-            elif msg.encoding == 'rgb8':
-                img_rgb = img.reshape((msg.height, msg.width, 3))
-                self.latest_image = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-            elif msg.encoding == 'mono8':
-                self.latest_image = img.reshape((msg.height, msg.width))
-            self.last_image_time = rospy.get_time()
+            _, _, _, has_line, _ = self.detect_lane(frame)
+            return has_line
         except Exception as e:
-            rospy.logerr(f"Lỗi chuyển đổi ảnh: {e}")
+            rospy.logerr_throttle(2, f"is_line_visible error: {e}")
+            return False
 
-    def get_front_obstacle_info(self):
+    # ============================================================
+    # OBSTACLE DETECTION (LiDAR)
+    # ============================================================
+    def _norm_angle(self, deg):
+        deg = deg + self.LIDAR_OFFSET_DEG
+        return (deg + 180) % 360 - 180
+
+    def _scan_sector_with_offset(self, a_min, a_max, offset):
+        if self.latest_scan is None: return []
+        dists = []
+        msg = self.latest_scan
+        for i, d in enumerate(msg.ranges):
+            deg = math.degrees(msg.angle_min + i * msg.angle_increment) + offset
+            a = (deg + 180) % 360 - 180
+            if a_min <= a <= a_max and msg.range_min < d < msg.range_max:
+                dists.append(d)
+        return dists
+
+    def _scan_sector(self, a_min, a_max):
+        return self._scan_sector_with_offset(a_min, a_max, self.LIDAR_OFFSET_DEG)
+
+    def log_lidar_diagnostics(self):
+        if self.latest_scan is None:
+            rospy.loginfo_throttle(3, "[LIDAR] Chưa nhận được dữ liệu scan từ topic /scan!")
+            return
+        
+        # Thử quét hướng thẳng với các offset góc khác nhau để dò hướng thật
+        d_0 = self._scan_sector_with_offset(-15, 15, offset=0.0)
+        d_180 = self._scan_sector_with_offset(-15, 15, offset=180.0)
+        d_90 = self._scan_sector_with_offset(-15, 15, offset=90.0)
+        d_270 = self._scan_sector_with_offset(-15, 15, offset=270.0)
+        
+        min_0 = min(d_0) if d_0 else float('inf')
+        min_180 = min(d_180) if d_180 else float('inf')
+        min_90 = min(d_90) if d_90 else float('inf')
+        min_270 = min(d_270) if d_270 else float('inf')
+        
+        rospy.loginfo_throttle(3, 
+            f"\n[LIDAR DIAGNOSTICS] Khoảng cách phía trước vật lý ứng với các Offset:\n"
+            f"  - Nếu đầu Lidar hướng thẳng (Offset 0.0): {min_0:.2f}m\n"
+            f"  - Nếu Lidar quay ngược 180 độ (Offset 180.0): {min_180:.2f}m\n"
+            f"  - Nếu Lidar lệch trái 90 độ (Offset 90.0): {min_90:.2f}m\n"
+            f"  - Nếu Lidar lệch phải 90 độ (Offset 270.0): {min_270:.2f}m\n"
+            f"  => Đang cấu hình LIDAR_OFFSET_DEG = {self.LIDAR_OFFSET_DEG}"
+        )
+
+    def get_filtered_min_dist(self, dists):
+        """Lọc nhiễu cảm biến bằng phân vị (percentile filter) tránh nhiễu điểm đơn độc."""
+        if not dists: return float('inf')
+        sorted_d = sorted(dists)
+        # Bỏ qua 10% số điểm nhỏ nhất (tối thiểu bỏ 1 điểm) để chống nhiễu hạt bụi/nhiễu xung
+        idx = min(len(sorted_d) - 1, max(1, len(sorted_d) // 10))
+        return sorted_d[idx]
+
+    def get_front_dist(self):
+        self.log_lidar_diagnostics()
+        d = self._scan_sector(-15, 15)
+        return self.get_filtered_min_dist(d)
+
+    def compute_apf_steering(self):
         """
-        Đo khoảng cách LiDAR trước mặt và kiểm tra độ rộng sườn an toàn (Safety Corridor Check).
-        Trả về: (global_front_min, reported_obs_side, clearance_left, clearance_right, is_blocked)
+        Tính lực lái APF từ LiDAR.
+        Returns: (apf_steer, min_front_dist, speed_factor)
         """
         if self.latest_scan is None:
-            return float('inf'), 'NONE', 0.0, 0.0, False
-        
-        front_left_dists = []
-        front_right_dists = []
-        side_left_dists = []   # Góc sườn trái (+20° đến +80°)
-        side_right_dists = []  # Góc sườn phải (-80° đến -20°)
-        
+            return 0.0, float('inf'), 1.0
+
         msg = self.latest_scan
-        for i, dist in enumerate(msg.ranges):
-            angle = msg.angle_min + i * msg.angle_increment
-            angle_deg = math.degrees(angle)
-            angle_deg = angle_deg + self.LIDAR_MOUNT_OFFSET_DEG
-            angle_deg = (angle_deg + 180) % 360 - 180
-            
-            if not (msg.range_min < dist < msg.range_max):
+        lateral_force = 0.0
+        min_front = float('inf')
+
+        # Xác định bên nào trống hơn (dùng cho vật cản chính diện)
+        left_dists = self._scan_sector(30, 70)
+        right_dists = self._scan_sector(-70, -30)
+        left_space = self.get_filtered_min_dist(left_dists)
+        right_space = self.get_filtered_min_dist(right_dists)
+        bias_dir = 1.0 if left_space >= right_space else -1.0
+
+        for i, d in enumerate(msg.ranges):
+            if not (msg.range_min < d < msg.range_max) or d > self.APF_INFLUENCE_DIST:
                 continue
 
-            # Cung quét trước mặt (±20 độ)
-            if -self.FRONT_SCAN_ANGLE_DEG <= angle_deg <= self.FRONT_SCAN_ANGLE_DEG:
-                if angle_deg >= 0.0:
-                    front_left_dists.append(dist)
-                else:
-                    front_right_dists.append(dist)
-                    
-            # Cung quét sườn trái (+20° đến +80°)
-            elif 20.0 < angle_deg <= 80.0:
-                side_left_dists.append(dist)
-                
-            # Cung quét sườn phải (-80° đến -20°)
-            elif -80.0 <= angle_deg < -20.0:
-                side_right_dists.append(dist)
-
-        min_front_left = min(front_left_dists) if front_left_dists else float('inf')
-        min_front_right = min(front_right_dists) if front_right_dists else float('inf')
-        global_front_min = min(min_front_left, min_front_right)
-
-        if global_front_min == float('inf'):
-            return float('inf'), 'NONE', float('inf'), float('inf'), False
-
-        # Nếu thiếu tia quét sườn -> Gán 0.0 m (An toàn: Không mặc định coi là inf)
-        clearance_left = min(side_left_dists) if side_left_dists else 0.0
-        clearance_right = min(side_right_dists) if side_right_dists else 0.0
-
-        SAFE_CORRIDOR = 0.45  # Khoảng trống an toàn tối thiểu sườn xe (m)
-
-        # 1. TRƯỜNG HỢP VẬT CẢN CHÍNH GIỮA ĐƯỜNG (front_left ~ front_right)
-        if abs(min_front_left - min_front_right) < 0.12:
-            if clearance_right >= SAFE_CORRIDOR and clearance_right >= clearance_left:
-                reported_obs_side = 'LEFT'   # Né sang PHẢI (Safe)
-            elif clearance_left >= SAFE_CORRIDOR:
-                reported_obs_side = 'RIGHT'  # Né sang TRÁI (Safe)
-            else:
-                # Cả 2 sườn đều bị khóa -> Khóa đường
-                rospy.logerr("🚨 [SAFETY] Cả 2 sườn đều bị khóa! Trạng thái BLOCKED kích hoạt.")
-                return global_front_min, 'BLOCKED', clearance_left, clearance_right, True
-
-        # 2. VẬT CẢN LỆCH TRÁI -> Hướng né tự nhiên là PHẢI
-        elif min_front_left < min_front_right:
-            if clearance_right >= SAFE_CORRIDOR:
-                reported_obs_side = 'LEFT'   # Né sang PHẢI (Safe)
-            else:
-                # Sườn phải hẹp/bị khóa -> Tuyệt đối KHÔNG né trái vào vật cản -> Khóa đường!
-                rospy.logerr(f"🚨 [SAFETY] Vật cản bên trái, sườn phải hẹp ({clearance_right:.2f}m < {SAFE_CORRIDOR}m). DỪNG XE AN TOÀN (BLOCKED)!")
-                return global_front_min, 'BLOCKED', clearance_left, clearance_right, True
-
-        # 3. VẬT CẢN LỆCH PHẢI -> Hướng né tự nhiên là TRÁI
-        else:
-            if clearance_left >= SAFE_CORRIDOR:
-                reported_obs_side = 'RIGHT'  # Né sang TRÁI (Safe)
-            else:
-                # Sườn trái hẹp/bị khóa -> Khóa đường!
-                rospy.logerr(f"🚨 [SAFETY] Vật cản bên phải, sườn trái hẹp ({clearance_left:.2f}m < {SAFE_CORRIDOR}m). DỪNG XE AN TOÀN (BLOCKED)!")
-                return global_front_min, 'BLOCKED', clearance_left, clearance_right, True
-
-        return global_front_min, reported_obs_side, clearance_left, clearance_right, False
-
-    def is_side_clear_for_reentry(self):
-        """Kiểm tra khoảng cách an toàn bên sườn xe trước khi nhập lại làn chính"""
-        if self.latest_scan is None:
-            return False  # An toàn: Nếu mất scan thì chưa vội nhập làn ngay
-            
-        side_distances = []
-        msg = self.latest_scan
-        
-        if self.dodge_direction > 0:
-            angle_min_deg, angle_max_deg = 70.0, 110.0
-        else:
-            angle_min_deg, angle_max_deg = -110.0, -70.0
-            
-        for i, dist in enumerate(msg.ranges):
-            angle = msg.angle_min + i * msg.angle_increment
+            deg = math.degrees(msg.angle_min + i * msg.angle_increment) + self.LIDAR_OFFSET_DEG
+            angle = math.radians((deg + 180) % 360 - 180)
             angle_deg = math.degrees(angle)
-            angle_deg = angle_deg + self.LIDAR_MOUNT_OFFSET_DEG
-            angle_deg = (angle_deg + 180) % 360 - 180
-            
-            if angle_min_deg <= angle_deg <= angle_max_deg:
-                if msg.range_min < dist < msg.range_max:
-                    side_distances.append(dist)
-                    
-        if side_distances:
-            return min(side_distances) > self.SIDE_CLEAR_DIST
-        return False  # An toàn: Thiếu dữ liệu sườn không cho nhập làn vội
 
-    def compute_dynamic_speed(self, steering):
-        """
-        Tự động điều chỉnh TỐC ĐỘ ĐỘNG (Dynamic Speed Scaling):
-        1. Giảm ga tỷ lệ thuận với độ gắt góc đánh lái (abs(steering))
-        2. Giảm ga 18% khi đang lách né/nhập làn để bám sát Checkpoint
-        3. Dừng ga hẳn (0.0) khi ở trạng thái STATE_BLOCKED
-        """
-        if self.state == RobotState.STATE_BLOCKED:
-            return 0.0
+            if abs(angle_deg) > 90:
+                continue
 
-        steering_factor = max(0.0, 1.0 - 0.45 * abs(steering))
-        target_speed = self.BASE_SPEED * steering_factor
+            if abs(angle_deg) < 20:
+                min_front = min(min_front, d)
 
-        if self.state != RobotState.STATE_NORMAL:
-            target_speed *= 0.82
+            # Lực đẩy: càng gần càng mạnh
+            force = self.APF_GAIN * (1.0 / d - 1.0 / self.APF_INFLUENCE_DIST)
 
-        return max(self.MIN_CORNER_SPEED, min(self.BASE_SPEED, target_speed))
-
-    def _set_state(self, new_state):
-        rospy.loginfo(f"[STATE CHANGE] {self.state.name} -> {new_state.name}")
-        self.state = new_state
-        self.state_change_time = rospy.get_time()
-
-    def update_fsm_states(self, front_dist, obs_direction, is_blind, error_px, current_speed=0.22, is_blocked=False):
-        """Cập nhật Máy trạng thái FSM né tránh vật cản & dịch làn ảo"""
-        adaptive_trigger_dist = max(self.TRIGGER_DIST, self.detector.get_trigger_distance(current_speed))
-
-        # TRƯỜNG HỢP NGUY HIỂM: ĐƯỜNG BỊ KHÓA / KHÔNG ĐỦ KHÔNG GIAN NÉ AN TOÀN
-        if is_blocked or obs_direction == 'BLOCKED':
-            if self.state != RobotState.STATE_BLOCKED:
-                self._set_state(RobotState.STATE_BLOCKED)
-            self.target_offset_px = 0.0
-            return
-
-        # STATE 4: ĐANG BỊ KHÓA ĐƯỜNG -> PHANH DỪNG VÀ CHỜ ĐƯỜNG THÔNG
-        if self.state == RobotState.STATE_BLOCKED:
-            self.target_offset_px = 0.0
-            # Nếu vật cản đã di chuyển đi xa hoặc đường đã giải phóng an toàn -> Quay lại NORMAL
-            if front_dist > adaptive_trigger_dist + 0.15 and not is_blocked:
-                rospy.loginfo("✅ [SAFETY] Đường đã giải phóng an toàn! Hủy phanh dừng, quay lại NORMAL.")
-                self._set_state(RobotState.STATE_NORMAL)
-            return
-
-        # STATE 1: BÁM LÀN BÌNH THƯỜNG
-        if self.state == RobotState.STATE_NORMAL:
-            self.target_offset_px = 0.0
-            if front_dist < adaptive_trigger_dist:
-                if obs_direction == 'LEFT':
-                    self.dodge_direction = 1.0  # Né sang phải
-                    rospy.loginfo(f"⚠️ [FSM] Né sang PHẢI (Dist: {front_dist:.2f}m < {adaptive_trigger_dist:.2f}m)")
-                else:
-                    self.dodge_direction = -1.0 # Né sang trái
-                    rospy.loginfo(f"⚠️ [FSM] Né sang TRÁI (Dist: {front_dist:.2f}m < {adaptive_trigger_dist:.2f}m)")
-
-                self._set_state(RobotState.STATE_DODGING)
-                self.target_offset_px = self.dodge_direction * self.DODGE_OFFSET_PX
-
-        # STATE 2: ĐANG LÁCH NÉ VẬT CẢN
-        elif self.state == RobotState.STATE_DODGING:
-            self.target_offset_px = self.dodge_direction * self.DODGE_OFFSET_PX
-            dodge_duration = rospy.get_time() - self.state_change_time
-            
-            if dodge_duration > self.MAX_DODGE_DURATION:
-                rospy.logwarn("⚠️ [FSM] Quá thời gian né tránh tối đa. Nhập lại làn!")
-                self._set_state(RobotState.STATE_REENTERING)
-                self.target_offset_px = 0.0
-            elif dodge_duration > self.MIN_DODGE_DURATION:
-                if self.is_side_clear_for_reentry():
-                    rospy.loginfo("✅ [FSM] Sườn đã trống. Đang quay trở lại làn chính.")
-                    self._set_state(RobotState.STATE_REENTERING)
-                    self.target_offset_px = 0.0
-
-        # STATE 3: NHẬP LẠI LÀN CŨ
-        elif self.state == RobotState.STATE_REENTERING:
-            self.target_offset_px = 0.0
-            reenter_duration = rospy.get_time() - self.state_change_time
-            
-            if abs(self.current_offset_px) < 1.0:
-                if (not is_blind and abs(error_px) < 25.0) or reenter_duration > 2.5:
-                    rospy.loginfo("🏠 [FSM] Về làn trung tâm thành công.")
-                    self._set_state(RobotState.STATE_NORMAL)
-
-        # RAMPING VẠCH ẢO S-CURVE
-        diff = self.target_offset_px - self.current_offset_px
-        if abs(diff) > 0.1:
-            step = np.sign(diff) * self.RAMP_STEP_PX
-            if abs(step) > abs(diff):
-                self.current_offset_px = self.target_offset_px
+            if abs(angle_deg) < 15:
+                # Vật cản chính diện: sin(≈ 0) không cho lực ngang, thêm bias
+                lateral_force += force * self.APF_FRONTAL_BIAS * bias_dir
             else:
-                self.current_offset_px += step
-        else:
-            self.current_offset_px = self.target_offset_px
+                # Vật cản bên: sin(angle) tự nhiên đẩy ra xa
+                lateral_force += force * math.sin(angle)
 
+        apf_steer = max(-1.0, min(1.0, lateral_force))
+
+        # Giảm tốc khi gần vật cản
+        speed_factor = 1.0
+        if min_front < self.APF_INFLUENCE_DIST:
+            speed_factor = max(0.4, min_front / self.APF_INFLUENCE_DIST)
+
+        self.apf_last_steer = apf_steer
+        return apf_steer, min_front, speed_factor
+
+    # ============================================================
+    # PID STEERING
+    # ============================================================
+    def pid_reset(self):
+        self._pid_integral = 0.0; self._pid_prev_err = 0.0; self._pid_last_t = None
+
+    def pid_compute(self, error_px):
+        now = time.time()
+        dt = 0.05 if self._pid_last_t is None else max(now - self._pid_last_t, 0.01)
+        p = self.Kp * error_px
+        self._pid_integral = max(-1.0, min(1.0, self._pid_integral + error_px * dt))
+        i = self.Ki * self._pid_integral
+        d = self.Kd * (error_px - self._pid_prev_err) / dt
+        self._pid_prev_err = error_px; self._pid_last_t = now
+        return max(-1.0, min(1.0, p + i + d))
+
+    def steer_to(self, target_x, speed=None):
+        speed = speed or self.BASE_SPEED
+        steering = self.pid_compute(target_x - self.W / 2.0)
+        self.racer.steer(steering, speed)
+        return steering
+
+    # ============================================================
+    # CHECKPOINT
+    # ============================================================
+    def detect_checkpoint(self, image):
+        if image is None: return False
+        roi = image[self.CP_ROI_Y:self.CP_ROI_Y+self.CP_ROI_H, :]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        _, b = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+        return (np.sum(b > 0) / b.size) >= self.CP_WHITE_RATIO
+
+    def try_checkpoint(self):
+        now = time.time()
+        if now - self.cp_last_time < self.CP_COOLDOWN_SEC: return False
+        self.cp_count += 1; self.cp_last_time = now
+        rospy.loginfo(f"*** CHECKPOINT {self.cp_count} ***")
+        return True
+
+    # ============================================================
+    # STATE MANAGEMENT
+    # ============================================================
+    def set_state(self, s):
+        if self.state != s:
+            rospy.loginfo(f"STATE: {self.state.name} -> {s.name}")
+            self.state = s; self.state_time = rospy.get_time(); self.pid_reset()
+
+    def time_in_state(self):
+        return rospy.get_time() - self.state_time
+
+    def log_row(self, steer=0, speed=0, front=0, offset=0, event=''):
+        self._csv.writerow([f'{time.time():.3f}', self.state.name,
+            f'{steer:.3f}', f'{speed:.2f}', f'{front:.2f}', f'{offset:.1f}', event])
+        self._frame_count += 1
+        if self._frame_count % 20 == 0: self._log_file.flush()
+
+    # ============================================================
+    # MAIN LOOP
+    # ============================================================
     def run(self):
-        rate = rospy.Rate(20)
-        rospy.loginfo("Bắt đầu vòng lặp điều khiển xe với IPM + Polyfit LQR + Smart Avoidance. Nhấn Ctrl+C để dừng khẩn cấp.")
+        rospy.loginfo("Đợi 3s..."); time.sleep(3)
+        rospy.loginfo("=== BẮT ĐẦU SPEED TRACK ===")
+        self.log_row(event='RUN_START')
+        rate = rospy.Rate(self.LOOP_RATE)
 
         while not rospy.is_shutdown():
-            now = rospy.get_time()
+            debug_frame = self.latest_image
 
-            # Timeout bảo vệ mất tín hiệu cảm biến
-            if self.latest_image is not None and (now - self.last_image_time > 0.6):
-                rospy.logerr_throttle(2, "🚨 [MẤT TÍN HIỆU CAMERA] Dừng xe khẩn cấp.")
+            # --- PHANH KHẨN CẤP AN TOÀN (LIDAR Failsafe) ---
+            if self.state not in [TrackState.WAITING, TrackState.E_STOP, TrackState.FINISHED]:
+                front_dist = self.get_front_dist()
+                if front_dist < 0.32:
+                    rospy.logerr(f"!!! QUÁ NGUY HIỂM: Vật cản trước mặt cách {front_dist:.2f}m !!! PHANH KHẨN CẤP")
+                    self.log_row(event='E_STOP_LIDAR')
+                    self.set_state(TrackState.E_STOP)
+
+            # --- WAITING ---
+            if self.state == TrackState.WAITING:
                 self.racer.stop()
-                rate.sleep()
-                continue
+                img_ok = self.latest_image is not None
+                vis = self.is_line_visible(self.latest_image) if img_ok else False
+                rospy.loginfo_throttle(2, f"[WAITING] Image received: {img_ok}, Line visible: {vis}")
+                
+                if img_ok and vis:
+                    try:
+                        _, _, _, _, debug_frame = self.detect_lane(self.latest_image)
+                    except:
+                        pass
+                    self.log_row(event='LINE_FOUND')
+                    self.set_state(TrackState.KEEP_LANE)
+                elif self.time_in_state() > self.WAIT_TIMEOUT:
+                    self.set_state(TrackState.E_STOP)
 
-            if self.latest_scan is not None and (now - self.last_scan_time > 0.6):
-                rospy.logerr_throttle(2, "🚨 [MẤT TÍN HIỆU LIDAR] Dừng xe khẩn cấp.")
-                self.racer.stop()
-                rate.sleep()
-                continue
+            # --- KEEP LANE (Hybrid APF) ---
+            elif self.state == TrackState.KEEP_LANE:
+                if self.latest_image is None:
+                    self.racer.stop(); rate.sleep(); continue
 
-            if self.latest_image is None:
-                rospy.logwarn_throttle(5, "Đang chờ ảnh từ Camera...")
-                rate.sleep()
-                continue
+                if not self.is_line_visible(self.latest_image):
+                    self.log_row(event='LANE_LOST')
+                    self.set_state(TrackState.RECOVERING)
+                    rate.sleep(); continue
 
-            # 1. Nhận diện vạch đường mượt mà bằng LaneDetector (IPM + Polyfit)
-            C_near, C_far, y_near, y_far, is_blind, debug_img = self.lane_detector.get_track_centers(self.latest_image)
+                # 1. Trích xuất Đặc trưng Ngữ nghĩa (Camera Semantic Features)
+                target_x, L, R, has_center, debug_frame = self.detect_lane(self.latest_image)
+                cam_steer = self.pid_compute(target_x - self.W / 2.0)
 
-            # 2. Đo khoảng cách vật cản & Kiểm tra sườn trống thông minh (Safety Corridor Check)
-            front_dist, obs_direction, clearance_left, clearance_right, is_blocked = self.get_front_obstacle_info()
+                # 2. Trích xuất Đặc trưng Hình học (LiDAR Geometric Features - APF)
+                apf_steer, min_front, speed_factor = self.compute_apf_steering()
 
-            temp_error_px = C_near - (self.WIDTH / 2.0)
+                # 3. Cơ chế Đánh trọng số Chú ý (Attention-Based Feature Fusion)
+                # Giải quyết "Semantic Blindness": LiDAR không biết đâu là lề đường.
+                # Camera biết lề đường (L, R). Ta dùng không gian BEV để tính khoảng cách an toàn.
+                car_center = self.W / 2.0
+                margin = self.W * self.BORDER_SAFETY_MARGIN  # Khoảng cách an toàn tối thiểu tới lề
+                
+                w_apf = 1.0  # Trọng số chú ý cho LiDAR (Attention Weight)
+                
+                if apf_steer < 0:
+                    # LiDAR muốn đẩy xe sang TRÁI. Kiểm tra lề trái L.
+                    dist_to_left = car_center - L
+                    if dist_to_left < margin:
+                        w_apf = 0.0  # Sát lề quá rồi, không tin LiDAR nữa
+                    elif dist_to_left < margin * 2:
+                        w_apf = (dist_to_left - margin) / margin # Giảm dần trọng số
+                elif apf_steer > 0:
+                    # LiDAR muốn đẩy xe sang PHẢI. Kiểm tra lề phải R.
+                    dist_to_right = R - car_center
+                    if dist_to_right < margin:
+                        w_apf = 0.0
+                    elif dist_to_right < margin * 2:
+                        w_apf = (dist_to_right - margin) / margin
+                        
+                # 4. Kết hợp lực lái (Decision-Level Fusion)
+                # cam_steer luôn được giữ để bám lane, apf_steer bị scale bởi Attention Weight
+                final_steer = max(-1.0, min(1.0, cam_steer + w_apf * apf_steer))
+                
+                # [HỌC TỪ main_speed_simple] Giảm tốc độ khi vào cua để không văng
+                curve_factor = self.CURVE_SPEED_FACTOR if abs(final_steer) > self.CURVE_STEER_THRESH else 1.0
+                target_speed = self.BASE_SPEED * speed_factor * curve_factor
 
-            # 3. Cập nhật FSM & Dịch vạch ảo né tránh (Xử lý trạng thái BLOCKED an toàn)
-            self.update_fsm_states(front_dist, obs_direction, is_blind, temp_error_px, current_speed=self.BASE_SPEED, is_blocked=is_blocked)
+                # 4. An toàn: Phanh khẩn cấp nếu vật cản quá gần (dù APF đang đẩy)
+                if min_front < self.E_STOP_DIST:
+                    rospy.logwarn(f"Vật cản ở {min_front:.2f}m - Quá sát! Dừng khẩn cấp!")
+                    self.racer.stop()
+                    self.log_row(event='APF_ESTOP')
+                    self.set_state(TrackState.E_STOP)
+                    continue
 
-            # 4. Tính toán sai số bẻ lái
-            target_center_near = C_near + self.current_offset_px
-            error_px = target_center_near - (self.WIDTH / 2.0)
+                # 5. Gửi lệnh điều khiển
+                self.racer.steer(final_steer, target_speed)
 
-            # 5. Tự động tính toán tốc độ động thực tế (Dynamic Speed Scaling)
-            # Ước tính góc lái tạm thời để lấy tốc độ động cho LQR Riccati Matrix
-            raw_err_far = (C_far - C_near)
-            est_steering_preview = np.clip(0.005 * error_px + 0.003 * raw_err_far, -1.0, 1.0)
-            current_speed = self.compute_dynamic_speed(est_steering_preview)
+                # Checkpoint
+                if self.detect_checkpoint(self.latest_image):
+                    if self.try_checkpoint():
+                        self.log_row(event=f'CP{self.cp_count}')
+                        self.set_state(TrackState.CHECKPOINT_CD)
+                        self._record_frame(debug_frame)
+                        rate.sleep(); continue
 
-            # 6. Đồng bộ LQR Offset & Tính toán góc lái mượt mà với tốc độ động thực tế
-            self.lqr.target_offset = self.target_offset_px * self.lqr.scale_factor
-            self.lqr.current_offset = self.current_offset_px * self.lqr.scale_factor
-            
-            steering = self.lqr.compute_steering(
-                C_near=C_near,
-                C_far=C_far,
-                Y_near=y_near,
-                Y_far=y_far,
-                speed=current_speed,
-                image_width=self.WIDTH
-            )
+                self.log_row(steer=final_steer, speed=target_speed, front=min_front, offset=apf_steer)
+                if debug_frame is not None:
+                    self._draw_target(debug_frame, target_x)
 
-            # Fallback hỗ trợ né tránh nếu mất vạch tạm thời
-            if is_blind and self.state == RobotState.STATE_REENTERING:
-                steering = -0.35 * self.dodge_direction
+            # --- RECOVERING ---
+            elif self.state == TrackState.RECOVERING:
+                if self.latest_image is not None and self.is_line_visible(self.latest_image):
+                    try:
+                        _, _, _, _, debug_frame = self.detect_lane(self.latest_image)
+                    except:
+                        pass
+                    self.log_row(event='LANE_FOUND')
+                    self.set_state(TrackState.KEEP_LANE)
+                    self._record_frame(debug_frame)
+                    rate.sleep(); continue
+                self.racer.steer(0.0, self.RECOVER_SPEED)
+                if self.time_in_state() > self.RECOVER_TIMEOUT:
+                    self.set_state(TrackState.E_STOP)
 
-            steering = max(-1.0, min(1.0, steering))
+            # --- CHECKPOINT COOLDOWN ---
+            elif self.state == TrackState.CHECKPOINT_CD:
+                if self.latest_image is None:
+                    self.racer.stop(); rate.sleep(); continue
 
-            # 7. Cập nhật tốc độ chính thức và truyền lệnh điều khiển xuống RacerController (I2C)
-            current_speed = self.compute_dynamic_speed(steering)
-            self.racer.steer(steering, current_speed)
+                if not self.is_line_visible(self.latest_image):
+                    self.log_row(event='LANE_LOST')
+                    self.set_state(TrackState.RECOVERING)
+                    rate.sleep(); continue
 
-            # 8. Ghi video debug với giao diện theo dõi trực quan
-            if self.video_writer is not None:
-                cv2.putText(debug_img, f"State: {self.state.name}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
-                cv2.putText(debug_img, f"Dist: {front_dist:.2f}m | Speed: {current_speed:.2f}", (10, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
-                cv2.putText(debug_img, f"Offset: {self.current_offset_px:.1f}px", (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
-                if is_blind:
-                    cv2.putText(debug_img, "BLIND - TEMPORAL FALLBACK", (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1, cv2.LINE_AA)
-                self.video_writer.write(debug_img)
+                if self.latest_image is not None:
+                    target_x, L, R, _, debug_frame = self.detect_lane(self.latest_image)
+                    self.steer_to(target_x, self.BASE_SPEED)
+                    if debug_frame is not None:
+                        self._draw_target(debug_frame, target_x)
+                if self.time_in_state() > self.CP_COOLDOWN:
+                    self.set_state(TrackState.KEEP_LANE)
 
-            # In log debug ra màn hình Terminal
-            if is_blind:
-                rospy.logwarn_throttle(1, f"🚨 [TEMPORAL FALLBACK] Center: {C_near:.1f} | Error: {error_px:.1f}px | Steer: {steering:.2f} | Speed: {current_speed:.2f}")
-            else:
-                rospy.loginfo_throttle(1, f"State: {self.state.name} | Error: {error_px:.1f}px | Steer: {steering:.2f} | Speed: {current_speed:.2f} | Dist: {front_dist:.2f}m")
+            # --- E_STOP / FINISHED ---
+            elif self.state == TrackState.E_STOP:
+                self.racer.stop(); self.log_row(event='E_STOP'); break
+            elif self.state == TrackState.FINISHED:
+                self.racer.stop(); self.log_row(event='FINISHED'); break
+
+            if debug_frame is not None:
+                self._record_frame(debug_frame)
 
             rate.sleep()
 
+        # --- CLEANUP (Chạy khi thoát vòng lặp while do bấm Ctrl+C) ---
         self.racer.stop()
+        elapsed = time.time() - self._fps_start
+        fps = self._frame_count / elapsed if elapsed > 0 else 0
+        rospy.loginfo(f"FPS: {fps:.1f}, CP: {self.cp_count}/3")
+        self._log_file.close()
         if self.video_writer is not None:
             self.video_writer.release()
-            rospy.loginfo("Đã lưu video debug.")
-        rospy.loginfo("Đã dừng xe an toàn.")
+            rospy.loginfo("Đã lưu và đóng file video.")
+        rospy.loginfo("Kết thúc.")
+
+    def _draw_target(self, frame, target_x):
+        """Vẽ Target thực sự xe đang hướng tới sau khi tính toán offset."""
+        y_near = int(self.H * 0.55)
+        cv2.circle(frame, (int(target_x), y_near - 20), 8, (255, 0, 0), 2)
+        cv2.line(frame, (self.W//2, self.H), (int(target_x), y_near - 20), (255, 0, 0), 2)
+        cv2.putText(frame, "Target", (int(target_x) - 20, y_near - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+
+        # Cleanup code moved from here to the end of run()
 
 
-if __name__ == '__main__':
+def main():
+    rospy.init_node('speed_track_controller', anonymous=True)
     try:
-        controller = SpeedTrackController()
-        controller.run()
+        SpeedTrackController().run()
     except rospy.ROSInterruptException:
         pass
     except Exception as e:
-        print(f"Lỗi khẩn cấp: {e}")
-        try:
-            r = RacerController()
-            r.stop()
-        except:
-            pass
+        rospy.logerr(f"Lỗi: {e}", exc_info=True)
+        try: RacerController().stop()
+        except: pass
+
+if __name__ == '__main__':
+    main()
