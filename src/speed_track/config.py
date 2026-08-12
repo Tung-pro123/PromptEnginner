@@ -184,12 +184,12 @@ class V3Config:
     # ================================================================
     # SPEED CONTROL
     # ================================================================
-    max_speed: float = 0.40                # [TUNE] throttle
-    min_speed: float = 0.18                # [TUNE]
-    cruise_speed: float = 0.30             # [TUNE] default straight-line speed
+    max_speed: float = 0.55                # [TUNE] throttle
+    min_speed: float = 0.25                # [TUNE]
+    cruise_speed: float = 0.45             # [TUNE] default straight-line speed
     a_lat_max: float = 2.0                 # [TUNE] lateral accel limit (m/s²)
     speed_confidence_thresh: float = 0.5   # reduce speed below this confidence
-    speed_to_throttle_factor: float = 1.0  # [CALIBRATE] TĂNG HỆ SỐ NÀY ĐỂ XE BỐC HƠN (v(m/s) → throttle)
+    speed_to_throttle_factor: float = 1.3  # [CALIBRATE] TĂNG HỆ SỐ NÀY ĐỂ XE BỐC HƠN (v(m/s) → throttle)
 
     # Speed PID (for encoder feedback)
     speed_pid_kp: float = 0.5
@@ -218,10 +218,10 @@ class V3Config:
     # ================================================================
     # DEBUG & LOGGING
     # ================================================================
-    record_video: bool = True
-    video_fps: int = 5
+    record_video: bool = False             # Set False for max FPS during live racing
+    video_fps: int = 30
     log_csv: bool = True
-    loop_rate: int = 20                    # Hz
+    loop_rate: int = 40                    # Hz (Boosted to 40Hz for low latency)
 
     # ================================================================
     # ROS TOPICS
