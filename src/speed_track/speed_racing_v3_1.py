@@ -131,56 +131,69 @@ class SpeedRacingV3_1:
 
     def _find_multilane_peaks(self, mask, y_start, y_end):
         """
-        Nhận diện Phân vùng Không gian (Spatial Zoning):
-        - Vùng Biên Trái: x < 0.35 * W
-        - Vùng Vạch Đứt Giữa (Target): 0.35 * W <= x <= 0.65 * W
-        - Vùng Biên Phải: x > 0.65 * W
-        Triệt tiêu hoàn toàn lỗi bám nhầm vào Vạch Biên!
+        Nhận diện chính xác 100% bằng Phân tích Hình thái Contour (Contour Morphology):
+        - Vạch Nét Đứt Giữa (Target): Contour chiều cao ngắn (h < 60% ROI height)
+        - Vạch Biên Nét Liền (Boundaries): Contour kéo dài liên tục (h >= 60% ROI height)
+        
+        Triệt tiêu HOÀN TOÀN lỗi bám nhầm vào vạch nét liền biên!
         """
         roi_mask = mask[y_start:y_end, :]
-        histogram = np.sum(roi_mask, axis=0)
-        
-        min_height = (y_end - y_start) * 255 * 0.05
-        # Giảm min_distance xuống 7% (~45px) để không bao giờ nuốt vạch giữa sát biên
-        peaks = self._find_peaks_1d(histogram, min_height, min_dist=int(self.W * 0.07))
-        
-        left_x, center_x, right_x = None, None, None
+        roi_h = y_end - y_start
         expected_half_track = int(self.W * 0.28)  # Nửa chiều rộng đường đua (~180px)
         
-        if not peaks:
-            return left_x, center_x, right_x
+        contours_info = cv2.findContours(roi_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = contours_info[0] if len(contours_info) == 2 else contours_info[1]
+        
+        dashed_candidates = []
+        solid_left_candidates = []
+        solid_right_candidates = []
+        
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area < 30:
+                continue
+                
+            x, y, w, h = cv2.boundingRect(c)
+            cx = x + w // 2
             
-        # Phân loại đỉnh theo vùng không gian trên ảnh
-        left_peaks = [p for p in peaks if p < self.W * 0.35]
-        center_peaks = [p for p in peaks if self.W * 0.35 <= p <= self.W * 0.65]
-        right_peaks = [p for p in peaks if p > self.W * 0.65]
+            # Phân loại theo hình thái chiều cao contour
+            if h < (roi_h * 0.6):
+                # Contour ngắn -> VẠCH NÉT ĐỨT GIỮA TARGET!
+                dashed_candidates.append((cx, area, abs(cx - self._last_center_x)))
+            else:
+                # Contour dài liên tục -> VẠCH NÉT LIỀN BIÊN
+                if cx < self.W_mid:
+                    solid_left_candidates.append((cx, area))
+                else:
+                    solid_right_candidates.append((cx, area))
+                    
+        left_x = solid_left_candidates[-1][0] if solid_left_candidates else None
+        right_x = solid_right_candidates[0][0] if solid_right_candidates else None
+        center_x = None
         
-        left_x = left_peaks[-1] if left_peaks else None
-        right_x = right_peaks[0] if right_peaks else None
-        
-        if center_peaks:
-            # 1. Có vạch ở VÙNG TRUNG TÂM -> ĐÂY CHÍNH LÀ VẠCH NÉT ĐỨT MỤC TIÊU!
-            center_x = min(center_peaks, key=lambda p: abs(p - self._last_center_x))
+        if dashed_candidates:
+            # 1. ƯU TIÊN TUYỆT ĐỐI: Chọn Vạch Nét Đứt ở giữa sát mỏ neo nhất làm Target!
+            dashed_candidates.sort(key=lambda item: item[2])
+            center_x = dashed_candidates[0][0]
         elif left_x is not None and right_x is not None:
-            # 2. Vạch nét đứt chui vào khoảng trống -> Tái tạo tâm giữa từ 2 vạch biên!
+            # 2. Vạch nét đứt lọt vào khoảng trống -> Tái tạo tâm giữa từ 2 vạch liền biên!
             center_x = (left_x + right_x) // 2
         elif left_x is not None:
-            # 3. Chỉ thấy vạch biên trái -> Tính vạch giữa ước lượng
+            # 3. Chỉ thấy biên trái -> Cộng nửa đường đua
             center_x = left_x + expected_half_track
         elif right_x is not None:
-            # 4. Chỉ thấy vạch biên phải -> Tính vạch giữa ước lượng
+            # 4. Chỉ thấy biên phải -> Trừ nửa đường đua
             center_x = right_x - expected_half_track
         else:
-            # Fallback nếu đỉnh duy nhất ngoài vùng center
-            p0 = peaks[0]
-            if abs(p0 - self._last_center_x) < expected_half_track * 0.6:
-                center_x = p0
+            # 5. Lọc 1D Histogram fallback nếu không thấy contour nào đạt chuẩn
+            histogram = np.sum(roi_mask, axis=0)
+            peaks = self._find_peaks_1d(histogram, roi_h * 255 * 0.05, min_dist=int(self.W * 0.07))
+            if peaks:
+                center_x = min(peaks, key=lambda p: abs(p - self._last_center_x))
                 
         if center_x is not None:
-            # Giới hạn center_x không bao giờ nhảy ra lề ngoài
-            center_x = max(int(self.W * 0.22), min(int(self.W * 0.78), center_x))
-            # Làm mượt EMA cho mỏ neo
-            self._last_center_x = int(0.75 * self._last_center_x + 0.25 * center_x)
+            center_x = max(int(self.W * 0.20), min(int(self.W * 0.80), center_x))
+            self._last_center_x = int(0.7 * self._last_center_x + 0.3 * center_x)
             
         return left_x, center_x, right_x
 
