@@ -4,7 +4,7 @@ import os
 
 # Đảm bảo có thể import từ src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.fsm.fsm_manager import FSMManager, State, settings
+from robot.fsm.fsm_manager import FSMManager, State, settings
 
 class TestFSMManager(unittest.TestCase):
     def setUp(self):

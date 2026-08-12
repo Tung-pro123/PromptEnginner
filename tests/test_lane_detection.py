@@ -8,9 +8,9 @@ import numpy as np
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
 
-from src.core.blackboard import Blackboard
-from src.perception.camera.camera_processor import CameraProcessor
-from src.config import settings
+from robot.utils.blackboard import Blackboard
+from robot.perception.camera_processor import CameraProcessor
+from robot.config import settings
 
 def main():
     image_path = os.path.join(project_root, 'data', 'camera-noobstacle.jpg')

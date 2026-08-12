@@ -6,8 +6,8 @@ import time
 # Thêm thư mục gốc vào sys.path để import được src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.control.predictive_controller import PredictiveController
-from src.core.blackboard import Blackboard
+from robot.control.predictive_controller import PredictiveController
+from robot.utils.blackboard import Blackboard
 
 def debug_predictive_controller():
     print("="*50)

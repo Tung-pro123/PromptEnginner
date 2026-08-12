@@ -3,8 +3,8 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.perception.lidar.lidar_processor import LidarProcessor
-from src.config import settings
+from robot.perception.lidar_processor import LidarProcessor
+from robot.config import settings
 
 class TestLidarProcessor(unittest.TestCase):
     def setUp(self):

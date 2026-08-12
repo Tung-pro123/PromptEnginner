@@ -4,8 +4,8 @@ import os
 import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.control.pid_controller import PIDController
-from src.config import settings
+from robot.control.pid_controller import PIDController
+from robot.config import settings
 
 class TestPIDController(unittest.TestCase):
     def setUp(self):
@@ -31,7 +31,7 @@ class TestPIDController(unittest.TestCase):
     def test_calculate_steering_pid_deviated(self):
         """Kiểm tra đánh lái khi xe lệch khỏi vùng an toàn."""
         # Use settings module that pid_controller imported
-        from src.control.pid_controller import settings as pid_settings
+        from robot.control.pid_controller import settings as pid_settings
         pid_settings.IMAGE_CENTER_X = 150
         pid_settings.IMAGE_WIDTH = 300
         pid_settings.SAFE_ZONE_PERCENT = 0.1

@@ -4,12 +4,12 @@ import os
 import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.core.blackboard import Blackboard
-from src.fsm.fsm_manager import FSMManager
-from src.control.pid_controller import PIDController
-from src.perception.camera.camera_processor import CameraProcessor
-from src.perception.lidar.lidar_processor import LidarProcessor
-from src.debug.debugger import Debugger
+from robot.utils.blackboard import Blackboard
+from robot.fsm.fsm_manager import FSMManager
+from robot.control.pid_controller import PIDController
+from robot.perception.camera_processor import CameraProcessor
+from robot.perception.lidar_processor import LidarProcessor
+from robot.debug.debugger import Debugger
 import numpy as np
 import cv2
 

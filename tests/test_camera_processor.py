@@ -4,8 +4,8 @@ import os
 import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.perception.camera.camera_processor import CameraProcessor
-from src.config import settings
+from robot.perception.camera_processor import CameraProcessor
+from robot.config import settings
 
 class TestCameraProcessor(unittest.TestCase):
     def setUp(self):
