@@ -114,8 +114,8 @@ class V3Config:
     # RANSAC POLYNOMIAL FITTING
     # ================================================================
     poly_degree: int = 2
-    ransac_residual_threshold: float = 20.0
-    ransac_max_trials: int = 10     # [TUNE] Giảm từ 50 xuống 10 để Jetson Nano chạy siêu mượt (Tăng FPS)
+    ransac_residual_threshold: float = 5.0    # pixels
+    ransac_max_trials: int = 50 # có thể tăng lên <= 100
     ransac_min_samples: int = 10
 
     # ================================================================
