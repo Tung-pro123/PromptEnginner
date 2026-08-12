@@ -38,13 +38,13 @@ class V3Config:
     # ================================================================
     # HSV COLOR SEGMENTATION — Red/orange lane markings
     # ================================================================
-    # Two hue ranges for wrap-around (red sits at both ends of hue spectrum)
+    # Two hue ranges for wrap-around (red sits at both ends of hue spectrum: 0-10 and 170-179)
     hsv_h1_min: int = 0         
-    hsv_h1_max: int = 179       
-    hsv_h2_min: int = 39        
+    hsv_h1_max: int = 10        
+    hsv_h2_min: int = 170       
     hsv_h2_max: int = 179       
     hsv_s_min: int = 100        
-    hsv_v_min: int = 105        
+    hsv_v_min: int = 100        
 
     # Use CLAHE preprocessing for lighting robustness
     use_clahe: bool = False #nếu dùng cân bằng ánh sáng cục bộ thì True
