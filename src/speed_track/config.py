@@ -191,6 +191,11 @@ class V3Config:
     speed_confidence_thresh: float = 0.5   # reduce speed below this confidence
     speed_to_throttle_factor: float = 1.3  # [CALIBRATE] TĂNG HỆ SỐ NÀY ĐỂ XE BỐC HƠN (v(m/s) → throttle)
 
+    # Steering PID
+    steer_pid_kp: float = 2.2              # [TUNE] High proportional gain for sharp curve steering (0.8 -> 2.2)
+    steer_pid_ki: float = 0.0
+    steer_pid_kd: float = 0.02             # [TUNE] Clamped derivative gain for smooth curve transitions
+    
     # Speed PID (for encoder feedback)
     speed_pid_kp: float = 0.5
     speed_pid_ki: float = 0.0

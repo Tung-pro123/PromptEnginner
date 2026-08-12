@@ -194,20 +194,22 @@ class SpeedRacingV3_1:
         now = time.time()
         dt = 0.05 if self._pid_last_t is None else max(now - self._pid_last_t, 0.01)
         
-        # Using PID constants from config, fallback to defaults if not set
-        kp = getattr(self.cfg, 'steer_pid_kp', 0.8)
+        # Using PID constants from config, fallback to robust defaults if not set
+        kp = getattr(self.cfg, 'steer_pid_kp', 2.2)
         ki = getattr(self.cfg, 'steer_pid_ki', 0.0)
-        kd = getattr(self.cfg, 'steer_pid_kd', 0.05)
+        kd = getattr(self.cfg, 'steer_pid_kd', 0.02)
         
         p = kp * error
         self._pid_integral = max(-1.0, min(1.0, self._pid_integral + error * dt))
         i = ki * self._pid_integral
-        d = kd * (error - self._pid_prev_err) / dt
+        
+        # Clamp derivative rate to prevent D-term steering collapse during curve transitions
+        raw_d = (error - self._pid_prev_err) / dt
+        d = kd * max(-2.0, min(2.0, raw_d))
         
         self._pid_prev_err = error
         self._pid_last_t = now
         
-        # Multiply by a factor to convert normalized error to steering angle range
         steer = p + i + d
         return max(-1.0, min(1.0, steer))
 
