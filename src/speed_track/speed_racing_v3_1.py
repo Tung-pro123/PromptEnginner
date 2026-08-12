@@ -259,10 +259,16 @@ class SpeedRacingV3_1:
             throttle_out = 0.0
             error_norm = 0.0
             
-            # Strict center tracking: only use center_x. Fallback to lookahead center if needed.
-            center_x = c_x
-            if center_x is None and look_c is not None:
-                center_x = look_c 
+            # Smart Center Selection with Apex Lookahead for smooth cornering
+            if c_x is not None and look_c is not None:
+                # Blend 40% near center + 60% lookahead center for early apex steering into curves
+                center_x = int(0.4 * c_x + 0.6 * look_c)
+            elif c_x is not None:
+                center_x = c_x
+            elif look_c is not None:
+                center_x = look_c
+            else:
+                center_x = None
                 
             if center_x is not None:
                 self.state = TrackState.TRACKING
