@@ -38,6 +38,10 @@ class TrackingState(Enum):
 class LaneState:
     """Persistent lane state maintained across frames."""
     centerline_poly: Optional[np.ndarray] = None  # [a, b, c]
+    left_poly: Optional[np.ndarray] = None        # [a, b, c] Left boundary
+    right_poly: Optional[np.ndarray] = None       # [a, b, c] Right boundary
+    left_poly_timestamp: float = 0.0              # Last time left boundary was directly observed
+    right_poly_timestamp: float = 0.0             # Last time right boundary was directly observed
     lane_width_m: float = 0.0
     curvature: float = 0.0              # 1/m at vehicle position
     heading_error: float = 0.0          # radians
@@ -74,22 +78,31 @@ class LaneStateEstimator:
         self.cfg = config
         self.bev = bev_transform
         self.state = LaneState()
+        self._last_confident_time = time.time()
 
-    def update(self, observation):
+    def update(self, observation, obstacle_near=False, n_lines_detected=0):
         """Process a new geometry observation and update lane state.
 
         Args:
             observation: GeometryObservation from LaneGeometry.
+            obstacle_near: True if LiDAR sees obstacle within e_stop range.
+            n_lines_detected: Number of lane lines detected (0-3).
 
         Returns:
             Updated LaneState.
         """
         now = time.time()
+        # Recovery requires >= 2 lines to prevent locking onto a boundary line
+        multi_line_confirmed = n_lines_detected >= 2
 
         if not observation.valid or observation.centerline_poly is None:
             # No valid observation — pure prediction
             self._predict(now)
-            self._update_state_machine(now, measurement_accepted=False)
+            self._update_state_machine(
+                now, measurement_accepted=False,
+                obstacle_near=obstacle_near,
+                multi_line_confirmed=False,
+            )
             return self.state
 
         # Compute derived quantities from observation
@@ -103,12 +116,20 @@ class LaneStateEstimator:
             if not self._passes_gating(obs_e_lat, obs_kappa, observation.overall_confidence):
                 # Observation rejected — predict instead
                 self._predict(now)
-                self._update_state_machine(now, measurement_accepted=False)
+                self._update_state_machine(
+                    now, measurement_accepted=False,
+                    obstacle_near=obstacle_near,
+                    multi_line_confirmed=False,
+                )
                 return self.state
 
         # Measurement accepted — EMA update
         self._ema_update(observation, obs_e_lat, obs_e_psi, obs_kappa, now)
-        self._update_state_machine(now, measurement_accepted=True)
+        self._update_state_machine(
+            now, measurement_accepted=True,
+            obstacle_near=obstacle_near,
+            multi_line_confirmed=multi_line_confirmed,
+        )
 
         return self.state
 
@@ -177,9 +198,14 @@ class LaneStateEstimator:
         if obs_confidence < self.cfg.min_confidence_gate:
             return False
 
-        # Gate 2: Lateral position jump
-        if abs(obs_e_lat - prev.lateral_error_m) > self.cfg.max_lateral_jump_m:
-            return False
+        # Gate 2: Lateral position jump (Tightened reacquisition gate if recovering)
+        if prev.tracking_state in (TrackingState.PREDICTING, TrackingState.RECOVERY):
+            reacq_gate = getattr(self.cfg, 'reacquisition_gate_m', 0.25)
+            if abs(obs_e_lat - prev.lateral_error_m) > reacq_gate:
+                return False
+        else:
+            if abs(obs_e_lat - prev.lateral_error_m) > self.cfg.max_lateral_jump_m:
+                return False
 
         # Gate 3: Curvature jump
         if abs(obs_kappa - prev.curvature) > self.cfg.max_curvature_jump:
@@ -199,9 +225,14 @@ class LaneStateEstimator:
         """
         cfg = self.cfg
 
+        if observation.overall_confidence >= cfg.tracking_confidence_min:
+            self._last_confident_time = now
+
         if self.state.centerline_poly is None:
             # First valid observation — initialize directly
             self.state.centerline_poly = observation.centerline_poly.copy()
+            self.state.left_poly = observation.left_poly.copy() if observation.left_poly is not None else None
+            self.state.right_poly = observation.right_poly.copy() if observation.right_poly is not None else None
             self.state.lateral_error_m = e_lat
             self.state.heading_error = e_psi
             self.state.curvature = kappa
@@ -218,6 +249,17 @@ class LaneStateEstimator:
                 a_pos * observation.centerline_poly +
                 (1.0 - a_pos) * self.state.centerline_poly
             )
+            if observation.left_poly is not None:
+                if self.state.left_poly is not None:
+                    self.state.left_poly = a_pos * observation.left_poly + (1.0 - a_pos) * self.state.left_poly
+                else:
+                    self.state.left_poly = observation.left_poly.copy()
+            if observation.right_poly is not None:
+                if self.state.right_poly is not None:
+                    self.state.right_poly = a_pos * observation.right_poly + (1.0 - a_pos) * self.state.right_poly
+                else:
+                    self.state.right_poly = observation.right_poly.copy()
+
             self.state.lateral_error_m = (
                 a_pos * e_lat + (1.0 - a_pos) * self.state.lateral_error_m
             )
@@ -239,6 +281,11 @@ class LaneStateEstimator:
                 (1.0 - a_pos) * self.state.confidence
             )
 
+        if observation.left_conf > 0.3:
+            self.state.left_poly_timestamp = now
+        if observation.right_conf > 0.3:
+            self.state.right_poly_timestamp = now
+
         self.state.left_conf = observation.left_conf
         self.state.center_conf = observation.center_conf
         self.state.right_conf = observation.right_conf
@@ -246,9 +293,10 @@ class LaneStateEstimator:
         self.state.timestamp = now
 
     def _predict(self, now):
-        """Predict lane state when no valid measurement is available.
+        """Predict lane state using curved dead-reckoning when no valid measurement is available.
 
-        Keeps the previous state but decays confidence and steers towards straight ahead.
+        Maintains full curvature and heading during short-term gaps (e.g. 0.3s), then slowly
+        decays curvature while triggering recovery/crawl speed.
 
         Args:
             now: Current timestamp.
@@ -256,19 +304,29 @@ class LaneStateEstimator:
         self.state.confidence *= self.cfg.confidence_decay
         self.state.timestamp = now
         self.state.reconstruction_method = 'prediction'
-        
-        # Ý TƯỞNG 1: Trả lái về thẳng khi mất vạch
-        # Từ từ đưa độ cong và độ lệch về 0 (nhân 0.8) để vô lăng nhả thẳng
-        self.state.curvature *= 0.8
-        self.state.lateral_error_m *= 0.8
-        self.state.heading_error *= 0.8
 
-    def _update_state_machine(self, now, measurement_accepted):
-        """Update the tracking state based on confidence and timing.
+        hold_duration = getattr(self.cfg, 'predict_hold_duration', 0.30)
+        time_since_confident = now - self._last_confident_time
+
+        if time_since_confident <= hold_duration:
+            # DEAD RECKONING: Hold 100% curvature, lateral position and heading
+            # The vehicle continues on its circular trajectory across blind spots in curves
+            pass
+        else:
+            # Beyond hold duration, slowly decay curvature while speed slows to crawl
+            self.state.curvature *= 0.98
+            self.state.heading_error *= 0.98
+            self.state.lateral_error_m *= 0.98
+
+    def _update_state_machine(self, now, measurement_accepted,
+                              obstacle_near=False, multi_line_confirmed=False):
+        """Update the tracking state based on confidence, timing, and safety.
 
         Args:
             now: Current timestamp.
             measurement_accepted: Whether the latest measurement was accepted.
+            obstacle_near: True if LiDAR detects obstacle within danger zone.
+            multi_line_confirmed: True if >= 2 lane lines were detected.
         """
         prev_state = self.state.tracking_state
         conf = self.state.confidence
@@ -300,9 +358,12 @@ class LaneStateEstimator:
                 new_state = TrackingState.RECOVERY
 
         elif prev_state == TrackingState.RECOVERY:
-            if measurement_accepted and conf >= cfg.tracking_confidence_min:
+            # ANTI-LOCK: Only accept re-tracking if >= 2 lines visible.
+            if (measurement_accepted and conf >= cfg.tracking_confidence_min
+                    and multi_line_confirmed):
                 new_state = TrackingState.TRACKING
             elif time_in_state > cfg.recovery_timeout:
+                # Safe emergency stop after recovery timeout
                 new_state = TrackingState.E_STOP
 
         # Transition
@@ -313,3 +374,4 @@ class LaneStateEstimator:
     def reset(self):
         """Reset the estimator to initial state (e.g., for restart)."""
         self.state = LaneState()
+        self._last_confident_time = time.time()

@@ -1,62 +1,79 @@
 #!/usr/bin/env python3
 """
-V3 Control — Steering Rate Limiter & Saturation
+V3 Control — Physical-Radian Steering Rate Limiter & Smoothing Filter
 
-Applies three filters to raw steering commands:
-1. Saturation: clamp to [-1, 1]
-2. Rate limiting: limit change per frame to max_steer_rate
-3. Optional light low-pass filter (EMA)
+Applies real-world physical constraints:
+1. Physical Saturation: Clamped strictly to [-max_steer_rad, +max_steer_rad].
+2. Physical Servo Slew Rate Limiting: Limits steering delta per loop to (max_steer_rate_rad_s * dt).
+3. Configurable Low-Pass Filter (EMA) for high-frequency noise rejection.
 
-Prevents sudden steering jumps that cause the car to jerk.
-V2 had only a simple 0.7/0.3 blend, which was both too aggressive
-and not configurable.
-
-WARNING: Excessive low-pass filtering creates control latency.
-The LPF alpha should be close to 1.0 (minimal filtering).
-Rate limiting is the primary smoothing mechanism.
+Convention:
+    δ > 0: Steer RIGHT (Rẽ phải)
+    δ < 0: Steer LEFT (Rẽ trái)
+    Unit: Radians
 """
+
+import math
 
 
 class SteeringFilter:
-    """Rate-limited and saturated steering output filter."""
+    """Rate-limited and low-pass steering filter in physical radians."""
 
     def __init__(self, config):
         """
         Args:
             config: V3Config instance.
         """
-        self.max_rate = config.max_steer_rate
-        self.lpf_alpha = config.steer_lpf_alpha
-        self.prev_output = 0.0
+        self.cfg = config
+        self.max_steer_rad = getattr(config, 'max_steer_rad', 0.436)
+        self.max_steer_rate_rad_s = getattr(config, 'max_steer_rate_rad_s', 2.5)
+        self.lpf_alpha = getattr(config, 'steer_lpf_alpha', 0.8)
+        self.prev_steer_rad = 0.0
 
-    def filter(self, raw_steering):
-        """Apply rate limiting, saturation, and optional LPF.
+    def filter_rad(self, target_rad: float, dt: float = 0.025) -> float:
+        """Apply physical radian rate-limiting (servo slew rate) and optional LPF.
 
         Args:
-            raw_steering: Raw steering command from controller.
+            target_rad: Target steering angle in physical radians (+ = right, - = left).
+            dt: Measured loop time in seconds.
 
         Returns:
-            Filtered steering command in [-1.0, 1.0].
+            Filtered steering angle in physical radians clamped to [-max_steer_rad, +max_steer_rad].
         """
-        # Step 1: Saturation
-        saturated = max(-1.0, min(1.0, raw_steering))
+        dt_clamped = max(0.001, min(0.20, dt))
 
-        # Step 2: Rate limiting
-        delta = saturated - self.prev_output
-        if abs(delta) > self.max_rate:
-            delta = self.max_rate if delta > 0 else -self.max_rate
-        rate_limited = self.prev_output + delta
+        # Step 1: Chassis physical clamp
+        target_clamped = max(-self.max_steer_rad, min(self.max_steer_rad, target_rad))
 
-        # Step 3: Optional light LPF
-        # alpha=1.0 means no filtering, alpha=0.7 means mild smoothing
-        filtered = self.lpf_alpha * rate_limited + (1.0 - self.lpf_alpha) * self.prev_output
+        # Step 2: Rate limiting based on physical servo slew rate (rad/s) and real loop dt
+        max_change = self.max_steer_rate_rad_s * dt_clamped
+        delta = target_clamped - self.prev_steer_rad
+        if abs(delta) > max_change:
+            delta = math.copysign(max_change, delta)
+        rate_limited = self.prev_steer_rad + delta
 
-        # Final saturation (safety)
-        filtered = max(-1.0, min(1.0, filtered))
+        # Step 3: Low-pass filter (EMA)
+        filtered_rad = self.lpf_alpha * rate_limited + (1.0 - self.lpf_alpha) * self.prev_steer_rad
 
-        self.prev_output = filtered
-        return filtered
+        # Final safety clamp
+        filtered_rad = max(-self.max_steer_rad, min(self.max_steer_rad, filtered_rad))
+        self.prev_steer_rad = filtered_rad
+        return filtered_rad
 
-    def reset(self):
-        """Reset filter state (e.g., on state transition)."""
-        self.prev_output = 0.0
+    def filter(self, raw_steering: float, dt: float = 0.025) -> float:
+        """Backward-compatible filter for normalized steering in [-1.0, 1.0].
+
+        Args:
+            raw_steering: Normalized steering command in [-1.0, 1.0].
+            dt: Measured loop time in seconds.
+
+        Returns:
+            Filtered normalized steering command in [-1.0, 1.0].
+        """
+        target_rad = raw_steering * self.max_steer_rad
+        filtered_rad = self.filter_rad(target_rad, dt=dt)
+        return filtered_rad / self.max_steer_rad
+
+    def reset(self, initial_steer_rad: float = 0.0):
+        """Reset filter state (e.g., on emergency stop or state transition)."""
+        self.prev_steer_rad = initial_steer_rad

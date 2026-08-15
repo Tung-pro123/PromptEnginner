@@ -18,12 +18,18 @@ py2_paths = [p for p in sys.path if 'python2.7' in p]
 sys.path = py3_paths + py2_paths
 
 import os
-import rospy
 import cv2
 import numpy as np
 import time
 import math
-from sensor_msgs.msg import LaserScan, Image
+
+try:
+    import rospy
+    from sensor_msgs.msg import LaserScan, Image
+    HAS_ROS = True
+except ImportError:
+    rospy = None
+    HAS_ROS = False
 
 # Thêm thư mục cha vào path để import RacerController
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

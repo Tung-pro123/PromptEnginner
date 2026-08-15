@@ -33,7 +33,7 @@ class SpeedController:
         self._prev_error = 0.0
         self._prev_time = None
 
-    def compute(self, curvature, confidence, tracking_state, actual_speed=None):
+    def compute(self, curvature, confidence, tracking_state, actual_speed=None, reconstruction_method='none'):
         """Compute target throttle.
 
         Args:
@@ -41,6 +41,7 @@ class SpeedController:
             confidence: Lane confidence [0,1] from state estimator.
             tracking_state: TrackingState enum value.
             actual_speed: Actual speed from encoder (m/s). None if no encoder.
+            reconstruction_method: Method used to reconstruct centerline ('L+C+R_fused', 'L+R_midpoint', 'L_only', 'R_only', 'prediction').
 
         Returns:
             Throttle command (0.0 to max_speed).
@@ -48,6 +49,7 @@ class SpeedController:
         from src.speed_track.estimation.lane_state import TrackingState
 
         cfg = self.cfg
+        crawl = getattr(cfg, 'crawl_speed', 0.12)
 
         # Step 1: Curvature-based target speed
         epsilon = 1e-4
@@ -56,25 +58,28 @@ class SpeedController:
 
         # Step 2: Confidence scaling
         if confidence < cfg.speed_confidence_thresh:
-            # Linear reduction: at confidence=0 → v_target * 0
             scale = max(0.3, confidence / cfg.speed_confidence_thresh)
             v_target *= scale
 
-        # Step 3: State machine speed limits
+        # Step 3: Single-line reconstruction speed limit (Caution mode)
+        if reconstruction_method in ('L_only', 'R_only'):
+            v_target = min(v_target, crawl)
+
+        # Step 4: State machine speed limits
         if tracking_state == TrackingState.SEARCH:
             v_target = cfg.min_speed
         elif tracking_state == TrackingState.UNCERTAIN:
             v_target = min(v_target, cfg.cruise_speed * 0.7)
         elif tracking_state == TrackingState.PREDICTING:
-            v_target = cfg.min_speed
+            v_target = crawl
         elif tracking_state == TrackingState.RECOVERY:
-            v_target = cfg.min_speed
+            v_target = crawl
         elif tracking_state == TrackingState.E_STOP:
             v_target = 0.0
 
         # Clamp to valid range
         if v_target > 0:
-            v_target = max(cfg.min_speed, min(cfg.max_speed, v_target))
+            v_target = max(crawl, min(cfg.max_speed, v_target))
         else:
             v_target = 0.0
 

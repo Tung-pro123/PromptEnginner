@@ -7,6 +7,7 @@ Parameters marked [CALIBRATE] must be measured/tuned on the real car.
 Parameters marked [TUNE] should be adjusted after initial testing.
 """
 
+import math
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional
@@ -96,11 +97,10 @@ class V3Config:
     ]))
 
     # Metric calibration: how many pixels per meter in BEV space
-    # [CALIBRATE] measure a known distance on the track in BEV
-    # Sửa lại scale cho đúng với xe mô hình (RC car): 1 pixel = 1 mm
-    # Track rộng ~400 pixels trong BEV => tương đương 0.4 mét (đúng với expected_lane_width_m)
-    px_per_meter_x: float = 1000.0   # [CALIBRATE] horizontal
-    px_per_meter_y: float = 1000.0   # [CALIBRATE] vertical
+    # [CALIBRATE] BEV destination rectangle width = 640 * (0.80 - 0.20) = 384 px.
+    # For a track width of 0.60m: px_per_meter = 384 px / 0.60 m = 640.0 px/m.
+    px_per_meter_x: float = 640.0   # [CALIBRATE] horizontal scale (384 px / 0.60 m)
+    px_per_meter_y: float = 640.0   # [CALIBRATE] vertical scale
 
     # ================================================================
     # SLIDING WINDOW LANE DETECTION
@@ -122,10 +122,12 @@ class V3Config:
     # ================================================================
     # CONFIDENCE SCORING
     # ================================================================
-    min_inlier_count: int = 150     # below this → confidence ≈ 0 (increased from 50)
-    expected_inlier_count: int = 400  # above this → count component ≈ 1 (increased from 300)
-    max_fit_rmse: float = 8.0       # pixels; above this → rmse component ≈ 0
-    conf_weight_count: float = 0.6  # Give more weight to pixel count
+    min_inlier_count: int = 150             # below this → confidence ≈ 0 (for solid lines)
+    expected_inlier_count: int = 400        # above this → count component ≈ 1 (for solid lines)
+    min_inlier_count_dashed: int = 60       # below this → confidence ≈ 0 (for dashed lines)
+    expected_inlier_count_dashed: int = 180 # above this → count component ≈ 1 (for dashed lines)
+    max_fit_rmse: float = 8.0               # pixels; above this → rmse component ≈ 0
+    conf_weight_count: float = 0.6          # Give more weight to pixel count
     conf_weight_rmse: float = 0.2
     conf_weight_inlier_ratio: float = 0.2
 
@@ -135,16 +137,25 @@ class V3Config:
     # Physical lane width (distance between the two boundary lines)
     # Track thực tế của xe mô hình thường có độ rộng toàn dải (trái sang phải) khoảng 60cm
     expected_lane_width_m: float = 0.60    # [CALIBRATE] meters
-    lane_width_tolerance: float = 0.35     # ± 35% of expected width
+    lane_width_tolerance: float = 0.20     # ± 20% of expected width (tightened from 35%)
+    
+    # Startup calibration guard
+    startup_check_frames: int = 20         # Number of dual-line frames to validate calibration
+    startup_timeout_frames: int = 60       # Timeout frames (at ~30fps) to abort if dual-lines never detected
+    startup_width_tolerance: float = 0.18  # Max deviation allowed during startup validation
 
     # ================================================================
-    # TEMPORAL FILTER (alpha-beta / EMA)
+    # TEMPORAL FILTER (alpha-beta / EMA) & DEAD RECKONING
     # ================================================================
-    alpha_position: float = 1.0     # [TUNE] EMA for centerline position (1.0 = no delay)
+    alpha_position: float = 0.6     # [TUNE] EMA for centerline position (1.0 = no delay)
     alpha_heading: float = 1.0      # [TUNE]
     alpha_curvature: float = 1.0    # [TUNE]
     alpha_width: float = 1.0        # [TUNE]
     confidence_decay: float = 0.95  # per-frame decay when no measurement
+    
+    # Short-term curved dead reckoning when lines are lost in curves
+    predict_hold_duration: float = 0.30    # seconds to keep 100% curvature & heading before decay
+    reacquisition_gate_m: float = 0.25     # max lateral jump allowed when re-detecting line
 
     # ================================================================
     # MEASUREMENT GATING
@@ -164,13 +175,20 @@ class V3Config:
     lookahead_Lmax: float = 0.60    # maximum lookahead (m)
 
     # ================================================================
-    # PURE PURSUIT CONTROLLER (V1 — baseline)
+    # UNIFIED ACKERMANN CHASSIS & KINEMATIC MODEL
     # ================================================================
-    wheelbase: float = 0.16                # [CALIBRATE] meters (axle-to-axle)
-    max_steer_angle_rad: float = 0.45      # [CALIBRATE] Giảm số này = TĂNG lực bẻ lái của servo
+    wheelbase_m: float = 0.14              # [CALIBRATE] Physical wheelbase L (m)
+    max_steer_rad: float = 0.436           # Max front wheel steering angle δ_max (rad) ~ 25 deg (+right, -left)
+    max_steer_rate_rad_s: float = 2.5      # Servo slew rate limit (rad/s)
+    car_length_m: float = 0.25             # [CALIBRATE] Total physical vehicle length (m)
+    car_width_m: float = 0.18              # [CALIBRATE] Total physical vehicle width with tires (m)
+    track_width_m: float = 0.60            # [CALIBRATE] Total width between outer red boundaries (m)
+    safety_margin_m: float = 0.04          # [TUNE] Distance buffer from outer red line (m)
+    max_evade_offset_m: float = 0.18       # [TUNE] Clamped max virtual offset (m)
+    offset_ramp_rate: float = 0.60         # [TUNE] Virtual offset ramp speed (m/s)
 
     # ================================================================
-    # STANLEY CONTROLLER (V2 — after PP is stable)
+    # PURE PURSUIT & STANLEY CONTROLLERS
     # ================================================================
     stanley_k: float = 0.3                 # [TUNE]
     stanley_enabled: bool = False          # DO NOT enable until PP is validated
@@ -178,36 +196,85 @@ class V3Config:
     # ================================================================
     # STEERING FILTER
     # ================================================================
-    max_steer_rate: float = 1.0           # [TUNE] max change per frame (cho phép servo xoay gắt hơn)
-    steer_lpf_alpha: float = 1.0          # [TUNE] 1.0 = no filter (phản hồi vô lăng tức thì)
+    steer_lpf_alpha: float = 0.8          # [TUNE] 1.0 = no filter (instant response)
 
     # ================================================================
     # SPEED CONTROL
     # ================================================================
-    max_speed: float = 0.35                # [TUNE] throttle
-    min_speed: float = 0.15                # [TUNE]
-    cruise_speed: float = 0.25             # [TUNE] tốc độ vừa phải chuẩn để bám line mượt mà
-    a_lat_max: float = 2.0                 # [TUNE] lateral accel limit (m/s²)
+    cruise_speed: float = 0.25             # m/s (an toàn trên sa bàn)
+    max_speed: float = 0.35                # m/s (giới hạn an toàn trên đường thẳng)
+    crawl_speed: float = 0.12              # m/s (chế độ bò khi mất target)
+    min_speed: float = 0.15                # m/s (tốc độ tối thiểu)
+    a_lat_max: float = 2.0                 # m/s² (giới hạn gia tốc ngang)
+    curve_speed_min: float = 0.15          # m/s (tốc độ tối thiểu trong cua gắt)
+    curve_slowdown_factor: float = 0.6     # hệ số giảm tốc khi cua gắt
+    confidence_speed_weight: float = 0.4   # giảm tốc khi confidence thấp
     speed_confidence_thresh: float = 0.5   # reduce speed below this confidence
-    speed_to_throttle_factor: float = 1.0  # [CALIBRATE] hệ số ga chuẩn mượt
-
-    # Steering PID
-    steer_pid_kp: float = 1.8              # [TUNE] High proportional gain for sharp curve steering
-    steer_pid_ki: float = 0.0              # [MUST BE 0.0] Integral term causes severe wheel oscillation
-    steer_pid_kd: float = 0.08             # [TUNE] Damping term to stop wheel wobble and stabilize steering
-    
-    # Speed PID (for encoder feedback)
+    speed_to_throttle_factor: float = 1.0  # tỉ lệ chuyển m/s -> throttle
+    use_encoder: bool = False              # [CALIBRATE] set True if encoder available
     speed_pid_kp: float = 0.5
     speed_pid_ki: float = 0.0
     speed_pid_kd: float = 0.1
-    use_encoder: bool = False              # [CALIBRATE] set True if encoder available
+    steer_pid_kp: float = 1.8
+    steer_pid_ki: float = 0.0
+    steer_pid_kd: float = 0.08
+
+    # ================================================================
+    # APF OBSTACLE AVOIDANCE & FLANK CHECK
+    # ================================================================
+    lidar_offset_deg: float = 180.0        # [CALIBRATE] LiDAR mount rotation offset
+    apf_gain: float = 0.15                 # [TUNE] repulsive force gain
+    apf_influence_dist: float = 0.80       # [TUNE] APF influence radius (m)
+    apf_frontal_bias: float = 0.3          # [TUNE] lateral bias for frontal obstacles
+    obstacle_trigger_dist: float = 0.60    # [TUNE] start EVADING when closer than this (m)
+    obstacle_clear_dist: float = 0.80      # [TUNE] obstacle passed threshold (m)
+    obstacle_e_stop_dist: float = 0.20     # [TUNE] emergency stop distance (m)
+    evade_steer_weight: float = 0.6        # [TUNE] APF weight during EVADING (0=lane only, 1=APF only)
+    return_lateral_threshold: float = 0.05 # [TUNE] lateral error to consider "back on line" (m)
+    evade_speed_factor: float = 0.6        # [TUNE] throttle multiplier during evasion
+
+    # Flank / Side sector clearance check (prevents rear-wheel sideswiping)
+    side_scan_start_deg: float = 70.0      # [TUNE] Side scan start angle (deg)
+    side_scan_end_deg: float = 110.0       # [TUNE] Side scan end angle (deg)
+    side_clear_dist: float = 0.35          # [TUNE] Side clearance threshold before returning (m)
+
+    # ================================================================
+    # CONTROL-LATTICE BICYCLE ROLLOUT PLANNER & SAFETY
+    # ================================================================
+    n_candidate_rollouts: int = 11         # Number of candidate bicycle rollouts spanning [-delta_max, +delta_max]
+    n_candidate_trajectories: int = 11     # Alias for backwards compatibility
+    rollout_horizon_s: float = 0.90        # Rollout forward planning time horizon (s)
+    rollout_dt_s: float = 0.03             # Numerical integration timestep (s)
+
+    # Cost Weights for Optimal Rollout Selection
+    w_lane: float = 6.0                    # Weight for following the reference lane target
+    w_steer: float = 0.05                  # Weight penalizing large steering angles
+    w_rate: float = 0.05                   # Weight penalizing steering changes from current steer
+    w_clearance: float = 1.20              # Weight penalizing proximity to obstacles
+    w_progress: float = 0.10               # Weight rewarding longitudinal progress
+
+    lidar_x_offset_m: float = 0.0          # [CALIBRATE] LiDAR mount X offset from vehicle centerline (m)
+    lidar_y_offset_m: float = 0.10         # [CALIBRATE] LiDAR mount Y offset forward from rear axle (m)
+    lidar_max_age_s: float = 0.10          # Max acceptable age of LaserScan data (s)
+    lidar_max_sync_skew_s: float = 0.10    # Max time skew between Camera frame and LaserScan (s)
+    lidar_timeout_s: float = 0.80          # Safe stop if no valid LiDAR scan received for this long (s)
+    camera_timeout_s: float = 0.25         # Safe stop if no new camera frame received within this time (s)
+    boundary_stale_timeout_s: float = 0.40 # Limit evasion offset if boundary not seen within this time (s)
+    boundary_stop_timeout_s: float = 0.80  # Safe stop if both boundaries remain stale for this long (s)
+    a_brake_max: float = 2.5               # Max deceleration for stopping distance check (m/s²)
+    t_reaction_s: float = 0.10             # System reaction + brake lag time (s)
+
+    @property
+    def max_trajectory_curvature(self) -> float:
+        """Maximum physically achievable path curvature: kappa_max = tan(delta_max) / L."""
+        return math.tan(self.max_steer_rad) / self.wheelbase_m
 
     # ================================================================
     # STATE MACHINE TIMEOUTS
     # ================================================================
-    uncertain_timeout: float = 0.5         # seconds before PREDICTING
-    predicting_timeout: float = 2.0        # seconds before RECOVERY
-    recovery_timeout: float = 3.0          # seconds before E_STOP
+    uncertain_timeout: float = 0.30        # seconds before PREDICTING
+    predicting_timeout: float = 0.40       # seconds in PREDICTING before RECOVERY
+    recovery_timeout: float = 0.80         # seconds in RECOVERY before safe E_STOP
     search_timeout: float = 999.0          # seconds in SEARCH before E_STOP
 
     # State transition thresholds

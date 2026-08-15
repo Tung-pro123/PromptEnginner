@@ -15,10 +15,16 @@ py2_paths = [p for p in sys.path if 'python2.7' in p]
 sys.path = py3_paths + py2_paths
 
 import os
-import rospy
-from sensor_msgs.msg import LaserScan
 import time
 import math
+
+try:
+    import rospy
+    from sensor_msgs.msg import LaserScan
+    HAS_ROS = True
+except ImportError:
+    rospy = None
+    HAS_ROS = False
 
 # Thêm thư mục gốc chứa src vào path để import nếu cần
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

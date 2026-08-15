@@ -127,6 +127,9 @@ class LaneGeometry:
             width_m = width_px / self.cfg.px_per_meter_x
             if self._width_valid(width_m):
                 obs.centerline_poly = center.poly
+                # Synthesize right boundary
+                obs.right_poly = center.poly.copy()
+                obs.right_poly[-1] += width_px / 2.0
                 obs.lane_width_px = width_px
                 obs.lane_width_m = width_m
                 obs.overall_confidence = min(1.0, (left.confidence * 0.5 + center.confidence * 0.5))
@@ -143,6 +146,9 @@ class LaneGeometry:
             width_m = width_px / self.cfg.px_per_meter_x
             if self._width_valid(width_m):
                 obs.centerline_poly = center.poly
+                # Synthesize left boundary
+                obs.left_poly = center.poly.copy()
+                obs.left_poly[-1] -= width_px / 2.0
                 obs.lane_width_px = width_px
                 obs.lane_width_m = width_m
                 obs.overall_confidence = min(1.0, (right.confidence * 0.5 + center.confidence * 0.5))
@@ -155,10 +161,12 @@ class LaneGeometry:
 
         elif has_L:
             # Case 4a: Only left boundary visible
-            # Reconstruct center using previous lane width
             half_w = self._prev_width_px / 2.0
             obs.centerline_poly = left.poly.copy()
             obs.centerline_poly[-1] += half_w  # Shift right by half lane width
+            # Synthesize right boundary
+            obs.right_poly = left.poly.copy()
+            obs.right_poly[-1] += self._prev_width_px
             obs.lane_width_px = self._prev_width_px
             obs.lane_width_m = self._prev_width_px / self.cfg.px_per_meter_x
             obs.overall_confidence = left.confidence * 0.5  # Reduced confidence
@@ -170,6 +178,9 @@ class LaneGeometry:
             half_w = self._prev_width_px / 2.0
             obs.centerline_poly = right.poly.copy()
             obs.centerline_poly[-1] -= half_w  # Shift left by half lane width
+            # Synthesize left boundary
+            obs.left_poly = right.poly.copy()
+            obs.left_poly[-1] -= self._prev_width_px
             obs.lane_width_px = self._prev_width_px
             obs.lane_width_m = self._prev_width_px / self.cfg.px_per_meter_x
             obs.overall_confidence = right.confidence * 0.5
@@ -178,7 +189,12 @@ class LaneGeometry:
 
         elif has_C:
             # Case: Only center line visible (unusual but possible)
+            half_w = self._prev_width_px / 2.0
             obs.centerline_poly = center.poly
+            obs.left_poly = center.poly.copy()
+            obs.left_poly[-1] -= half_w
+            obs.right_poly = center.poly.copy()
+            obs.right_poly[-1] += half_w
             obs.lane_width_px = self._prev_width_px
             obs.lane_width_m = self._prev_width_px / self.cfg.px_per_meter_x
             obs.overall_confidence = center.confidence * 0.8

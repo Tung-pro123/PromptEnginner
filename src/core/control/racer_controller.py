@@ -47,7 +47,7 @@ DEFAULT_CONFIG = {
     # --- Steering (lái) ---
     "STEERING_GAIN": 0.8,          # Hệ số khuếch đại góc lái khi bám line
     "MAX_STEERING": 1.0,           # Giới hạn góc lái tối đa (-1.0 trái ↔ +1.0 phải)
-    "STEERING_OFFSET": 0.0,        # Bù lệch nếu xe bị lệch (calibrate trên xe thật)
+    "STEERING_OFFSET": 0.0,        # Bù lệch nếu xe bị lệch (mặc định 0.0, calibrate theo từng xe)
 
     # --- Timing (thời gian rẽ) ---
     "TURN_DURATION_90_DEG": 1.5,   # Thời gian (giây) để rẽ 90° ở TURN_THROTTLE
@@ -110,8 +110,8 @@ class RacerController:
         except Exception as e:
             self._log(f"Không tìm thấy jetbot library: {e}", level="warn")
 
-        # Mock mode (cho dev/test trên laptop)
-        self._log("Không tìm thấy phần cứng → Chạy ở chế độ MÔ PHỎNG (Mock).", level="warn")
+        # Mock mode (cho dev/test tren laptop)
+        self._log("Khong tim thay phan cung -> Chay o che do MO PHONG (Mock).", level="warn")
         from unittest.mock import Mock
         self.car = Mock()
         self._mock = True
@@ -122,7 +122,8 @@ class RacerController:
 
     def forward(self, speed=None):
         """Đi thẳng với tốc độ cho trước."""
-        speed = speed or self.config["BASE_THROTTLE"]
+        if speed is None:
+            speed = self.config["BASE_THROTTLE"]
         speed = self._clamp_throttle(speed)
         self._set_steering(0.0)
         self._set_throttle(speed)
@@ -138,9 +139,10 @@ class RacerController:
         
         Args:
             steering_value: -1.0 (trái max) → 0.0 (thẳng) → +1.0 (phải max)
-            speed: tốc độ, mặc định BASE_THROTTLE
+            speed: tốc độ, mặc định BASE_THROTTLE (nếu là 0.0 thì giữ nguyên 0.0)
         """
-        speed = speed or self.config["BASE_THROTTLE"]
+        if speed is None:
+            speed = self.config["BASE_THROTTLE"]
         speed = self._clamp_throttle(speed)
         steering_value = self._clamp_steering(steering_value)
         self._set_steering(steering_value)
@@ -291,14 +293,21 @@ class RacerController:
 
     def _log(self, msg, level="info"):
         if HAS_ROS:
-            if level == "warn":
-                rospy.logwarn(msg)
-            elif level == "error":
-                rospy.logerr(msg)
-            else:
-                rospy.loginfo(msg)
+            try:
+                if level == "warn":
+                    rospy.logwarn(msg)
+                elif level == "error":
+                    rospy.logerr(msg)
+                else:
+                    rospy.loginfo(msg)
+            except Exception:
+                pass
         else:
-            print(f"[{level.upper()}] {msg}")
+            try:
+                print(f"[{level.upper()}] {msg}")
+            except UnicodeEncodeError:
+                safe_msg = msg.encode('ascii', errors='backslashreplace').decode('ascii')
+                print(f"[{level.upper()}] {safe_msg}")
 
 
 # ============================================================

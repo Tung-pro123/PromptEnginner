@@ -34,8 +34,8 @@ class StanleyController:
             config: V3Config instance.
         """
         self.k = config.stanley_k
-        self.wheelbase = config.wheelbase
-        self.max_steer_rad = config.max_steer_angle_rad
+        self.wheelbase = getattr(config, 'wheelbase_m', getattr(config, 'wheelbase', 0.14))
+        self.max_steer_rad = getattr(config, 'max_steer_rad', getattr(config, 'max_steer_angle_rad', 0.436))
         self.epsilon = 0.01  # Prevent division by zero at low speed
 
     def compute(self, heading_error, lateral_error_m, curvature, speed):

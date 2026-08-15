@@ -35,8 +35,8 @@ class PurePursuitController:
         Args:
             config: V3Config instance.
         """
-        self.wheelbase = config.wheelbase
-        self.max_steer_rad = config.max_steer_angle_rad
+        self.wheelbase = getattr(config, 'wheelbase_m', getattr(config, 'wheelbase', 0.14))
+        self.max_steer_rad = getattr(config, 'max_steer_rad', getattr(config, 'max_steer_angle_rad', 0.436))
 
     def compute(self, target_point, lookahead_m):
         """Compute steering angle using Pure Pursuit.
