@@ -70,8 +70,19 @@ Jetson/
 ### 1. Tạo Môi Trường Ảo (Chạy 1 lần duy nhất khi mượn xe mới)
 Tránh cài thư viện trực tiếp vào hệ thống của xe để không làm lỗi OpenCV và driver GPU gốc:
 ```bash
-# Tạo môi trường ảo thừa hưởng thư viện hệ thống (OpenCV, CUDA, ROS)
-python3 -m venv --system-site-packages ~/my_env
+# 1. Clone repo
+git clone <repo_url>
+cd Jetson
+
+# 2. Bật LiDAR
+roslaunch jetracer lidar.launch
+
+# 3. Bật Camera (mở terminal mới)
+roslaunch jetracer csi_camera.launch
+
+# 4a. Chạy Speed Track (mở terminal mới)
+cd src/speed_track
+python3 main_speed_track.py
 
 # Kích hoạt môi trường ảo (Cần chạy mỗi khi mở Terminal mới)
 source ~/my_env/bin/activate

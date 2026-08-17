@@ -30,3 +30,6 @@ models/*.onnx
 
 # Restructure script (already ran)
 # restructure.py
+
+# Dataset
+dataset/
