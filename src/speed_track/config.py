@@ -35,26 +35,37 @@ class V3Config:
     # ================================================================
     # Fraction of image height: crop [roi_y_start * H : roi_y_end * H]
     # Wide enough that lane markings aren't clipped during curves
-    roi_y_start: float = 0.30   # [TUNE] skip top 30% (sky / far noise)
+    # [V3.1 Archive] roi_y_start: float = 0.30
+    roi_y_start: float = 0.44   # [TUNE] New calibrated value
     roi_y_end: float = 1.00     # bottom of image
 
     # ================================================================
     # HSV COLOR SEGMENTATION — Red/orange lane markings
     # ================================================================
     # Two hue ranges for wrap-around (red sits at both ends of hue spectrum)
-    hsv_h1_min: int = 0         
-    hsv_h1_max: int = 179       
+    hsv_h1_min: int = 0        
+    hsv_h1_max: int = 179        
     hsv_h2_min: int = 39        
     hsv_h2_max: int = 179       
     
+    # Optional upper bounds for S and V (usually 255, but tunable)
+    hsv_s_max: int = 255        
+    hsv_v_max: int = 255        
+    
     # Near zone (strict - rejects noise)
-    hsv_s_min: int = 100        
-    hsv_v_min: int = 105        
+    # [V3.1 Archive] hsv_s_min = 100, hsv_v_min = 105
+    hsv_s_min: int = 50        
+    hsv_v_min: int = 118        
     
     # Far zone (loose - catches distant faded lines)
+    # [V3.1 Archive] hsv_s_min_far = 50, hsv_v_min_far = 80
     hsv_s_min_far: int = 50     
-    hsv_v_min_far: int = 80     
+    hsv_v_min_far: int = 117     
     hsv_far_y_split: float = 0.55 # Top 55% of image (Y=0 to 264) uses FAR filter (Covers Horizon Scanner 200-260)
+    
+    # LAB Constraint (Optional) to reject non-red colors that pass HSV
+    use_lab_constraint: bool = False   
+    lab_a_min: int = 0        
 
     # Use CLAHE preprocessing for lighting robustness
     use_clahe: bool = False #nếu dùng cân bằng ánh sáng cục bộ thì True
@@ -68,17 +79,17 @@ class V3Config:
 
     # LAB chromaticity constraint (rejects gray/white reflections)
     # In OpenCV LAB: a=128 is neutral, a>128 is red direction.
-    # Red/orange markings have a > ~135; gray floor reflections have a ≈ 128.
-    # [Tắt tạm thời vì video MP4 có thể làm mất kênh màu LAB]
-    use_lab_constraint: bool = False
-    lab_a_min: int = 135        # [TUNE] minimum LAB a-channel for red/orange
+    # [V3.1 Archive] use_lab_constraint: bool = False, lab_a_min: int = 135
+    use_lab_constraint: bool = False   
+    lab_a_min: int = 0        # [TUNE] New calibrated value
 
     # ================================================================
     # MORPHOLOGY — Light filtering only
     # ================================================================
     # OPEN only (erode then dilate) — removes noise dots
     # Do NOT use CLOSE — it connects the dashed center line
-    morph_kernel_size: int = 3
+    # [V3.1 Archive] morph_kernel_size: int = 3
+    morph_kernel_size: int = 5        
     morph_iterations: int = 1
 
     # ================================================================
@@ -113,7 +124,7 @@ class V3Config:
     # ================================================================
     # SLIDING WINDOW LANE DETECTION
     # ================================================================
-    sw_n_windows: int = 12          # number of sliding windows per line
+    sw_n_windows: int = 9           # number of sliding windows per line
     sw_margin: int = 50             # half-width of window (pixels)
     sw_min_pix: int = 30            # minimum pixels to recenter window
     sw_min_peak_height: int = 50    # minimum histogram peak height (increased to avoid noise specks)
@@ -124,7 +135,7 @@ class V3Config:
     # ================================================================
     poly_degree: int = 2
     ransac_residual_threshold: float = 5.0    # pixels
-    ransac_max_trials: int = 50 # có thể tăng lên <= 100
+    ransac_max_trials: int = 15 # có thể tăng lên <= 100
     ransac_min_samples: int = 10
 
     # ================================================================
@@ -187,16 +198,16 @@ class V3Config:
     # STEERING FILTER
     # ================================================================
     max_steer_rate: float = 1.0           # [TUNE] Trả lại 1.0: Không giới hạn tốc độ bẻ lái để vào cua gắt
-    steer_lpf_alpha: float = 1.0          # [TUNE] Trả lại 1.0: Phản hồi vô lăng tức thì, không bị trễ
-    high_speed_steer_gain: float = 1.0    # [V3.1] gain tại max_speed (1.0 = no change, 0.65 = reduce 35%)
+    steer_lpf_alpha: float = 0.85         # [TUNE] Làm mượt vô lăng một chút (0.85) để không giật lắc
+    high_speed_steer_gain: float = 0.65   # [V3.1] Giảm 35% độ nhạy vô lăng khi chạy tốc độ cao (tránh lật xe)
 
     # ================================================================
     # SPEED CONTROL
     # ================================================================
-    max_speed: float = 0.50                # [TUNE] throttle
-    min_speed: float = 0.18                # [TUNE]
-    cruise_speed: float = 0.40             # [TUNE] default straight-line speed
-    a_lat_max: float = 2.0                 # [TUNE] lateral accel limit (m/s²)
+    max_speed: float = 0.80                # [TUNE] Tốc độ BỨT TỐC trên đoạn thẳng
+    min_speed: float = 0.18                # [TUNE] Tốc độ tối thiểu để xe bò
+    cruise_speed: float = 0.45             # [TUNE] Tốc độ DUY TRÌ khi vào cua
+    a_lat_max: float = 2.5                 # [TUNE] Giới hạn gia tốc ngang (2.5 cho phép ôm cua gắt hơn)
     speed_confidence_thresh: float = 0.5   # reduce speed below this confidence
     speed_to_throttle_factor: float = 1.0  # [CALIBRATE] TĂNG HỆ SỐ NÀY ĐỂ XE BỐC HƠN (v(m/s) → throttle)
 
@@ -230,8 +241,8 @@ class V3Config:
     record_video: bool = False             # [TUNE] TẮT QUAY VIDEO ĐỂ XE CHẠY KHÔNG BỊ DELAY (Tăng FPS)
     video_fps: int = 5
     log_csv: bool = True
-    loop_rate: int = 20                    # Hz
-    debug_mode: bool = True                # [V3.1] True = render visualizer, False = skip (faster)
+    loop_rate: int = 30                    # Hz
+    debug_mode: bool = False               # [V3.1] True = render visualizer, False = skip (faster)
 
     # ================================================================
     # ROS TOPICS
@@ -249,7 +260,7 @@ class V3Config:
 
     # Curvature history for oval stability bonus
     curvature_history_size: int = 10       # [V3.1] number of frames to track
-    curvature_stability_bonus: float = 1.15  # [V3.1] +15% speed when curvature stable
+    curvature_stability_bonus: float = 1.0   # [V3.1] +15% speed when curvature stable
     curvature_stability_thresh: float = 0.1  # [V3.1] std threshold for "stable"
 
     # Area heuristic V2
@@ -258,6 +269,9 @@ class V3Config:
 
     # Early Horizon Scanner
     horizon_warning_enabled: bool = True   # [V3.1] Enable scanning above BEV for curves
-    horizon_scan_y_start: int = 200        # scan from y=200
-    horizon_scan_y_end: int = 260          # to y=260
-    horizon_shift_thresh: float = 0.15     # trigger brake if centroid shifts > 15% off center
+    # [V3.1 Archive] horizon_scan_y_start = 200, horizon_scan_y_end = 280
+    horizon_scan_y_start: int = 219        
+    horizon_scan_y_end: int = 379        
+    horizon_angle_thresh: float = 18.00   # trigger brake if line angle > 15 degrees
+    horizon_center_zone: int = 147        # only consider lines within +-71px of center
+    horizon_pix_thresh: int = 50        # min pixels to consider a valid line

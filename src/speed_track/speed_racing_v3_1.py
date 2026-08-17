@@ -85,56 +85,14 @@ from src.speed_track.debug.logger import V3Logger
 # ======================================================================
 
 def make_v31_config():
-    """Create a V3Config with V3.1 performance preset applied.
-
-    All V3 defaults are preserved except where explicitly overridden.
-    Each override is documented with rationale.
+    """Create a V3Config.
+    
+    [V3.1 Update] All performance optimizations, FPS settings, and speed boosts
+    have been permanently moved to config.py to act as a single source of truth.
+    This function now simply returns the default config so Live Calibrator 
+    and other tools can modify it directly.
     """
     cfg = V3Config()
-
-    # ---- FPS Optimization ----
-    cfg.processing_scale = 1.0          # Trả lại phân giải gốc như V3 (640x480) để nhận diện chính xác
-    cfg.debug_mode = False              # Skip visualizer rendering in ROS mode
-    cfg.record_video = False            # No video recording (saves I/O)
-    cfg.loop_rate = 30                  # Allow up to 30 Hz control loop
-
-    # ---- Fix HSV Color Filter (Reject Background Noise) ----
-    # Đã xóa các thông số HSV cứng (0, 59, 92) ở đây để V3.1 dùng chung 
-    # bộ thông số lọc nhiễu gốc cực kỳ sạch của V3 trong config.py!
-    
-    # BẬT Lọc LAB để diệt sạch rác trắng/xám ở vùng Horizon mà không cần kéo HSV quá chặt
-    cfg.use_lab_constraint = True
-    cfg.lab_a_min = 132
-
-    # ---- RANSAC/Window optimization ----
-    cfg.sw_n_windows = 9                # 12 → 9 (sufficient for 240px height)
-    cfg.ransac_max_trials = 15          # 30 → 15 (save 50% RANSAC time, because we now sample only 3 points)
-
-    # ---- Speed boost (Predictive logic allows higher speeds) ----
-    cfg.max_speed = 0.70                # 0.55 → 0.70 (straight line max)
-    cfg.cruise_speed = 0.70             # 0.48 → 0.70
-    cfg.a_lat_max = 2.5                 # 2.0 → 2.5 (RC car can handle more)
-
-    # ---- Speed-adaptive steering ----
-    cfg.high_speed_steer_gain = 0.65    # Reduce steering 35% at max speed
-    cfg.steer_lpf_alpha = 0.85          # Slight smoothing (was 1.0 = raw)
-
-    # ---- Curvature-history speed (Disabled for multi-curve tracks) ----
-    cfg.curvature_history_size = 10     # Track last 10 frames
-    cfg.curvature_stability_bonus = 1.0   # 1.15 → 1.0 (no oval bonus)
-    cfg.curvature_stability_thresh = 0.1  # std threshold
-
-    # ---- Predictive Braking & Horizon Scanner ----
-    # Bật lại Horizon Scanner để phanh sớm cuối đường thẳng.
-    cfg.horizon_warning_enabled = True
-    cfg.horizon_scan_y_start = 215      # Kéo gần lại một chút (200 -> 215) để giữ được màu sắc
-    cfg.horizon_scan_y_end = 260
-    cfg.horizon_shift_thresh = 0.15
-
-    # ---- Area heuristic v2 ----
-    cfg.area_k = 0.15                   # Khôi phục sức mạnh như bản V3
-    cfg.area_deadband = 0.0             # Tắt deadband như V3
-
     return cfg
 
 
@@ -212,6 +170,7 @@ class SpeedRacingV31:
         self.frame_count = 0
         self.fps_timer = time.time()
         self.current_fps = 0.0
+        self.prev_horizon_state = "UNKNOWN"
 
         print(f"=== V3.1.00 initialized ===")
         print(f"  Processing: {self.proc_w}x{self.proc_h} (scale={self.cfg.processing_scale})")
@@ -323,66 +282,164 @@ class SpeedRacingV31:
         # ---- 3. Color segmentation ----
         mask = self.segmenter.process(proc_frame)
 
-        # ---- 3.5. Horizon Scanner (Dự báo Đường Thẳng / Khúc Cua) ----
-        # Giải quyết Lỗi số 4 (Mù màu): Mặc định là UNKNOWN. Chỉ khi NHÌN RÕ vạch và KHÔNG LỆCH thì mới dám báo STRAIGHT.
+        # ---- 3.5. Horizon Scanner (Cơ chế mới: Định nghĩa STRAIGHT bằng sự hiện diện của vạch ở xa) ----
         horizon_state = "UNKNOWN"
         if getattr(cfg, 'horizon_warning_enabled', False):
-            # Scan the horizon band for lane shifts before they enter BEV
-            h_start = int(getattr(cfg, 'horizon_scan_y_start', 215) * pcfg.processing_scale)
-            h_end = int(getattr(cfg, 'horizon_scan_y_end', 260) * pcfg.processing_scale)
+            # Scan độc lập với ROI chính. Lấy tọa độ gốc chưa scale để map 1:1 với Calibrator.
+            h_start_raw = getattr(cfg, 'horizon_scan_y_start', 152)
+            h_end_raw = getattr(cfg, 'horizon_scan_y_end', 234)
             
-            # Ensure indices are valid
-            h_start = max(0, min(h_start, mask.shape[0]))
-            h_end = max(h_start, min(h_end, mask.shape[0]))
+            h_start = max(0, min(h_start_raw, frame.shape[0]))
+            h_end = max(h_start, min(h_end_raw, frame.shape[0]))
             
-            horizon_mask = mask[h_start:h_end, :]
-            
-            # [Hiển thị Debug] Tô màu Tím (Magenta) cho các pixel lọt qua bộ lọc trong vùng Horizon
-            if self.visualizer is not None or self.video_writer is not None:
-                tint = np.zeros_like(frame[h_start:h_end, :])
-                tint[horizon_mask == 255] = [255, 0, 255] # BGR: Magenta
-                frame[h_start:h_end, :] = cv2.addWeighted(frame[h_start:h_end, :], 0.6, tint, 0.4, 0)
-            
-            # Find centroid of white pixels (lane markings) in the horizon
-            M = cv2.moments(horizon_mask)
-            
-            # Vẽ Box của Horizon Scanner lên raw frame để Debug
-            box_color = (0, 255, 0) # Green = an toàn
-            
-            if M["m00"] > 50:  # If enough lane pixels are visible
-                cx = int(M["m10"] / M["m00"])
-                img_center = mask.shape[1] / 2.0
-                shift_ratio = abs(cx - img_center) / mask.shape[1]
+            if h_end > h_start:
+                # Cắt trực tiếp từ ảnh GỐC (frame) chưa bị cắt đen bởi ROI và chưa bị undistort
+                horizon_roi = frame[h_start:h_end, :].copy()
                 
-                # If centroid is shifted > thresh off center, it's a sharp curve ahead
-                if shift_ratio > getattr(cfg, 'horizon_shift_thresh', 0.15):
-                    box_color = (0, 0, 255) # Red = phanh gấp
-                    if cx < img_center:
-                        horizon_state = "CURVE_LEFT"
+                # Làm mờ
+                blur_sz = getattr(cfg, 'morph_kernel_size', 1)
+                if blur_sz % 2 == 0: blur_sz += 1
+                if blur_sz < 1: blur_sz = 1
+                blur = cv2.GaussianBlur(horizon_roi, (blur_sz, blur_sz), 0)
+                
+                # Lọc HSV
+                hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
+                lower = np.array([cfg.hsv_h1_min, cfg.hsv_s_min, cfg.hsv_v_min])
+                upper = np.array([cfg.hsv_h1_max, getattr(cfg, 'hsv_s_max', 255), getattr(cfg, 'hsv_v_max', 255)])
+                h_mask = cv2.inRange(hsv, lower, upper)
+                
+                # Lọc LAB (nếu bật)
+                if getattr(cfg, 'use_lab_constraint', False):
+                    lab = cv2.cvtColor(blur, cv2.COLOR_BGR2LAB)
+                    a_channel = lab[:, :, 1]
+                    l_mask = cv2.inRange(a_channel, getattr(cfg, 'lab_a_min', 0), 255)
+                    h_mask = cv2.bitwise_and(h_mask, l_mask)
+                
+                # Tính số lượng điểm ảnh (Dùng non-zero thay vì moments)
+                pixel_count = cv2.countNonZero(h_mask)
+                
+                # ĐỊNH NGHĨA KHI NÀO LÀ STRAIGHT (CHẾ ĐỘ FITLINE):
+                # 1. Phải NHÌN THẤY đường ở xa (pixel_count > ngưỡng)
+                # 2. Vạch kẻ đường phải SONG SONG với trục dọc (Góc lệch < Angle Thresh)
+                
+                angle_deg = 0.0
+                line_pts = None
+                
+                pix_thresh = getattr(cfg, 'horizon_pix_thresh', 50)
+                
+                if pixel_count > pix_thresh:
+                    contours, _ = cv2.findContours(h_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    if contours:
+                        valid_contours = [c for c in contours if cv2.contourArea(c) > 10]
+                        if valid_contours:
+                            img_center = horizon_roi.shape[1] / 2.0
+                            center_zone = getattr(cfg, 'horizon_center_zone', 120)
+                            
+                            best_contour = None
+                            min_dist = float('inf')
+                            
+                            for c in valid_contours:
+                                M = cv2.moments(c)
+                                if M["m00"] > 0:
+                                    cx = int(M["m10"] / M["m00"])
+                                    dist = abs(cx - img_center)
+                                    
+                                    # Chỉ lấy line trong Center_Zone
+                                    if dist > center_zone:
+                                        continue
+                                        
+                                    if dist < min_dist:
+                                        min_dist = dist
+                                        best_contour = c
+                            
+                            if best_contour is not None:
+                                import math
+                                [vx, vy, x, y] = cv2.fitLine(best_contour, cv2.DIST_L2, 0, 0.01, 0.01)
+                                vx = float(vx[0])
+                                vy = float(vy[0])
+                                x = float(x[0])
+                                y = float(y[0])
+                                
+                                if vy == 0:
+                                    angle_deg = 90.0
+                                else:
+                                    angle_deg = math.degrees(math.atan(abs(vx / vy)))
+                                    
+                                # Tính tọa độ để vẽ đường
+                                h_height = h_end - h_start
+                                top_x = int(x + (0 - y) * (vx / vy)) if vy != 0 else int(x)
+                                bot_x = int(x + (h_height - y) * (vx / vy)) if vy != 0 else int(x)
+                                
+                                top_x = max(-10000, min(10000, top_x))
+                                bot_x = max(-10000, min(10000, bot_x))
+                                line_pts = ((int(top_x), int(h_start)), (int(bot_x), int(h_end)))
+                                
+                                angle_thresh = getattr(cfg, 'horizon_angle_thresh', 15.0) 
+                                
+                                # Ngưỡng góc để quyết định (có Hysteresis nhẹ)
+                                if self.prev_horizon_state == "STRAIGHT":
+                                    effective_thresh = angle_thresh + 2.0
+                                elif self.prev_horizon_state == "CURVE":
+                                    effective_thresh = angle_thresh - 2.0
+                                else:
+                                    effective_thresh = angle_thresh
+                                    
+                                # Nếu góc chéo quá lớn -> CUA
+                                if angle_deg > effective_thresh:
+                                    horizon_state = "CURVE"
+                                    box_color = (0, 0, 255) # Đỏ
+                                else:
+                                    # ĐƯỜNG THẲNG TẮP!
+                                    horizon_state = "STRAIGHT"
+                                    box_color = (0, 255, 0) # Xanh = Phóng
+                            else:
+                                horizon_state = "CURVE"
+                                box_color = (0, 0, 255)
+                        else:
+                            horizon_state = "CURVE"
+                            box_color = (0, 0, 255)
                     else:
-                        horizon_state = "CURVE_RIGHT"
+                        horizon_state = "CURVE"
+                        box_color = (0, 0, 255)
                 else:
-                    # Đã nhìn thấy vạch và vạch thẳng! Đủ điều kiện an toàn để tăng tốc!
-                    horizon_state = "STRAIGHT"
-                    
-                # Vẽ mũi tên chỉ hướng rẽ (từ giữa màn hình chĩa về hướng vạch kẻ đường)
-                center_y = h_start + (h_end - h_start) // 2
-                start_pt = (int(img_center), center_y)
-                end_pt = (cx, center_y)
+                    # Không thấy gì ở xa -> Đường đã uốn cong mất tiêu rồi
+                    horizon_state = "CURVE"
+                    box_color = (0, 0, 255) # Đỏ
                 
-                # Chỉ vẽ mũi tên nếu vạch có xu hướng rẽ rõ ràng, nếu đi thẳng thì vẽ chấm
-                if horizon_state != "STRAIGHT":
-                    cv2.arrowedLine(frame, start_pt, end_pt, box_color, 3, tipLength=0.3)
-                else:
-                    cv2.circle(frame, (cx, center_y), 5, box_color, -1)
+                self.prev_horizon_state = horizon_state
+                
+                # Hiển thị Debug
+                if self.visualizer is not None or self.video_writer is not None:
+                    tint = np.zeros_like(horizon_roi)
+                    tint[h_mask == 255] = [255, 0, 255] # Màu Tím
+                    frame[h_start:h_end, :] = cv2.addWeighted(frame[h_start:h_end, :], 0.6, tint, 0.4, 0)
+                    
+                    # Trục ảnh giữa và Center Zone
+                    img_center = int(frame.shape[1] / 2.0)
+                    center_zone = getattr(cfg, 'horizon_center_zone', 120)
+                    cv2.line(frame, (img_center, h_start), (img_center, h_end), (0, 255, 255), 1)
+                    
+                    left_b = img_center - center_zone
+                    right_b = img_center + center_zone
+                    cv2.line(frame, (left_b, h_start), (left_b, h_end), (128, 128, 128), 1)
+                    cv2.line(frame, (right_b, h_start), (right_b, h_end), (128, 128, 128), 1)
+                    
+                    # Vẽ đường nối các điểm
+                    if line_pts is not None:
+                        cv2.line(frame, line_pts[0], line_pts[1], box_color, 3)
+                    
+                    # Ghi thông số lên khung
+                    cv2.putText(frame, f"Pix:{pixel_count} Angle:{angle_deg:.1f}", (frame.shape[1] - 180, h_start + 20), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 2)
             else:
-                # Không nhìn thấy vạch -> Đổi màu Box sang Vàng cảnh báo
-                box_color = (0, 255, 255) # Yellow = mù/không chắc chắn
+                box_color = (0, 255, 255) # Lỗi khung
                 
             # Vẽ Box viền ngoài của Horizon Scanner và trạng thái
             cv2.rectangle(frame, (0, h_start), (frame.shape[1], h_end), box_color, 2)
             cv2.putText(frame, f"Horizon: {horizon_state}", (10, h_start - 5), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
+            
+            self.prev_horizon_state = horizon_state
 
         # ---- 4. BEV transform ----
         bev_mask = self.bev.warp_to_bev(mask)
@@ -549,8 +606,67 @@ class SpeedRacingV31:
 
         total_frames = 0
         start_time = time.time()
+        
+        cv2.namedWindow('V3.1 TUNER', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('V3.1 TUNER', 400, 700)
+        
+        # Thêm Live Calibrator (FULL)
+        def nothing(x): pass
+        cv2.createTrackbar('H_MIN', 'V3.1 TUNER', self.proc_cfg.hsv_h1_min, 179, nothing)
+        cv2.createTrackbar('S_MIN', 'V3.1 TUNER', self.proc_cfg.hsv_s_min, 255, nothing)
+        cv2.createTrackbar('V_MIN', 'V3.1 TUNER', self.proc_cfg.hsv_v_min, 255, nothing)
+        
+        cv2.createTrackbar('H_MAX', 'V3.1 TUNER', self.proc_cfg.hsv_h1_max, 179, nothing)
+        cv2.createTrackbar('S_MAX', 'V3.1 TUNER', self.proc_cfg.hsv_s_max, 255, nothing)
+        cv2.createTrackbar('V_MAX', 'V3.1 TUNER', self.proc_cfg.hsv_v_max, 255, nothing)
+        
+        cv2.createTrackbar('Blur_Size', 'V3.1 TUNER', self.proc_cfg.morph_kernel_size, 15, nothing)
+        cv2.createTrackbar('ROI_Y(%)', 'V3.1 TUNER', int(self.proc_cfg.roi_y_start * 100), 100, nothing)
+        cv2.createTrackbar('LAB_A_MIN', 'V3.1 TUNER', getattr(self.proc_cfg, 'lab_a_min', 0), 255, nothing)
+        
+        cv2.createTrackbar('Horizon_Y1', 'V3.1 TUNER', self.proc_cfg.horizon_scan_y_start, 480, nothing)
+        cv2.createTrackbar('Horizon_Y2', 'V3.1 TUNER', self.proc_cfg.horizon_scan_y_end, 480, nothing)
+        cv2.createTrackbar('Pix_Thresh', 'V3.1 TUNER', getattr(self.proc_cfg, 'horizon_pix_thresh', 50), 500, nothing)
+        cv2.createTrackbar('Angle_Thresh', 'V3.1 TUNER', int(self.proc_cfg.horizon_angle_thresh), 90, nothing)
+        cv2.createTrackbar('Center_Zone', 'V3.1 TUNER', self.proc_cfg.horizon_center_zone, 320, nothing)
 
         while True:
+            # Cập nhật thông số từ Trackbar vào config (Live Update)
+            try:
+                # 1. HSV
+                self.proc_cfg.hsv_h1_min = cv2.getTrackbarPos('H_MIN', 'V3.1 TUNER')
+                self.proc_cfg.hsv_s_min = cv2.getTrackbarPos('S_MIN', 'V3.1 TUNER')
+                self.proc_cfg.hsv_v_min = cv2.getTrackbarPos('V_MIN', 'V3.1 TUNER')
+                self.proc_cfg.hsv_s_min_far = self.proc_cfg.hsv_s_min
+                self.proc_cfg.hsv_v_min_far = self.proc_cfg.hsv_v_min
+                
+                self.proc_cfg.hsv_h1_max = cv2.getTrackbarPos('H_MAX', 'V3.1 TUNER')
+                self.proc_cfg.hsv_s_max = cv2.getTrackbarPos('S_MAX', 'V3.1 TUNER')
+                self.proc_cfg.hsv_v_max = cv2.getTrackbarPos('V_MAX', 'V3.1 TUNER')
+                
+                # 2. Blur / Filter
+                blur = cv2.getTrackbarPos('Blur_Size', 'V3.1 TUNER')
+                if blur % 2 == 0: blur += 1
+                self.proc_cfg.morph_kernel_size = max(1, blur)
+                self.proc_cfg.roi_y_start = cv2.getTrackbarPos('ROI_Y(%)', 'V3.1 TUNER') / 100.0
+                
+                lab = cv2.getTrackbarPos('LAB_A_MIN', 'V3.1 TUNER')
+                self.proc_cfg.lab_a_min = lab
+                self.proc_cfg.use_lab_constraint = (lab > 0)
+                
+                # 3. Horizon Scanner
+                hy1 = cv2.getTrackbarPos('Horizon_Y1', 'V3.1 TUNER')
+                hy2 = cv2.getTrackbarPos('Horizon_Y2', 'V3.1 TUNER')
+                if hy1 > hy2: hy1, hy2 = hy2, hy1
+                
+                self.proc_cfg.horizon_scan_y_start = hy1
+                self.proc_cfg.horizon_scan_y_end = hy2
+                self.proc_cfg.horizon_pix_thresh = cv2.getTrackbarPos('Pix_Thresh', 'V3.1 TUNER')
+                self.proc_cfg.horizon_angle_thresh = float(cv2.getTrackbarPos('Angle_Thresh', 'V3.1 TUNER'))
+                self.proc_cfg.horizon_center_zone = cv2.getTrackbarPos('Center_Zone', 'V3.1 TUNER')
+            except:
+                pass
+                
             ret, frame = cap.read()
             if not ret:
                 break
@@ -573,6 +689,56 @@ class SpeedRacingV31:
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
+                # Tự động lưu thông số vào config.py
+                print("\n=== SAVING TUNED PARAMETERS TO CONFIG.PY ===")
+                import re
+                config_path = os.path.join(os.path.dirname(__file__), 'config.py')
+                try:
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    # Danh sách các thông số cần update
+                    params_to_update = {
+                        'hsv_h1_min': self.proc_cfg.hsv_h1_min,
+                        'hsv_s_min': self.proc_cfg.hsv_s_min,
+                        'hsv_v_min': self.proc_cfg.hsv_v_min,
+                        'hsv_h1_max': self.proc_cfg.hsv_h1_max,
+                        'hsv_s_max': self.proc_cfg.hsv_s_max,
+                        'hsv_v_max': self.proc_cfg.hsv_v_max,
+                        'morph_kernel_size': self.proc_cfg.morph_kernel_size,
+                        'roi_y_start': self.proc_cfg.roi_y_start,
+                        'use_lab_constraint': self.proc_cfg.use_lab_constraint,
+                        'lab_a_min': getattr(self.proc_cfg, 'lab_a_min', 0),
+                        'horizon_scan_y_start': self.proc_cfg.horizon_scan_y_start,
+                        'horizon_scan_y_end': self.proc_cfg.horizon_scan_y_end,
+                        'horizon_pix_thresh': getattr(self.proc_cfg, 'horizon_pix_thresh', 50),
+                        'horizon_angle_thresh': self.proc_cfg.horizon_angle_thresh,
+                        'horizon_center_zone': self.proc_cfg.horizon_center_zone
+                    }
+                    
+                    for var_name, val in params_to_update.items():
+                        # Regex tìm kiếm khai báo biến: "tên_biến: kiểu = giá_trị" hoặc "tên_biến = giá_trị"
+                        pattern = r"(^\s*" + var_name + r"\s*(?::\s*[a-zA-Z_]+)?\s*=\s*)([^#\n]+)"
+                        
+                        # Định dạng lại giá trị
+                        if isinstance(val, bool):
+                            str_val = str(val) + "   "
+                        elif isinstance(val, float):
+                            str_val = f"{val:.2f}   "
+                        else:
+                            str_val = f"{val}        "
+                            
+                        content = re.sub(pattern, r"\g<1>" + str_val, content, flags=re.MULTILINE)
+                        print(f"Updated {var_name} = {val}")
+                        
+                    with open(config_path, 'w', encoding='utf-8') as f:
+                        f.write(content)
+                        
+                    print("✅ LƯU THÀNH CÔNG VÀO config.py!")
+                except Exception as e:
+                    print(f"❌ Lỗi khi lưu config: {e}")
+                    
+                print("========================================================\n")
                 break
             elif key == ord(' '):
                 cv2.waitKey(0)
