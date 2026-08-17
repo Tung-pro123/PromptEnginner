@@ -23,7 +23,7 @@ import paho.mqtt.client as mqtt
 from sensor_msgs.msg import LaserScan, Image
 from robot.utils.opposite_detector import SimpleOppositeDetector
 
-from src.core.planning.map_navigator import MapNavigator
+from robot.planning.map_navigator import MapNavigator
 
 class RobotState(Enum):
     WAITING_FOR_LINE = 0
