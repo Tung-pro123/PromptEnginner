@@ -124,7 +124,7 @@ class V3Config:
     # ================================================================
     # SLIDING WINDOW LANE DETECTION
     # ================================================================
-    sw_n_windows: int = 12          # number of sliding windows per line
+    sw_n_windows: int = 9           # number of sliding windows per line
     sw_margin: int = 50             # half-width of window (pixels)
     sw_min_pix: int = 30            # minimum pixels to recenter window
     sw_min_peak_height: int = 50    # minimum histogram peak height (increased to avoid noise specks)
@@ -135,7 +135,7 @@ class V3Config:
     # ================================================================
     poly_degree: int = 2
     ransac_residual_threshold: float = 5.0    # pixels
-    ransac_max_trials: int = 50 # có thể tăng lên <= 100
+    ransac_max_trials: int = 15 # có thể tăng lên <= 100
     ransac_min_samples: int = 10
 
     # ================================================================
@@ -241,8 +241,8 @@ class V3Config:
     record_video: bool = False             # [TUNE] TẮT QUAY VIDEO ĐỂ XE CHẠY KHÔNG BỊ DELAY (Tăng FPS)
     video_fps: int = 5
     log_csv: bool = True
-    loop_rate: int = 20                    # Hz
-    debug_mode: bool = True                # [V3.1] True = render visualizer, False = skip (faster)
+    loop_rate: int = 30                    # Hz
+    debug_mode: bool = False               # [V3.1] True = render visualizer, False = skip (faster)
 
     # ================================================================
     # ROS TOPICS
@@ -260,7 +260,7 @@ class V3Config:
 
     # Curvature history for oval stability bonus
     curvature_history_size: int = 10       # [V3.1] number of frames to track
-    curvature_stability_bonus: float = 1.15  # [V3.1] +15% speed when curvature stable
+    curvature_stability_bonus: float = 1.0   # [V3.1] +15% speed when curvature stable
     curvature_stability_thresh: float = 0.1  # [V3.1] std threshold for "stable"
 
     # Area heuristic V2

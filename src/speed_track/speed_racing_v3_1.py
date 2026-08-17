@@ -85,48 +85,14 @@ from src.speed_track.debug.logger import V3Logger
 # ======================================================================
 
 def make_v31_config():
-    """Create a V3Config with V3.1 performance preset applied.
-
-    All V3 defaults are preserved except where explicitly overridden.
-    Each override is documented with rationale.
+    """Create a V3Config.
+    
+    [V3.1 Update] All performance optimizations, FPS settings, and speed boosts
+    have been permanently moved to config.py to act as a single source of truth.
+    This function now simply returns the default config so Live Calibrator 
+    and other tools can modify it directly.
     """
     cfg = V3Config()
-
-    # ---- FPS Optimization ----
-    cfg.processing_scale = 1.0          # Trả lại phân giải gốc như V3 (640x480) để nhận diện chính xác
-    cfg.debug_mode = False              # Skip visualizer rendering in ROS mode
-    cfg.record_video = False            # No video recording (saves I/O)
-    cfg.loop_rate = 30                  # Allow up to 30 Hz control loop
-
-    # ---- Fix HSV Color Filter (Reject Background Noise) ----
-    # Đã xóa các thông số HSV cứng (0, 59, 92) ở đây để V3.1 dùng chung 
-    # bộ thông số lọc nhiễu gốc cực kỳ sạch của V3 trong config.py!
-    
-    # BẬT Lọc LAB để diệt sạch rác trắng/xám ở vùng Horizon mà không cần kéo HSV quá chặt
-    # (Đã chuyển sang config.py)
-    # ---- RANSAC/Window optimization ----
-    cfg.sw_n_windows = 9                # 12 → 9 (sufficient for 240px height)
-    cfg.ransac_max_trials = 15          # 30 → 15 (save 50% RANSAC time, because we now sample only 3 points)
-
-    # ---- Speed boost (Predictive logic allows higher speeds) ----
-    # (Đã chuyển max_speed và cruise_speed về config.py để dễ tune)
-    
-    # ---- Speed-adaptive steering ----
-    # (Đã chuyển về config.py)
-
-    # ---- Curvature-history speed (Disabled for multi-curve tracks) ----
-    cfg.curvature_history_size = 10     # Track last 10 frames
-    cfg.curvature_stability_bonus = 1.0   # 1.15 → 1.0 (no oval bonus)
-    cfg.curvature_stability_thresh = 0.1  # std threshold
-
-    # ---- Predictive Braking & Horizon Scanner ----
-    # Bật lại Horizon Scanner để phanh sớm cuối đường thẳng.
-    # (Các thông số horizon_scan_y_start, horizon_scan_y_end... đã chuyển sang config.py)
-    cfg.horizon_warning_enabled = True
-    # ---- Area heuristic v2 ----
-    cfg.area_k = 0.15                   # Khôi phục sức mạnh như bản V3
-    cfg.area_deadband = 0.0             # Tắt deadband như V3
-
     return cfg
 
 
