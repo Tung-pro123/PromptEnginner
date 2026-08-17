@@ -47,6 +47,11 @@ class SpeedController:
         
         # Smooth Throttle Control
         self.current_throttle = config.min_speed
+        
+        # Straight Boost State (Debounce & Timeout)
+        self._straight_frames = 0
+        self._is_boosting = False
+        self._boost_start_time = 0.0
 
     def compute(self, curvature, confidence, tracking_state, actual_speed=None, horizon_state="STRAIGHT"):
         """Compute target throttle.
@@ -91,12 +96,34 @@ class SpeedController:
 
         # V3.1: Explicit Horizon Control (Phóng nhanh / Đi chậm)
         if horizon_state == "CURVE":
-            # Nhìn thấy cua phía xa -> TRỞ VỀ BÁM ĐƯỜNG BÌNH THƯỜNG (không ép đi chậm, dùng v_curve)
+            # Nhìn thấy cua phía xa -> HỦY BOOST NGAY LẬP TỨC
+            self._straight_frames = 0
+            self._is_boosting = False
             pass
         elif horizon_state == "STRAIGHT" and effective_curvature < 0.3:
-            # Nhìn thấy đường thẳng tắp VÀ gầm xe cũng đã thoát cua -> Đặt mục tiêu tốc độ tối đa!
-            v_target = cfg.max_speed
-        elif horizon_state == "UNKNOWN":
+            # Nhìn thấy đường thẳng tắp VÀ gầm xe cũng đã thoát cua
+            self._straight_frames += 1
+            
+            # Debounce: Đợi đúng 5 frame liên tiếp (0.15s) để xác nhận
+            if self._straight_frames == 5:
+                self._is_boosting = True
+                self._boost_start_time = time.time()
+                print("[BOOST] Đã xác nhận đường thẳng, BẮT ĐẦU TĂNG TỐC!")
+                
+            # Đang trong trạng thái Boost
+            if self._is_boosting:
+                if time.time() - self._boost_start_time <= 5.0:
+                    v_target = cfg.max_speed
+                else:
+                    # Đã quá 5 giây (Timeout) -> Tự động ngắt để đảm bảo an toàn
+                    if self._is_boosting:
+                        print("[BOOST] Hết thời gian an toàn (5s). Ngắt bứt tốc!")
+                        self._is_boosting = False
+        else:
+            # UNKNOWN hoặc mất vạch
+            self._straight_frames = 0
+            self._is_boosting = False
+            
             # [V3.1 Fix] Khi mất vạch ở xa, không nên tin tưởng v_curve (vì kappa có thể = 0 do nhiễu)
             # Thay vào đó, lấy min giữa v_curve và v_safe để tránh phóng nhanh rớt track.
             v_safe = cfg.cruise_speed * 0.8
