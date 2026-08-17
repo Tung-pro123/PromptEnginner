@@ -198,16 +198,16 @@ class V3Config:
     # STEERING FILTER
     # ================================================================
     max_steer_rate: float = 1.0           # [TUNE] Trả lại 1.0: Không giới hạn tốc độ bẻ lái để vào cua gắt
-    steer_lpf_alpha: float = 1.0          # [TUNE] Trả lại 1.0: Phản hồi vô lăng tức thì, không bị trễ
-    high_speed_steer_gain: float = 1.0    # [V3.1] gain tại max_speed (1.0 = no change, 0.65 = reduce 35%)
+    steer_lpf_alpha: float = 0.85         # [TUNE] Làm mượt vô lăng một chút (0.85) để không giật lắc
+    high_speed_steer_gain: float = 0.65   # [V3.1] Giảm 35% độ nhạy vô lăng khi chạy tốc độ cao (tránh lật xe)
 
     # ================================================================
     # SPEED CONTROL
     # ================================================================
-    max_speed: float = 0.50                # [TUNE] throttle
-    min_speed: float = 0.18                # [TUNE]
-    cruise_speed: float = 0.40             # [TUNE] default straight-line speed
-    a_lat_max: float = 2.0                 # [TUNE] lateral accel limit (m/s²)
+    max_speed: float = 0.80                # [TUNE] Tốc độ BỨT TỐC trên đoạn thẳng
+    min_speed: float = 0.18                # [TUNE] Tốc độ tối thiểu để xe bò
+    cruise_speed: float = 0.45             # [TUNE] Tốc độ DUY TRÌ khi vào cua
+    a_lat_max: float = 2.5                 # [TUNE] Giới hạn gia tốc ngang (2.5 cho phép ôm cua gắt hơn)
     speed_confidence_thresh: float = 0.5   # reduce speed below this confidence
     speed_to_throttle_factor: float = 1.0  # [CALIBRATE] TĂNG HỆ SỐ NÀY ĐỂ XE BỐC HƠN (v(m/s) → throttle)
 
