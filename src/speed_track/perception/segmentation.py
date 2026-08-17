@@ -39,22 +39,10 @@ class ColorSegmenter:
         """
         self.cfg = config
 
-        # Build lower/upper bounds for the two hue ranges
+        self.cfg = config
         
-        # Near Zone (Strict)
-        self.lower1_near = np.array([config.hsv_h1_min, config.hsv_s_min, config.hsv_v_min])
-        self.lower2_near = np.array([config.hsv_h2_min, config.hsv_s_min, config.hsv_v_min])
-        
-        # Far Zone (Loose)
-        s_far = getattr(config, 'hsv_s_min_far', config.hsv_s_min)
-        v_far = getattr(config, 'hsv_v_min_far', config.hsv_v_min)
-        self.lower1_far = np.array([config.hsv_h1_min, s_far, v_far])
-        self.lower2_far = np.array([config.hsv_h2_min, s_far, v_far])
-        
-        self.upper1 = np.array([config.hsv_h1_max, 255, 255])
-        self.upper2 = np.array([config.hsv_h2_max, 255, 255])
-        
-        self.far_y_ratio = getattr(config, 'hsv_far_y_split', 0.45)
+        # We will build lower/upper bounds dynamically in process() 
+        # so that Live Calibrator updates take effect instantly!
 
         # Morphology kernel — small, OPEN only
         self.kernel = cv2.getStructuringElement(
@@ -124,20 +112,38 @@ class ColorSegmenter:
         # Step 3: Convert to HSV
         hsv = cv2.cvtColor(frame_preprocessed, cv2.COLOR_BGR2HSV)
 
+        # Build lower/upper bounds dynamically (For Live Calibrator)
+        cfg = self.cfg
+        s_max = getattr(cfg, 'hsv_s_max', 255)
+        v_max = getattr(cfg, 'hsv_v_max', 255)
+        
+        lower1_near = np.array([cfg.hsv_h1_min, cfg.hsv_s_min, cfg.hsv_v_min])
+        lower2_near = np.array([cfg.hsv_h2_min, cfg.hsv_s_min, cfg.hsv_v_min])
+        
+        s_far = getattr(cfg, 'hsv_s_min_far', cfg.hsv_s_min)
+        v_far = getattr(cfg, 'hsv_v_min_far', cfg.hsv_v_min)
+        lower1_far = np.array([cfg.hsv_h1_min, s_far, v_far])
+        lower2_far = np.array([cfg.hsv_h2_min, s_far, v_far])
+        
+        upper1 = np.array([cfg.hsv_h1_max, s_max, v_max])
+        upper2 = np.array([cfg.hsv_h2_max, s_max, v_max])
+        
+        far_y_ratio = getattr(cfg, 'hsv_far_y_split', 0.45)
+
         # Step 4-5: Dual-range thresholding (Adaptive Distance-Based)
         
         # 4a: Calculate Strict Mask for Near Zone
-        mask1_near = cv2.inRange(hsv, self.lower1_near, self.upper1)
-        mask2_near = cv2.inRange(hsv, self.lower2_near, self.upper2)
+        mask1_near = cv2.inRange(hsv, lower1_near, upper1)
+        mask2_near = cv2.inRange(hsv, lower2_near, upper2)
         mask_near = cv2.bitwise_or(mask1_near, mask2_near)
         
         # 4b: Calculate Loose Mask for Far Zone
-        mask1_far = cv2.inRange(hsv, self.lower1_far, self.upper1)
-        mask2_far = cv2.inRange(hsv, self.lower2_far, self.upper2)
+        mask1_far = cv2.inRange(hsv, lower1_far, upper1)
+        mask2_far = cv2.inRange(hsv, lower2_far, upper2)
         mask_far = cv2.bitwise_or(mask1_far, mask2_far)
         
         # 4c: Merge them (Top = Far, Bottom = Near)
-        split_y = int(hsv.shape[0] * self.far_y_ratio)
+        split_y = int(hsv.shape[0] * far_y_ratio)
         mask = mask_near.copy()
         mask[:split_y, :] = mask_far[:split_y, :]
 
@@ -151,12 +157,14 @@ class ColorSegmenter:
             mask = cv2.bitwise_and(mask, lab_mask)
 
         # Step 7: Morphological OPEN only
-        # OPEN = erode then dilate: removes small noise specks
-        # We do NOT use CLOSE here — CLOSE (dilate then erode) would
-        # connect the dashed center line into a continuous band,
-        # which then merges with the boundary lines.
+        # We re-create the kernel dynamically in case blur_size was changed live
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (cfg.morph_kernel_size, cfg.morph_kernel_size)
+        )
+        
         mask = cv2.morphologyEx(
-            mask, cv2.MORPH_OPEN, self.kernel,
+            mask, cv2.MORPH_OPEN, kernel,
             iterations=self.morph_iterations
         )
 

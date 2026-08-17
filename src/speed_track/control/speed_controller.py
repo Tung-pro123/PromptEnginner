@@ -90,13 +90,17 @@ class SpeedController:
         v_target = min(v_curve * stability_bonus, cfg.cruise_speed)
 
         # V3.1: Explicit Horizon Control (Phóng nhanh / Đi chậm)
-        if horizon_state in ["CURVE_LEFT", "CURVE_RIGHT"]:
-            # Nhìn thấy cua gắt phía xa -> TRỞ VỀ BÁM ĐƯỜNG BÌNH THƯỜNG (không ép đi chậm)
-            # Hệ thống sẽ dùng vận tốc bám đường (v_curve) vốn rất ổn định.
+        if horizon_state == "CURVE":
+            # Nhìn thấy cua phía xa -> TRỞ VỀ BÁM ĐƯỜNG BÌNH THƯỜNG (không ép đi chậm, dùng v_curve)
             pass
         elif horizon_state == "STRAIGHT" and effective_curvature < 0.3:
             # Nhìn thấy đường thẳng tắp VÀ gầm xe cũng đã thoát cua -> Đặt mục tiêu tốc độ tối đa!
             v_target = cfg.max_speed
+        elif horizon_state == "UNKNOWN":
+            # [V3.1 Fix] Khi mất vạch ở xa, không nên tin tưởng v_curve (vì kappa có thể = 0 do nhiễu)
+            # Thay vào đó, lấy min giữa v_curve và v_safe để tránh phóng nhanh rớt track.
+            v_safe = cfg.cruise_speed * 0.8
+            v_target = min(v_target, v_safe)
 
         # Step 2: Confidence scaling
         if confidence < cfg.speed_confidence_thresh:
