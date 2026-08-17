@@ -38,7 +38,7 @@ lam01662052827@gmail.com
 \maketitle
 
 \begin{abstract}
-\textbf{Autonomous racing on edge devices requires highly optimized algorithms to overcome the latency constraints inherent to heavy deep learning models. This proposal presents a deterministic navigation architecture tailored for the Jetson AI Racer Challenge, divided into two distinct modules. For the Speed Track, we introduce the V3.1 High-Speed Vision architecture, which fuses Distance-Based CIE-LAB color constraints with Bird's Eye View (BEV) geometry and a Look-Ahead Horizon Automata to decouple continuous steering control from strategic speed planning. For the Smart City challenge, we employ an event-driven Finite State Machine (FSM) combining YOLOv8 instance segmentation and Hough Circle Transform to robustly extract and classify circular traffic signs at complex intersections. By separating tactical trajectory tracking from discrete safety and intersection behaviors, the proposed architecture is designed to improve control stability, optimize lap times, and maintain real-time performance on edge-computing platforms.}
+\textbf{Autonomous racing on edge devices requires highly optimized algorithms to overcome the latency constraints inherent to heavy deep learning models. This proposal presents a deterministic navigation architecture tailored for the Jetson AI Racer Challenge, divided into two distinct modules. For the Speed Track, we introduce the V3.1 High-Speed Vision architecture, which fuses robust Distance-Based Dual-Zone HSV Segmentation with Bird's Eye View (BEV) geometry and a Look-Ahead Horizon Automata to decouple continuous steering control from strategic speed planning. For the Smart City challenge, we employ an event-driven Finite State Machine (FSM) combining YOLOv8 instance segmentation and Hough Circle Transform to robustly extract and classify circular traffic signs at complex intersections. By separating tactical trajectory tracking from discrete safety and intersection behaviors, the proposed architecture is designed to improve control stability, optimize lap times, and maintain real-time performance on edge-computing platforms.}
 \end{abstract}
 
 
@@ -52,7 +52,7 @@ Real-time navigation in autonomous miniature vehicles requires a delicate balanc
 \subsection{Problem Statement \& Research Questions}
 The primary challenge is maintaining stable lane tracking at maximum possible speeds while safely decelerating for curves, alongside navigating complex urban intersections. This requires a reliable perception-to-control pipeline. This proposal addresses the following research questions:
 \begin{enumerate}
-    \item How does fusing Distance-Based CIE-LAB constraints with HSV improve the robustness of look-ahead feature extraction against track illumination anomalies compared to traditional methods?
+    \item How does a Distance-Based Dual-Zone HSV segmentation approach improve the robustness of look-ahead feature extraction against track illumination anomalies compared to uniform thresholds?
     \item How can a Look-Ahead Horizon Automata, when decoupled from tactical steering, optimize lap times without violating the vehicle's lateral acceleration limits?
     \item To what extent does asymmetric Exponential Moving Average (EMA) speed filtering prevent traction loss during rapid state transitions in high-speed racing?
 \end{enumerate}
@@ -63,7 +63,7 @@ Current approaches to autonomous edge navigation generally fall into two categor
 \textbf{Deep Learning (End-to-End \& Segmentation):} Models like ResNet-18 or YOLOv8 offer robust generalization \cite{bojarski2016end}. However, even with TensorRT quantization, they consume significant VRAM and struggle with deterministic state transitions during sudden track variations.
 \textbf{Traditional CV, PID Control \& Sensor-Based Navigation:} Lightweight computer vision remains a practical solution for small-scale autonomous robots because it can support real-time lane tracking with lower computational cost. Shamoushaki and Ghasemi applied Gaussian Blur, masking, and image moments for line detection in differential-drive mobile robots \cite{shamoushaki2024image}. Similarly, Farkh and Aljaloud proposed a vision-navigation line tracking robot where the error between the camera frame center and the detected line contour center is used as input to a PID controller for steering \cite{farkh2023vision}. 
 
-\textit{Identified Gap:} Although previous works demonstrate effective lightweight vision processing and PID control, there is a lack of hybrid architectures that seamlessly integrate the spatial geometry of perspective-transformed vision with a decoupled strategic speed automata for high-speed curve anticipation, nor do they effectively address illumination vulnerabilities using localized color-space constraints.
+\textit{Identified Gap:} Although previous works demonstrate effective lightweight vision processing and PID control, there is a lack of hybrid architectures that seamlessly integrate the spatial geometry of perspective-transformed vision with a decoupled strategic speed automata for high-speed curve anticipation, nor do they effectively address illumination vulnerabilities using dynamically adjusting threshold zones.
 
 % ---------------------------------------------------------
 \section{Proposed Method}
@@ -72,11 +72,11 @@ Our system architecture relies on the duality of continuous control loops for la
 \subsection{Speed Track: High-Speed Vision-Based Navigation (V3.1 Architecture)}
 For the Speed Track challenge, relying solely on end-to-end Deep Learning may introduce latency issues, while basic PID controllers often lack the predictive capability required for competitive high-speed racing. To optimize lap time while maintaining reliable stability, we propose the \textbf{V3.1 Architecture}, a structured, multi-stage hybrid pipeline.
 
-\subsubsection{Dual-Zone Color Space Fusion (HSV \& LAB)}
+\subsubsection{Distance-Based Dual-Zone HSV Segmentation}
 Traditional HSV-based color segmentation can be susceptible to illumination degradation and floor glare in the distal (far) regions of the camera frame. To address this, we implement a \textbf{Distance-Based Dual-Zone Segmentation} mechanism based on the camera's extrinsic pitch angle:
 \begin{itemize}
-    \item \textbf{Proximal Zone (Bottom 45\%):} Utilizes a standard HSV threshold to extract lane markings. The physical shadow of the vehicle stabilizes lighting in this region.
-    \item \textbf{Distal Zone (Top 55\%):} Implements a relaxed HSV boundary paired with a \textbf{CIE-LAB Color Space Constraint}. Specifically, we isolate the $a^{*}$ channel (Green-Red opposition) and enforce an empirically derived threshold $a^{*} > 132$ to target the red/magenta track margins. Because the CIE-LAB conversion is computationally expensive, limiting it strictly to the distal zone optimizes the frame rate (FPS). This geometric intersection filters out neutral white/gray glare that typically bypasses standard HSV filters.
+    \item \textbf{Proximal Zone (Bottom 45\%):} Utilizes a strict HSV threshold to extract lane markings reliably. The physical shadow of the vehicle stabilizes lighting in this region, reducing the need for aggressive filtering.
+    \item \textbf{Distal Zone (Top 55\%):} Implements a dynamically relaxed HSV boundary to capture distant, faded lines under variable track lighting. Because the distal zone is highly susceptible to external glare, the relaxed threshold maintains feature continuity for the Horizon Scanner without introducing computational overhead from heavier color spaces like CIE-LAB.
 \end{itemize}
 
 \subsubsection{Bird's Eye View Transform \& Trajectory Extraction}
