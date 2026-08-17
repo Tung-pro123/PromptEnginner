@@ -97,19 +97,20 @@ The tactical steering angle $\delta(t)$ of the vehicle is regulated continuously
 The integral term ($K_i$) is intentionally omitted to prevent integrator windup during high-speed oscillatory maneuvers.
 
 \subsubsection{Look-Ahead Horizon Scanner \& Fail-Safe Automata}
-To achieve competitive lap times, the vehicle must accelerate proactively on straightaways. To optimize computational efficiency on the Edge device while maximizing predictive capability, we introduce the \textbf{Distal Presence-Based Automata}. This ROI is empirically positioned far ahead of the vehicle ($Y \in [149, 233]$). 
+To achieve competitive lap times, the vehicle must accelerate proactively on straightaways. To optimize computational efficiency on the Edge device while maximizing predictive capability, we introduce the \textbf{Distal Presence-Based Automata}. This ROI is empirically positioned far ahead of the vehicle. 
 
-The geometric properties of perspective projection dictate that a straight track will converge and remain visible near the horizontal center of this high distal window. Conversely, if the track curves sharply, the lane markings will either exit the lateral bounds of the camera's Field of View or shift drastically before reaching this height. Thus, rather than fitting computationally expensive polynomials, the scanner evaluates both the raw pixel mass $\Sigma_{px}$ and its lateral centroid shift $\Delta_{shift}$ within the horizon mask. 
+The geometric properties of perspective projection dictate that a straight track will converge vertically. Thus, rather than fitting computationally expensive polynomials or relying on arbitrary lateral shifts, the scanner isolates the largest lane contour and employs a Least-Squares Linear Regression (\texttt{cv2.fitLine}) to extract its tangent angle $\theta_{line}$ relative to the vertical axis. 
 
-For the vehicle to safely accelerate, the track must not only be visible in the distal window ($\Sigma_{px} > 50$) but the vehicle must also be aligned with the track axis, meaning the centroid must be constrained near the image center ($\Delta_{shift} \leq \tau_{shift}$). Because the distal window is heavily foreshortened, even a minor lateral shift indicates an impending curve. Thus, a tight threshold ($\tau_{shift} = 0.05$) is employed. A dynamic hysteresis band ($\pm 0.01$) is applied to prevent state chatter. The core operational state $S_{horizon}$ evaluates in $O(1)$ complexity as:
+For the vehicle to safely accelerate, the track must be robustly visible ($\Sigma_{px} > 50$) and the line angle must indicate a straight path ($\theta_{line} \leq 18^\circ$). To prevent false positives from transient camera glare or sensor vibration causing state chatter, we implement a \textbf{Debounce Filter} requiring $N=5$ consecutive frames (approx. 0.15s) of validation. The core operational state $S_{horizon}$ evaluates as:
 \begin{equation}
 S_{horizon} = 
 \begin{cases} 
-\text{STRAIGHT}, & \text{if } \Sigma_{px} > 50 \textbf{ AND } \Delta_{shift} \leq 0.05 \text{ (or } 0.04 \text{ from CURVE)} \\
-\text{CURVE}, & \text{otherwise}
+\text{STRAIGHT}, & \text{if } \Sigma_{px} > 50 \textbf{ AND } \theta_{line} \leq 18^\circ \text{ for 5 frames} \\
+\text{CURVE}, & \text{if } \theta_{line} > 18^\circ \\
+\text{UNKNOWN}, & \text{otherwise (Fail-Safe)}
 \end{cases}
 \end{equation}
-Crucially, if lighting anomalies obliterate the distal features (resulting in $\Sigma_{px} \le 50$), the system defaults to the \texttt{CURVE} state rather than erroneously assuming a straight path, mitigating a potential fail-deadly acceleration into an unseen corner.
+Crucially, if lighting anomalies obliterate the distal features (resulting in $\Sigma_{px} \le 50$), the system defaults to the \texttt{UNKNOWN} state rather than erroneously assuming a straight path, mitigating a potential fail-deadly acceleration into an unseen corner.
 
 \subsubsection{Curvature-Aware Speed Controller with Asymmetric LPF}
 The final longitudinal control bridges the steering geometry with the Horizon Scanner's strategic foresight. The baseline target velocity $v_{curve}$ is dictated by centripetal physics, aiming to keep the vehicle within its lateral acceleration limit $a_{lat\_max}$ (which is determined experimentally based on tire-surface friction):
@@ -117,7 +118,7 @@ The final longitudinal control bridges the steering geometry with the Horizon Sc
     v_{curve} = \sqrt{\frac{a_{lat\_max}}{|\kappa_{eff}| + \epsilon}}
 \end{equation}
 
-The Horizon Automata dynamically overrides this baseline. If $S_{horizon} = \text{STRAIGHT}$ and the vehicle's current $\kappa_{eff} < 0.3$ (indicating structural stability on a straightaway), the target speed is increased to $v_{max}$. If $S_{horizon} = \text{CURVE}$, the system reverts to $v_{curve}$. Conversely, if $S_{horizon} = \texttt{UNKNOWN}$, the system clamps the speed to $\min(v_{curve}, v_{safe})$ to prevent hazardous acceleration when track curvature measurements are untrustworthy.
+The Horizon Automata dynamically overrides this baseline. If $S_{horizon} = \text{STRAIGHT}$ and the vehicle's current $\kappa_{eff} < 0.3$ (indicating structural stability on a straightaway), the target speed is increased to $v_{max}$. To guarantee absolute safety during prolonged straightaways, a \textbf{Maximum Boost Timeout} (e.g., 5.0 seconds) is strictly enforced. If the timer expires, or if $S_{horizon}$ transitions to \text{CURVE} or \texttt{UNKNOWN}, the system instantly terminates the boost and safely reverts to $v_{curve}$.
 
 To prevent traction loss during these sudden state transitions, the raw target velocity $v_{target}$ is passed through an Asymmetric Exponential Moving Average (EMA) Low-Pass Filter:
 \begin{equation}
