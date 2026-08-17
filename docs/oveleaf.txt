@@ -103,9 +103,9 @@ For the vehicle to safely accelerate, the track must be robustly visible ($\Sigm
 \begin{equation}
 S_{horizon} = 
 \begin{cases} 
-\text{STRAIGHT}, & \text{if } \Sigma_{px} > 50 \textbf{ AND } \theta_{line} \leq 18^\circ \text{ for 5 frames} \\
+\text{STRAIGHT}, & \text{if } \Sigma_{px} > 50 \text{ \& } \theta_{line} \leq 18^\circ \\
 \text{CURVE}, & \text{if } \theta_{line} > 18^\circ \\
-\text{UNKNOWN}, & \text{otherwise (Fail-Safe)}
+\text{UNKNOWN}, & \text{otherwise}
 \end{cases}
 \end{equation}
 Crucially, if lighting anomalies obliterate the distal features (resulting in $\Sigma_{px} \le 50$), the system defaults to the \texttt{UNKNOWN} state rather than erroneously assuming a straight path, mitigating a potential fail-deadly acceleration into an unseen corner.
