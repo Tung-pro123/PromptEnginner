@@ -9,7 +9,7 @@
 \usepackage{booktabs}
 \usepackage[margin=1in]{geometry}
 \usepackage{abstract}
-\title{\Large \textbf{A Hybrid Edge-Computing Architecture: Predictive Horizon Speed Control and Event-Driven Semantic Automata for Autonomous Racing}}
+\title{\Large \textbf{A Hybrid Edge-Computing Architecture: Predictive Horizon Speed Control and YOLOv8-Hough Semantic Segmentation for Autonomous Racing}}
 \author{
 \textbf{Le Thanh Tung} \\
 \textit{FPT University} \\
@@ -38,7 +38,7 @@ lam01662052827@gmail.com
 \maketitle
 
 \begin{abstract}
-\textbf{Autonomous racing on edge devices requires highly optimized algorithms to overcome the latency constraints inherent to heavy deep learning models. This proposal presents a deterministic navigation architecture tailored for the Jetson AI Racer Challenge, divided into two distinct modules. For the Speed Track, we introduce the V3.1 High-Speed Vision architecture, which fuses Distance-Based CIE-LAB color constraints with Bird's Eye View (BEV) geometry and a Look-Ahead Horizon Automata to decouple continuous steering control from strategic speed planning. For the Smart City challenge, we employ an event-driven Finite State Machine (FSM) utilizing spatial distance metrics and semantic classification to navigate complex traffic intersections. By separating tactical trajectory tracking from discrete safety and intersection behaviors, the proposed architecture is designed to improve control stability, optimize lap times, and maintain real-time performance on edge-computing platforms.}
+\textbf{Autonomous racing on edge devices requires highly optimized algorithms to overcome the latency constraints inherent to heavy deep learning models. This proposal presents a deterministic navigation architecture tailored for the Jetson AI Racer Challenge, divided into two distinct modules. For the Speed Track, we introduce the V3.1 High-Speed Vision architecture, which fuses Distance-Based CIE-LAB color constraints with Bird's Eye View (BEV) geometry and a Look-Ahead Horizon Automata to decouple continuous steering control from strategic speed planning. For the Smart City challenge, we employ an event-driven Finite State Machine (FSM) combining YOLOv8 instance segmentation and Hough Circle Transform to robustly extract and classify circular traffic signs at complex intersections. By separating tactical trajectory tracking from discrete safety and intersection behaviors, the proposed architecture is designed to improve control stability, optimize lap times, and maintain real-time performance on edge-computing platforms.}
 \end{abstract}
 
 
@@ -164,12 +164,12 @@ If sensory occlusion or illumination noise disrupts classification during the ph
 
 Conversely, when the system moves from $S_1$ directly to $S_4$, the vehicle executes a pre-programmed spatial realignment, physically pivoting the camera directly toward the bounding coordinates of the signpost. The system executes a near-field classification, cross-referencing the result against $V_{temp}$. If the outputs match, the vehicle fulfills the instruction. If a structural conflict arises, the real-time classification at $S_4$ takes supreme priority.
 
-\subsection{Perception Multi-Tracking: Traditional Template Matching vs. Quantized YOLOv8-nano}
-To maximize tactical flexibility, this framework supports two independent perception pathways for sign decoding:
+\subsection{Hybrid Semantic Perception: YOLOv8 Segmentation and Hough Circle Transform}
+To achieve robust traffic sign recognition under varying illumination and perspective distortions in the Smart City environment, we implement a hybrid perception pipeline:
 
-\textit{Track A (Traditional Image Arithmetic):} Under $S_1$, the cropped image patch of the sign is compared against structural template directories pre-saved on the disk (e.g., categorized folders: \textit{``No Entry''}, \textit{``Turn Right''}, \textit{``Turn Left''}). The template yielding the highest normalized cross-correlation score defines the category and populates $V_{temp}$.
+\textit{Geometric Extraction via Hough Circle Transform:} Before invoking heavy neural networks, the system leverages the Hough Gradient Method (\texttt{cv2.HoughCircles}) on the pre-processed grayscale image to rapidly detect circular contours. This acts as a highly efficient Region of Interest (ROI) proposal mechanism, ensuring that only geometrically valid candidate regions containing traffic signs are processed further.
 
-\textit{Track B (Modern YOLOv8-nano):} Traditional matrix comparison is replaced by a lightweight object detection model. A specialized dataset featuring localized intersection semantics is collected, annotated, and trained. The resulting architecture executes identical state automata transitions under TensorRT quantization.
+\textit{Semantic Classification via YOLOv8 Segmentation:} Once a circular ROI is validated, a quantized YOLOv8 segmentation model evaluates the localized patch. By operating strictly on the Hough-proposed cropped regions rather than the full camera frame, the YOLOv8 model drastically reduces VRAM consumption and inference latency. This synergistic pipeline ensures high-confidence classification of directional and regulatory signs (e.g., \textit{``Turn Right''}, \textit{``No Entry''}) while preserving the strict real-time constraints of the edge device.
 
 \subsection{Preemptive Traffic Light Handling Hierarchy}
 Across all operational states, traffic light state registration runs with absolute execution priority. Upon converging at the intersection boundary ($S_4$), the system enforces a strict hierarchical policy before evaluating any signpost attributes:
