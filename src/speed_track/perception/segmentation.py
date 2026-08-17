@@ -40,10 +40,21 @@ class ColorSegmenter:
         self.cfg = config
 
         # Build lower/upper bounds for the two hue ranges
-        self.lower1 = np.array([config.hsv_h1_min, config.hsv_s_min, config.hsv_v_min])
+        
+        # Near Zone (Strict)
+        self.lower1_near = np.array([config.hsv_h1_min, config.hsv_s_min, config.hsv_v_min])
+        self.lower2_near = np.array([config.hsv_h2_min, config.hsv_s_min, config.hsv_v_min])
+        
+        # Far Zone (Loose)
+        s_far = getattr(config, 'hsv_s_min_far', config.hsv_s_min)
+        v_far = getattr(config, 'hsv_v_min_far', config.hsv_v_min)
+        self.lower1_far = np.array([config.hsv_h1_min, s_far, v_far])
+        self.lower2_far = np.array([config.hsv_h2_min, s_far, v_far])
+        
         self.upper1 = np.array([config.hsv_h1_max, 255, 255])
-        self.lower2 = np.array([config.hsv_h2_min, config.hsv_s_min, config.hsv_v_min])
         self.upper2 = np.array([config.hsv_h2_max, 255, 255])
+        
+        self.far_y_ratio = getattr(config, 'hsv_far_y_split', 0.45)
 
         # Morphology kernel — small, OPEN only
         self.kernel = cv2.getStructuringElement(
@@ -113,10 +124,22 @@ class ColorSegmenter:
         # Step 3: Convert to HSV
         hsv = cv2.cvtColor(frame_preprocessed, cv2.COLOR_BGR2HSV)
 
-        # Step 4-5: Dual-range thresholding for hue wrap-around
-        mask1 = cv2.inRange(hsv, self.lower1, self.upper1)
-        mask2 = cv2.inRange(hsv, self.lower2, self.upper2)
-        mask = cv2.bitwise_or(mask1, mask2)
+        # Step 4-5: Dual-range thresholding (Adaptive Distance-Based)
+        
+        # 4a: Calculate Strict Mask for Near Zone
+        mask1_near = cv2.inRange(hsv, self.lower1_near, self.upper1)
+        mask2_near = cv2.inRange(hsv, self.lower2_near, self.upper2)
+        mask_near = cv2.bitwise_or(mask1_near, mask2_near)
+        
+        # 4b: Calculate Loose Mask for Far Zone
+        mask1_far = cv2.inRange(hsv, self.lower1_far, self.upper1)
+        mask2_far = cv2.inRange(hsv, self.lower2_far, self.upper2)
+        mask_far = cv2.bitwise_or(mask1_far, mask2_far)
+        
+        # 4c: Merge them (Top = Far, Bottom = Near)
+        split_y = int(hsv.shape[0] * self.far_y_ratio)
+        mask = mask_near.copy()
+        mask[:split_y, :] = mask_far[:split_y, :]
 
         # Step 6: LAB a-channel constraint
         # Rejects neutral gray/white floor reflections that accidentally

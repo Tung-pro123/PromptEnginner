@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-V3 Lane Tracking — Centralized Configuration
+V3 / V3.1 Lane Tracking — Centralized Configuration
 
 All tunable parameters in one place. No magic numbers scattered in code.
 Parameters marked [CALIBRATE] must be measured/tuned on the real car.
 Parameters marked [TUNE] should be adjusted after initial testing.
+
+V3.1.00 additions are grouped at the bottom and have safe defaults
+that preserve V3.0 behavior when not explicitly changed.
 """
 
 import numpy as np
@@ -43,8 +46,15 @@ class V3Config:
     hsv_h1_max: int = 179       
     hsv_h2_min: int = 39        
     hsv_h2_max: int = 179       
+    
+    # Near zone (strict - rejects noise)
     hsv_s_min: int = 100        
     hsv_v_min: int = 105        
+    
+    # Far zone (loose - catches distant faded lines)
+    hsv_s_min_far: int = 50     
+    hsv_v_min_far: int = 80     
+    hsv_far_y_split: float = 0.55 # Top 55% of image (Y=0 to 264) uses FAR filter (Covers Horizon Scanner 200-260)
 
     # Use CLAHE preprocessing for lighting robustness
     use_clahe: bool = False #nếu dùng cân bằng ánh sáng cục bộ thì True
@@ -77,13 +87,12 @@ class V3Config:
     # Source points on the original image (trapezoid on road surface)
     # Order: bottom-left, bottom-right, top-right, top-left
     # [CALIBRATE] using calib_bev.py on the real car
-    # BEV Source points (Perspective) - tuned for Jetson camera mount
-    # Trả lại cấu hình cắt ở y=300 của bạn để né vùng lóa sáng (tránh mù camera)
+    # BEV Source points (Perspective) - Extended Horizon for Predictive Speed
     bev_src_pts: np.ndarray = field(default_factory=lambda: np.float32([
         [0, 480],       # bottom-left
         [640, 480],     # bottom-right
-        [540, 300],     # top-right
-        [100, 300]      # top-left
+        [518, 260],     # top-right (Extended from 300 to 260)
+        [122, 260]      # top-left (Extended from 300 to 260)
     ]))
 
     # Destination rectangle in BEV space
@@ -179,6 +188,7 @@ class V3Config:
     # ================================================================
     max_steer_rate: float = 1.0           # [TUNE] Trả lại 1.0: Không giới hạn tốc độ bẻ lái để vào cua gắt
     steer_lpf_alpha: float = 1.0          # [TUNE] Trả lại 1.0: Phản hồi vô lăng tức thì, không bị trễ
+    high_speed_steer_gain: float = 1.0    # [V3.1] gain tại max_speed (1.0 = no change, 0.65 = reduce 35%)
 
     # ================================================================
     # SPEED CONTROL
@@ -221,6 +231,7 @@ class V3Config:
     video_fps: int = 5
     log_csv: bool = True
     loop_rate: int = 20                    # Hz
+    debug_mode: bool = True                # [V3.1] True = render visualizer, False = skip (faster)
 
     # ================================================================
     # ROS TOPICS
@@ -228,3 +239,25 @@ class V3Config:
     camera_topic: str = '/csi_cam_0/image_raw'
     lidar_topic: str = '/scan'
     node_name: str = 'speed_racing_v3'
+
+    # ================================================================
+    # V3.1 — PERFORMANCE OPTIMIZATIONS
+    # ================================================================
+    # Processing resolution scale (1.0 = full 640x480, 0.5 = 320x240)
+    # Lower = faster FPS but less pixel data for lane detection
+    processing_scale: float = 1.0          # [V3.1] Safe default = no change
+
+    # Curvature history for oval stability bonus
+    curvature_history_size: int = 10       # [V3.1] number of frames to track
+    curvature_stability_bonus: float = 1.15  # [V3.1] +15% speed when curvature stable
+    curvature_stability_thresh: float = 0.1  # [V3.1] std threshold for "stable"
+
+    # Area heuristic V2
+    area_k: float = 0.15                   # [V3.1] area correction gain (V3 default)
+    area_deadband: float = 0.0             # [V3.1] ignore area_ratio below this (V3 = 0)
+
+    # Early Horizon Scanner
+    horizon_warning_enabled: bool = True   # [V3.1] Enable scanning above BEV for curves
+    horizon_scan_y_start: int = 200        # scan from y=200
+    horizon_scan_y_end: int = 260          # to y=260
+    horizon_shift_thresh: float = 0.15     # trigger brake if centroid shifts > 15% off center

@@ -3,20 +3,25 @@ import numpy as np
 import tkinter as tk
 from tkinter import filedialog
 import os
+import sys
 
 def nothing(x):
     pass
 
 def run_calibrator():
     # 1. Chọn file video log
-    root = tk.Tk()
-    root.withdraw() # Ẩn cửa sổ chính
-    print("Hãy chọn file video .avi (VD: speed_racing_v2_...avi) để lấy mẫu màu mặt đường...")
-    video_path = filedialog.askopenfilename(
-        title="Chọn file Video Log",
-        filetypes=[("AVI Video", "*.avi"), ("All Files", "*.*")]
-    )
-    
+    video_path = None
+    if len(sys.argv) > 1:
+        video_path = sys.argv[1]
+    else:
+        root = tk.Tk()
+        root.withdraw() # Ẩn cửa sổ chính
+        print("Hãy chọn file video .avi (VD: speed_racing_v2_...avi) để lấy mẫu màu mặt đường...")
+        video_path = filedialog.askopenfilename(
+            title="Chọn file Video Log",
+            filetypes=[("Video Files", "*.mp4 *.avi"), ("All Files", "*.*")]
+        )
+        
     if not video_path:
         print("Đã hủy chọn file.")
         return
