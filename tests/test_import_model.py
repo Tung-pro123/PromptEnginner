@@ -4,8 +4,8 @@ import sys
 # Đảm bảo đường dẫn gốc của project
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Đường dẫn mặc định trỏ tới một model onnx có sẵn trong thư mục models
-MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "vision_inference.onnx")
+# Đường dẫn mặc định trỏ tới một model onnx có sẵn trong thư mục models (ví dụ yolov5n.onnx hoặc dagger_policy.onnx)
+MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models", "yolov5n.onnx")
 
 def test_onnxruntime():
     print("1. Kiểm tra bằng ONNXRuntime...")

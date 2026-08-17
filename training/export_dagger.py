@@ -3,11 +3,11 @@
 Export DAgger Policy → ONNX
 ============================
 Sau khi đã fine-tune xong, export model PyTorch sang ONNX để:
-  - Deploy với ONNXRuntime (nhanh hơn inference)
-  - Dùng trong main_ai.py pipeline nếu muốn
+  - Deploy với ONNXRuntime / TensorRT (tăng tốc độ suy luận)
+  - Tích hợp vào các pipeline điều khiển tự hành nếu cần
 
 Usage:
-    python3 experiments/export_dagger_model.py
+    python3 training/export_dagger.py
 
 Output: models/dagger_policy.onnx
 """

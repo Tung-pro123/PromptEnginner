@@ -159,6 +159,12 @@ class DAggerController:
         self.dpad_up_pressed  = False
         self.dpad_down_pressed = False
 
+        # --- Dynamic state history (15D) ---
+        self.prev_steer       = 0.0
+        self.prev_throttle    = 0.0
+        self.prev_e_y         = None
+        self.last_loop_time   = rospy.get_time()
+
         # --- Logging ---
         ts       = time.strftime('%Y%m%d_%H%M%S')
         log_path = os.path.join(LOG_DIR, f'session_{ts}.csv')
@@ -166,11 +172,12 @@ class DAggerController:
         self._csv = csv.writer(self._log_file)
         self._csv.writerow([
             'timestamp', 'mode', 'state',
-            'e_y', 'theta_e', 'line_visible',
+            'e_y', 'e_y_dot', 'theta_e', 'curvature', 'line_visible',
             'd_left', 'd_front_left', 'd_front', 'd_front_right', 'd_right',
-            'obstacle_detected',
+            'side_diff', 'min_front_dist', 'obstacle_detected',
+            'prev_steer', 'prev_throttle',
             'cmd_steer', 'cmd_throttle', 'is_safety_stop',
-            'buffer_size', 'train_updates'
+            'buffer_size', 'dodge_count', 'train_updates'
         ])
 
         self._loop_count    = 0
@@ -336,13 +343,23 @@ class DAggerController:
         while not rospy.is_shutdown():
             self._loop_count += 1
             now = rospy.get_time()
+            dt = max(1e-3, now - self.last_loop_time)
+            self.last_loop_time = now
 
             # ---- Cập nhật Perception ----
             self._update_perception()
 
-            # ---- Build state vector S_t ----
-            state_vec, info = extract_state(self.lane_state, self.latest_scan)
-            lidar_zones_normalized = state_vec[3:8]  # d_left...d_right
+            # ---- Build state vector S_t (15D) ----
+            state_vec, info = extract_state(
+                self.lane_state,
+                self.latest_scan,
+                prev_steer=self.prev_steer,
+                prev_throttle=self.prev_throttle,
+                prev_e_y=self.prev_e_y,
+                dt=dt
+            )
+            self.prev_e_y = info['e_y_raw']
+            lidar_zones_normalized = state_vec[5:10]  # d_left...d_right
 
             # ---- State Machine transitions ----
             if self.state == DAggerState.WAITING:
@@ -366,7 +383,7 @@ class DAggerController:
             is_safety    = False
 
             if self.state == DAggerState.AI_CONTROL:
-                # AI dự đoán từ state vector
+                # AI dự đoán từ state vector 15D
                 ai_steer, ai_throttle = self.policy.predict(state_vec)
                 cmd_steer    = ai_steer
                 cmd_throttle = ai_throttle
@@ -388,7 +405,7 @@ class DAggerController:
                     self._last_autosave = self._joy_samples
                     self.policy.save(MODEL_PATH)
                     self.buffer.save_csv(ANCHOR_CSV)
-                    rospy.loginfo(f"[DAgger] Auto-saved ({self._joy_samples} joy samples tổng cộng)")
+                    rospy.loginfo(f"[DAgger] Auto-saved ({self._joy_samples} joy samples tổng cộng, dodge: {self.buffer.dodge_count})")
 
             elif self.state == DAggerState.E_STOP:
                 mode = 'ESTOP'
@@ -408,36 +425,48 @@ class DAggerController:
                 cmd_throttle = safe_throttle
                 is_safety    = is_estop
 
+            # ---- Lưu lịch sử hành động cho bước kế tiếp ----
+            self.prev_steer = cmd_steer
+            self.prev_throttle = cmd_throttle
+
             # ---- Gửi lệnh xuống xe ----
             if self.state in (DAggerState.E_STOP,):
                 self.racer.stop()
             else:
                 self.racer.steer(cmd_steer, cmd_throttle)
 
-            # ---- Ghi log CSV ----
+            # ---- Ghi log CSV 15D ----
             self._csv.writerow([
                 f"{now:.3f}", mode, self.state.name,
                 f"{info['e_y_raw']:.4f}",
+                f"{info['e_y_dot_raw']:.4f}",
                 f"{info['theta_e_raw']:.4f}",
+                f"{info['curvature_raw']:.4f}",
                 int(info['line_visible']),
                 *[f"{d:.3f}" for d in info['lidar_zones_m']],
+                f"{info['side_diff']:.3f}",
+                f"{info['min_front_dist_m']:.3f}",
                 int(info['obstacle_detected']),
+                f"{info['prev_steer']:.4f}",
+                f"{info['prev_throttle']:.4f}",
                 f"{cmd_steer:.4f}", f"{cmd_throttle:.4f}",
                 int(is_safety),
                 len(self.buffer),
+                self.buffer.dodge_count,
                 self.policy.update_count,
             ])
 
             # ---- Print status định kỳ ----
             if self._loop_count % PRINT_STATUS_EVERY == 0:
+                side_str = "LEFT" if info['side_diff'] > 0.15 else ("RIGHT" if info['side_diff'] < -0.15 else "BALANCED")
                 rospy.loginfo(
-                    f"[{self.state.name:15s}] "
+                    f"[{self.state.name:13s}] "
                     f"steer={cmd_steer:+.2f} thr={cmd_throttle:.2f} | "
-                    f"e_y={info['e_y_raw']:+.3f}m  θ={math.degrees(info['theta_e_raw']):+.1f}° | "
+                    f"e_y={info['e_y_raw']:+.3f}m θ={math.degrees(info['theta_e_raw']):+.1f}° κ={info['curvature_raw']:.2f} | "
                     f"obst={'YES' if info['obstacle_detected'] else 'no ':3s} "
-                    f"d_front={info['lidar_zones_m'][2]:.2f}m | "
-                    f"buf={len(self.buffer)} joy_samples={self._joy_samples} "
-                    f"updates={self.policy.update_count} loss={self.policy.last_loss:.4f}"
+                    f"d_front={info['lidar_zones_m'][2]:.2f}m side={side_str:5s} | "
+                    f"buf={len(self.buffer)} (dodge={self.buffer.dodge_count}) "
+                    f"joy={self._joy_samples} updates={self.policy.update_count} loss={self.policy.last_loss:.4f}"
                 )
 
             rate.sleep()
