@@ -9,9 +9,7 @@
 \usepackage{booktabs}
 \usepackage[margin=1in]{geometry}
 \usepackage{abstract}
-
-\title{\Large \textbf{A Hybrid Edge-Computing Architecture for Autonomous Racing: High-Speed Vision-Based Navigation and Event-Driven Semantic Automata}}
-
+\title{\Large \textbf{A Hybrid Edge-Computing Architecture: Predictive Horizon Speed Control and Event-Driven Semantic Automata for Autonomous Racing}}
 \author{
 \textbf{Le Thanh Tung} \\
 \textit{FPT University} \\
