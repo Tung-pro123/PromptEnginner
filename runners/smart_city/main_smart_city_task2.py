@@ -2,27 +2,22 @@
 
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 import rospy
 import cv2
 import numpy as np
 import time
-import json
-import math
 from enum import Enum
-import requests
-import importlib.util
-from datetime import datetime, timezone
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from robot.control.racer_controller import RacerController
 from robot.control.pid_controller_v1 import PIDController
-import paho.mqtt.client as mqtt
 from sensor_msgs.msg import LaserScan, Image
-from robot.utils.opposite_detector import SimpleOppositeDetector
 from src.core.planning.map_navigator import MapNavigator
 
 from src.smart_city.config import SmartCityConfig
-from src.smart_city.perception.dual_lane_detector import DualLaneDetector
+from src.smart_city.perception.seg_dual_lane_detector import SegDualLaneDetector
+from src.smart_city.perception.cnn_sign_detector import CNNSignDetector
 from src.smart_city.perception.crosswalk_detector import CrosswalkDetector
 
 class RobotState(Enum):
@@ -41,19 +36,14 @@ class Direction(Enum):
     NORTH, EAST, SOUTH, WEST = 0, 1, 2, 3
 
 
-class JetBotControllerV2:
+class JetBotControllerTask2:
     def __init__(self):
-        rospy.loginfo("Khởi tạo Smart City Controller v2 (Dual Lane)...")
+        rospy.loginfo("Khởi tạo Smart City Controller Task 2 (Seg Line + CNN Signs)...")
         self.cfg = SmartCityConfig()
 
         self.initialize_hardware()
-        self.initialize_yolo()
-        self.initialize_mqtt()
 
-        self.video_writer = None
-        self.initialize_video_writer()
-
-        # PID Controller (thay vì tự tính)
+        # PID Controller
         self.pid = PIDController(
             kp=self.cfg.pid_kp, ki=self.cfg.pid_ki, kd=self.cfg.pid_kd,
             output_min=-self.cfg.max_correction, output_max=self.cfg.max_correction
@@ -68,32 +58,25 @@ class JetBotControllerV2:
         self.banned_edges = []
         self.plan_initial_route()
 
-        # Perception Modules
-        self.lane_detector = DualLaneDetector(self.cfg)
+        # Modules Nhận diện Kiến trúc mới (Bài toán 2)
+        self.lane_detector = SegDualLaneDetector(self.cfg, model_path="models/yolo_seg_lane.onnx")
+        self.sign_detector = CNNSignDetector(model_path="models/sign_recognizer.onnx", threshold=0.9)
         self.crosswalk_detector = CrosswalkDetector(self.cfg)
-        self.lidar_detector = SimpleOppositeDetector()
 
         # ROS
-        self.latest_scan = None
         self.latest_image = None
-        rospy.Subscriber(self.cfg.lidar_topic, LaserScan, self.lidar_detector.callback)
         rospy.Subscriber(self.cfg.camera_topic, Image, self.camera_callback)
 
         self.DIRECTIONS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
         self.current_direction_index = 1
-        self.ANGLE_TO_FACE_SIGN_MAP = {d: a for d, a in zip(self.DIRECTIONS, [45, -45, -135, 135])}
         
         self.LABEL_TO_DIRECTION_ENUM = {'N': Direction.NORTH, 'E': Direction.EAST, 'S': Direction.SOUTH, 'W': Direction.WEST}
-        self.PRESCRIPTIVE_SIGNS = {'N', 'E', 'W', 'S'}
-        self.PROHIBITIVE_SIGNS = {'NN', 'NE', 'NW', 'NS'}
-        self.DATA_ITEMS = {'qr_code', 'math_problem'}
 
         # State
         self.current_state = None
         self.state_change_time = rospy.get_time()
         self._set_state(RobotState.WAITING_FOR_LINE, initial=True)
         
-        # Thêm biến lưu target_action để rẽ
         self.target_turn_action = None
 
         rospy.loginfo("Khởi tạo hoàn tất.")
@@ -116,20 +99,6 @@ class JetBotControllerV2:
             rospy.logerr("Lỗi đường đi!")
             self._set_state(RobotState.DEAD_END)
 
-    def initialize_video_writer(self):
-        try:
-            fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-            fname = f'smart_city_v2_{int(time.time())}.avi'
-            self.video_writer = cv2.VideoWriter(fname, fourcc, self.cfg.video_fps, 
-                                                (self.cfg.image_width, self.cfg.image_height))
-            if self.video_writer.isOpened():
-                rospy.loginfo(f"Ghi video: {fname}")
-            else:
-                self.video_writer = None
-        except Exception as e:
-            rospy.logerr(f"Lỗi VideoWriter: {e}")
-            self.video_writer = None
-
     def initialize_hardware(self):
         try:
             self.robot = RacerController()
@@ -137,33 +106,6 @@ class JetBotControllerV2:
             from unittest.mock import Mock
             self.robot = Mock()
             rospy.logwarn(f"Mock Robot: {e}")
-
-    def initialize_yolo(self):
-        self.yolo_session = None
-        self.submit_module = self._load_submit_module()
-
-    def _load_submit_module(self):
-        base_dir = os.path.dirname(__file__)
-        path = os.path.join(base_dir, "submit_sign copy.py")
-        if not os.path.exists(path):
-            return None
-        try:
-            spec = importlib.util.spec_from_file_location("submit_sign_copy", path)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
-        except Exception as e:
-            rospy.logerr(f"Lỗi load submit script: {e}")
-            return None
-
-    def initialize_mqtt(self):
-        self.mqtt_client = mqtt.Client()
-        self.mqtt_client.on_connect = lambda c,u,f,rc: rospy.loginfo(f"MQTT: {rc}")
-        try:
-            self.mqtt_client.connect(self.cfg.mqtt_broker, self.cfg.mqtt_port, 60)
-            self.mqtt_client.loop_start()
-        except Exception as e:
-            rospy.logerr(f"Lỗi MQTT: {e}")
 
     def _set_state(self, new_state, initial=False):
         if self.current_state != new_state:
@@ -187,7 +129,6 @@ class JetBotControllerV2:
     def run(self):
         rospy.loginfo("Đợi 3s...")
         time.sleep(3)
-        self.lidar_detector.start_scanning()
         rate = rospy.Rate(self.cfg.loop_rate)
         
         while not rospy.is_shutdown():
@@ -203,18 +144,16 @@ class JetBotControllerV2:
                 if frame is None:
                     continue
 
-                # 1. Phát hiện giao lộ (LiDAR hoặc Crosswalk)
-                lidar_trigger = self.lidar_detector.process_detection()
+                # 1. Phát hiện giao lộ (Crosswalk)
                 crosswalk_trigger = self.crosswalk_detector.detect(frame)
-                
-                # Cooldown cho crosswalk (chỉ tính crosswalk khi cooldown xong)
                 time_since_leave = rospy.get_time() - self.state_change_time
-                if (lidar_trigger) or (crosswalk_trigger and time_since_leave > self.cfg.crosswalk_cooldown_sec):
-                    rospy.loginfo("GIAO LỘ! Đang tiến vào...")
+                
+                if crosswalk_trigger and time_since_leave > self.cfg.crosswalk_cooldown_sec:
+                    rospy.loginfo("GIAO LỘ (Crosswalk)! Đang tiến vào...")
                     self._set_state(RobotState.APPROACHING_INTERSECTION)
                     continue
 
-                # 2. Bám line
+                # 2. Bám line bằng Segmentation
                 res_exec = self.lane_detector.get_execution_center(frame)
                 if res_exec.center_x is not None:
                     error = res_exec.center_x - (self.cfg.image_width / 2)
@@ -234,23 +173,39 @@ class JetBotControllerV2:
                     if self.current_node_id == self.navigator.end_node:
                         self._set_state(RobotState.GOAL_REACHED)
                     else:
-                        # Thay vì rẽ luôn, chuyển sang kiểm tra đèn đỏ/biển báo
-                        # Hiện tại chưa có detect_traffic_light, đi thẳng qua HANDLING_EVENT
-                        # Nếu có AI Traffic Light: self._set_state(RobotState.WAITING_RED_LIGHT)
+                        # Đi vào xử lý biển báo và đèn giao thông
                         self._set_state(RobotState.HANDLING_EVENT)
 
             elif self.current_state == RobotState.HANDLING_EVENT:
-                # Dừng lại xử lý biển báo
                 self.robot.stop()
-                time.sleep(0.5)
                 
-                # Quét biển
-                self.target_turn_action = self.process_signs_and_plan()
+                # Quét biển báo bằng CNN (ONNX/TensorRT)
+                signs_detected = self.sign_detector.detect(self.latest_image)
+                detected_classes = [s["class"] for s in signs_detected]
+                
+                # Ưu tiên 1: Đèn đỏ thì đợi
+                if 'traffic-light-red' in detected_classes:
+                    self._set_state(RobotState.WAITING_RED_LIGHT)
+                    continue
+                
+                # Ưu tiên 2: Xử lý rẽ / cấm
+                self.target_turn_action = self.process_signs_and_plan(detected_classes)
                 
                 if self.target_turn_action is None:
                     self._set_state(RobotState.DEAD_END)
                 else:
                     self._set_state(RobotState.TURNING)
+                    
+            elif self.current_state == RobotState.WAITING_RED_LIGHT:
+                self.robot.stop()
+                
+                # Liên tục kiểm tra xem có đèn xanh chưa
+                signs_detected = self.sign_detector.detect(self.latest_image)
+                detected_classes = [s["class"] for s in signs_detected]
+                
+                if 'traffic-light_green' in detected_classes or 'traffic-light-red' not in detected_classes:
+                    # Đã hết đèn đỏ, quay lại xử lý Event để quyết định rẽ
+                    self._set_state(RobotState.HANDLING_EVENT)
 
             elif self.current_state == RobotState.TURNING:
                 if self.target_turn_action == 'straight':
@@ -278,38 +233,14 @@ class JetBotControllerV2:
                 self.robot.stop()
                 break
 
-            self._record_frame()
             rate.sleep()
             
         self.cleanup()
 
-    def process_signs_and_plan(self):
-        """Xử lý biển báo và tính toán rẽ. Return: 'left', 'right', 'straight', None"""
+    def process_signs_and_plan(self, detected_classes):
+        """Xử lý rẽ dựa trên kết quả CNN."""
         current_direction = self.DIRECTIONS[self.current_direction_index]
-        angle_to_sign = self.ANGLE_TO_FACE_SIGN_MAP.get(current_direction, 0)
         
-        self.turn_robot(angle_to_sign, False)
-        detections = self.detect_with_yolo(self.latest_image)
-        self.turn_robot(-angle_to_sign, False)
-        
-        prescriptive_cmds = {d['class_name'] for d in detections if d['class_name'] in self.PRESCRIPTIVE_SIGNS}
-        prohibitive_cmds = {d['class_name'] for d in detections if d['class_name'] in self.PROHIBITIVE_SIGNS}
-        
-        # Gửi payload lên server
-        for det in detections:
-            payload = {
-                "text": f"Detected: {det.get('class_name')}, conf={det.get('confidence')}",
-                "race": 1,
-                "node_id": int(self.current_node_id) if str(self.current_node_id).isdigit() else self.current_node_id,
-                "submit_at": datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace('+00:00','Z'),
-                "team": self.cfg.team_name if hasattr(self.cfg, 'team_name') else 'Tên đội'
-            }
-            # Dummy HTTP logic (porting from old code)
-            try:
-                headers = {'Content-Type': 'application/json'}
-                requests.post('http://example.com/submit', json=payload, headers=headers, timeout=2)
-            except: pass
-
         while True:
             planned_label = self.navigator.get_next_direction_label(self.current_node_id, self.planned_path)
             if not planned_label:
@@ -317,31 +248,33 @@ class JetBotControllerV2:
             
             planned_action = self.map_absolute_to_relative(planned_label, current_direction)
             
+            # Ưu tiên biển chỉ dẫn cứng
             intended_action = None
-            if 'L' in prescriptive_cmds: intended_action = 'left'
-            elif 'R' in prescriptive_cmds: intended_action = 'right'
-            elif 'F' in prescriptive_cmds: intended_action = 'straight'
+            if 'left' in detected_classes: intended_action = 'left'
+            elif 'right' in detected_classes: intended_action = 'right'
+            elif 'straight' in detected_classes: intended_action = 'straight'
             else: intended_action = planned_action
             
-            is_prohibited = (intended_action == 'straight' and 'NF' in prohibitive_cmds) or \
-                            (intended_action == 'right' and 'NR' in prohibitive_cmds) or \
-                            (intended_action == 'left' and 'NL' in prohibitive_cmds)
+            # Cấm rẽ / Cấm đi thẳng
+            is_prohibited = ('forbidden' in detected_classes) # Nếu muốn tuân thủ chặt hơn, có thể parse biển cấm cụ thể
             
             if is_prohibited:
                 banned_edge = (self.current_node_id, self.planned_path[self.planned_path.index(self.current_node_id)+1])
                 if banned_edge not in self.banned_edges:
                     self.banned_edges.append(banned_edge)
+                
+                # Tính lại đường đi
                 if hasattr(self.navigator, 'find_shortest_path_through_loads'):
                     new_path = self.navigator.find_shortest_path_through_loads(self.current_node_id, self.navigator.end_node, self.banned_edges)
                 else:
                     new_path = self.navigator.find_path(self.current_node_id, self.navigator.end_node, self.banned_edges)
+                
                 if new_path:
                     self.planned_path = new_path
-                    continue
+                    continue # Thử lại với đường mới
                 return None
             
             # Tính toán next_node
-            new_robot_direction = current_direction # simplification
             next_node_id = self.navigator.get_neighbor_by_direction(self.current_node_id, planned_label)
             if next_node_id:
                 self.target_node_id = next_node_id
@@ -358,50 +291,20 @@ class JetBotControllerV2:
         return 'turn_around'
 
     def turn_robot(self, degrees, update_main_direction=True):
-        self.robot.turn_angle(degrees, record_callback=self._record_frame)
+        self.robot.turn_angle(degrees)
         if update_main_direction and degrees % 90 == 0 and degrees != 0:
             num_turns = round(degrees / 90)
             self.current_direction_index = (self.current_direction_index + num_turns + 4) % 4
         time.sleep(0.5)
 
-    def detect_with_yolo(self, image):
-        if image is None or not self.cfg.rf_api_key: return []
-        try:
-            _, img_encoded = cv2.imencode('.jpg', image)
-            files = {'file': ('frame.jpg', img_encoded.tobytes(), 'image/jpeg')}
-            url = f"https://detect.roboflow.com/{self.cfg.rf_model}/{self.cfg.rf_version}"
-            params = {'api_key': self.cfg.rf_api_key}
-            resp = requests.post(url, params=params, files=files, timeout=8)
-            if resp.status_code == 200:
-                return resp.json().get('predictions', [])
-        except: pass
-        return []
-
-    def _record_frame(self):
-        if self.video_writer and self.latest_image is not None:
-            frame = self.latest_image.copy()
-            res_exec = self.lane_detector.get_execution_center(frame)
-            res_look = self.lane_detector.get_lookahead_center(frame)
-            crosswalk = self.crosswalk_detector.detect(frame)
-            
-            frame = self.lane_detector.draw_debug(frame, res_exec, res_look)
-            frame = self.crosswalk_detector.draw_debug(frame, crosswalk)
-            
-            cv2.putText(frame, f"State: {self.current_state.name}", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            self.video_writer.write(frame)
-
     def cleanup(self):
         self.robot.stop()
-        if self.video_writer: self.video_writer.release()
-        self.lidar_detector.stop_scanning()
-        self.mqtt_client.loop_stop()
-        self.mqtt_client.disconnect()
 
 
 if __name__ == '__main__':
-    rospy.init_node('smart_city_v2_node', anonymous=True)
+    rospy.init_node('smart_city_task2_node', anonymous=True)
     try:
-        ctrl = JetBotControllerV2()
+        ctrl = JetBotControllerTask2()
         ctrl.run()
     except rospy.ROSInterruptException:
         pass

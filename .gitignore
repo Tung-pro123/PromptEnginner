@@ -35,3 +35,4 @@ logs/*
 sam_method/*
 
 experiments/weights/*
+experiments/*
