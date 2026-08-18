@@ -51,7 +51,8 @@ try:
     import rospy
     from sensor_msgs.msg import Image, LaserScan
     HAS_ROS = True
-except ImportError:
+except ImportError as e:
+    print(e)
     HAS_ROS = False
     print("WARNING: ROS not found. Running in offline mode.")
 
@@ -184,7 +185,7 @@ class SpeedRacingV31:
         self.latest_image = None
         self.latest_scan = None
 
-        if HAS_ROS and video_path is None:
+        if HAS_ROS and not video_path:
             rospy.init_node('speed_racing_v3_1', anonymous=True)
             rospy.Subscriber(self.cfg.camera_topic, Image, self._cam_cb)
             rospy.Subscriber(self.cfg.lidar_topic, LaserScan, self._lidar_cb)

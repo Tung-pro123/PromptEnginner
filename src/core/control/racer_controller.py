@@ -74,8 +74,9 @@ class RacerController:
     - CSI Camera phía trước
     """
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, i2c_address=0x40):
         self.config = {**DEFAULT_CONFIG, **(config or {})}
+        self.i2c_address = i2c_address
         self.car = None
         self._mock = False
 
@@ -91,7 +92,8 @@ class RacerController:
         # Thử import jetracer (thư viện chính thức NVIDIA)
         try:
             from jetracer.nvidia_racecar import NvidiaRacecar
-            self.car = NvidiaRacecar()
+            # Khởi tạo với i2c_address (thường mạch mở rộng dùng 0x40 thay vì 0x60)
+            self.car = NvidiaRacecar(i2c_address=self.i2c_address)
             self.car.steering = 0.0
             self.car.throttle = 0.0
             self._log("Khởi tạo JetRacer (NvidiaRacecar) thành công.")
