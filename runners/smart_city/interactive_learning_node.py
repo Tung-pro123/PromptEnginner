@@ -5,6 +5,8 @@ import os
 import sys
 import csv
 import glob
+import cv2
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -197,8 +199,14 @@ class InteractiveLearningNode:
                     # Điều khiển xe bằng AI
                     self.robot.steer(pred_steer, pred_throttle)
 
+            # Debug camera
+            if self.latest_image is not None:
+                cv2.imshow("Debug Camera", self.latest_image)
+                cv2.waitKey(1)
+
             rate.sleep()
             
+        cv2.destroyAllWindows()
         if self.csv_file:
             self.csv_file.close()
         self.robot.stop()

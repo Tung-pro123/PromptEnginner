@@ -135,9 +135,15 @@ class ImitationDataCollector:
                 # 3. (Tuỳ chọn) Đẩy steer và throttle xuống /cmd_vel để xe chạy thật
                 # self.robot_controller.steer(self.current_steer, self.current_throttle)
 
+            # Debug camera
+            if self.latest_image is not None:
+                cv2.imshow("Debug Camera", self.latest_image)
+                cv2.waitKey(1)
+
             rate.sleep()
             
         # Cleanup
+        cv2.destroyAllWindows()
         if self.is_recording:
             self.stop_recording()
 
