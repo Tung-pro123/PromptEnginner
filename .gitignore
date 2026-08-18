@@ -33,3 +33,11 @@ models/*.onnx
 
 # Dataset
 dataset/
+logs/*
+sam_method/*
+
+experiments/weights/*
+experiments/*
+raw_dataset/*
+final_dataset/*
+output/*
