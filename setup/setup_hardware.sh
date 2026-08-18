@@ -55,26 +55,34 @@ if [ ! -f "$ROS_MELODIC_SETUP" ]; then
         fi
         
         echo -e "${YELLOW}2. Thiết lập khóa bảo mật apt-key...${NC}"
-        if ! sudo apt-key adv --keyserver 'hkp://keyserver.ubuntu.com:80' --recv-key C1CF6E31E6BADE8868B172B4F42ED0E1 2>&1 | tee -a "$ROS_LOG"; then
-            echo -e "${RED}[ERROR] Thiết lập khóa bảo mật apt-key thất bại!${NC}"
-            echo -e "${RED}Vui lòng kiểm tra kết nối mạng hoặc tường lửa của xe.${NC}"
-            exit 1
+        sudo apt-key adv --keyserver 'hkp://keyserver.ubuntu.com:80' --recv-key C1CF6E31E6BADE8868B172B4F42ED6FBAB17C654 2>&1 | tee -a "$ROS_LOG"
+        if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            # Backup method nếu lệnh trên bị block bởi tường lửa
+            curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | sudo apt-key add -
         fi
         
         echo -e "${YELLOW}3. Cập nhật danh sách gói hệ thống...${NC}"
-        if ! sudo apt-get update 2>&1 | tee -a "$ROS_LOG"; then
+        sudo apt-get update 2>&1 | tee -a "$ROS_LOG"
+        if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo -e "${RED}[ERROR] Cập nhật danh sách gói hệ thống (apt-get update) thất bại!${NC}"
             echo -e "${RED}Vui lòng kiểm tra lại kết nối internet của xe.${NC}"
             exit 1
         fi
         
-        echo -e "${YELLOW}4. Cài đặt ROS Melodic Base và các gói liên quan...${NC}"
-        if ! sudo apt-get install -y ros-melodic-ros-base python-rosdep python-rosinstall python-rosinstall-generator python-wstool build-essential 2>&1 | tee -a "$ROS_LOG"; then
+        echo -e "${YELLOW}4. Sửa lỗi xung đột hệ thống (nếu có) & Cài đặt ROS Base...${NC}"
+        sudo apt --fix-broken install -y
+        sudo apt-get install -y ros-melodic-ros-base python-rosdep python-rosinstall python-rosinstall-generator python-wstool build-essential 2>&1 | tee -a "$ROS_LOG"
+        if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo -e "${RED}[ERROR] Cài đặt các gói ROS thất bại!${NC}"
             echo -e "${RED}Chi tiết lỗi được lưu ở: $ROS_LOG${NC}"
             exit 1
         fi
         
+        if ! command -v rosdep &> /dev/null; then
+            echo -e "${YELLOW}Cài đặt bổ sung công cụ rosdep...${NC}"
+            sudo apt-get install -y python-rosdep 2>> "$ROS_LOG" || sudo pip install -U rosdep
+        fi
+
         if [ ! -f "/etc/ros/rosdep/sources.list.d/20-default.list" ]; then
             echo -e "${YELLOW}5. Khởi tạo cơ sở dữ liệu rosdep...${NC}"
             if ! sudo rosdep init 2>&1 | tee -a "$ROS_LOG"; then
@@ -89,15 +97,16 @@ if [ ! -f "$ROS_MELODIC_SETUP" ]; then
             exit 1
         fi
         
-        ROS_MELODIC_SETUP="/opt/ros/melodic/setup.bash"
-        if [ -f "$ROS_MELODIC_SETUP" ]; then
-            echo -e "${GREEN}[SUCCESS] Đã cài đặt ROS Melodic thành công!${NC}"
+        ROS_SETUP_BASH=$(ls /opt/ros/*/setup.bash 2>/dev/null | head -n 1)
+        if [ -n "$ROS_SETUP_BASH" ]; then
+            ROS_MELODIC_SETUP="$ROS_SETUP_BASH"
+            echo -e "${GREEN}[SUCCESS] Đã cài đặt ROS thành công tại $ROS_MELODIC_SETUP!${NC}"
             # Ghi cấu hình tự động nạp ROS vào file cấu hình terminal .bashrc
-            if ! grep -q "source /opt/ros/melodic/setup.bash" ~/.bashrc; then
-                echo "source /opt/ros/melodic/setup.bash" >> ~/.bashrc
+            if ! grep -q "source $ROS_MELODIC_SETUP" ~/.bashrc; then
+                echo "source $ROS_MELODIC_SETUP" >> ~/.bashrc
             fi
         else
-            echo -e "${RED}[ERROR] Không tìm thấy file setup của ROS sau khi cài đặt tại $ROS_MELODIC_SETUP.${NC}"
+            echo -e "${RED}[ERROR] Không tìm thấy file setup của ROS sau khi cài đặt tại /opt/ros/.${NC}"
             exit 1
         fi
     else
@@ -176,12 +185,24 @@ else
     
     echo -e "${YELLOW}Đang cài đặt các thư viện ROS phụ thuộc trước khi build...${NC}"
     sudo apt-get update
+
+    echo -e "${YELLOW}Đang xử lý xung đột gói Python ROS (nếu có)...${NC}"
+    sudo apt-get install -y --download-only python-rospkg-modules python-rosdistro-modules python-catkin-pkg-modules
+    sudo dpkg -i --force-overwrite /var/cache/apt/archives/python-rospkg-modules_*.deb 2>/dev/null || true
+    sudo dpkg -i --force-overwrite /var/cache/apt/archives/python-rosdistro-modules_*.deb 2>/dev/null || true
+    sudo dpkg -i --force-overwrite /var/cache/apt/archives/python-catkin-pkg-modules_*.deb 2>/dev/null || true
+    sudo apt --fix-broken install -y
     sudo apt-get install -y \
       ros-melodic-nav-msgs \
       ros-melodic-sensor-msgs \
       ros-melodic-geometry-msgs \
+      ros-melodic-cv-bridge \
+      ros-melodic-image-view \
+      ros-melodic-rqt-image-view \
       ros-melodic-tf \
       ros-melodic-tf2 \
+      ros-melodic-tf2-ros \
+      ros-melodic-tf2-geometry-msgs \
       ros-melodic-dynamic-reconfigure \
       ros-melodic-navigation \
       ros-melodic-laser-geometry \
@@ -204,6 +225,9 @@ else
     echo -e "${YELLOW}Cài đặt thư viện Python phụ thuộc (adafruit-platformdetect)...${NC}"
     sudo -H pip install adafruit-platformdetect
     sudo -H pip3 install adafruit-platformdetect
+
+    echo -e "${YELLOW}Cài đặt catkin_pkg và rospkg cho Python 3 (sửa lỗi CMake)...${NC}"
+    sudo -H pip3 install catkin_pkg rospkg empy defusedxml
 
     echo -e "${YELLOW}Đang biên dịch workspace bằng catkin_make...${NC}"
     source "$ROS_MELODIC_SETUP"

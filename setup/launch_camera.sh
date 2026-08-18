@@ -4,6 +4,9 @@
 # LAUNCH CAMERA SCRIPT
 # ==========================================
 
+echo -e "\e[1;33m[1/3] Kiểm tra và cài đặt gói gscam, image-view, rqt-image-view (nếu chưa có)...\e[0m"
+sudo apt-get install -y ros-melodic-gscam ros-melodic-image-view ros-melodic-rqt-image-view
+
 # 1. Source ROS Workspace
 SETUP_BASH="$HOME/catkin_ws/devel/setup.bash"
 if [ -f "$SETUP_BASH" ]; then
