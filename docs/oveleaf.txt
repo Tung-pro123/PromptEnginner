@@ -9,7 +9,8 @@
 \usepackage{booktabs}
 \usepackage[margin=1in]{geometry}
 \usepackage{abstract}
-\title{\Large \textbf{A Hybrid Edge-Computing Architecture: Predictive Horizon Speed Control and YOLOv8-Hough Semantic Segmentation for Autonomous Racing}}
+\usepackage{subcaption}
+\title{\Large \textbf{A Dual-Pipeline Edge Computing Architecture: High-Speed Vision Tracking and Parallel YOLO-SEG Perception for Autonomous Racing}}
 \author{
 \textbf{Le Thanh Tung} \\
 \textit{FPT University} \\
@@ -23,7 +24,7 @@ quyenlothai@gmail.com
 \textit{FPT University} \\
 huynhnhatphuyentuyhoa@gmail.com
 \and
-\textbf{Nguyen Trung Tin} \\
+\textbf{Tran Trung Tin} \\
 \textit{FPT University} \\
 trungtin1218@gmail.com
 \and
@@ -38,12 +39,11 @@ lam01662052827@gmail.com
 \maketitle
 
 \begin{abstract}
-\textbf{Autonomous racing on edge devices requires highly optimized algorithms to overcome the latency constraints inherent to heavy deep learning models. This proposal presents a deterministic navigation architecture tailored for the Jetson AI Racer Challenge, divided into two distinct modules. For the Speed Track, we introduce the V3.1 High-Speed Vision architecture, which fuses robust Distance-Based Dual-Zone HSV Segmentation with Bird's Eye View (BEV) geometry and a Look-Ahead Horizon Automata to decouple continuous steering control from strategic speed planning. For the Smart City challenge, we employ an event-driven Finite State Machine (FSM) combining YOLOv8 instance segmentation and Hough Circle Transform to robustly extract and classify circular traffic signs at complex intersections. By separating tactical trajectory tracking from discrete safety and intersection behaviors, the proposed architecture is designed to improve control stability, optimize lap times, and maintain real-time performance on edge-computing platforms.}
+\textbf{Autonomous racing on edge devices requires highly optimized algorithms to overcome the latency constraints inherent to heavy deep learning models. This proposal presents a deterministic navigation architecture tailored for the Jetson AI Racer Challenge, divided into two distinct modules. For the Speed Track, we introduce the V3.1 High-Speed Vision architecture, which fuses robust Distance-Based Dual-Zone HSV Segmentation with Bird's Eye View (BEV) geometry and a Look-Ahead Horizon Automata to decouple continuous steering control from strategic speed planning. For the Smart City challenge, we evaluate two autonomous control approaches: a deterministic hard-algorithm FSM and End-to-End Imitation Learning driven by a parallel perception pipeline utilizing YOLO-SEG for drivable area extraction and a hybrid color-AI module for traffic sign recognition. By separating tactical trajectory tracking from discrete safety and intersection behaviors, the proposed architecture is designed to improve control stability, optimize lap times, and maintain real-time performance on edge-computing platforms.}
 \end{abstract}
 
-
 \vspace{1em}
-\noindent \textbf{Keywords:} Autonomous Racing, Bird's Eye View, PID Control, Look-Ahead Automata, Edge AI.
+\noindent \textbf{Keywords:} Autonomous Racing, Bird's Eye View, PID Control, YOLO-SEG, Imitation Learning, Edge AI.
 
 % ---------------------------------------------------------
 \section{Introduction \& Motivation}
@@ -74,9 +74,10 @@ For the Speed Track challenge, relying solely on end-to-end Deep Learning may in
 
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=\linewidth]{speed_track_v3_1_arch.png}
-    \caption{The proposed V3.1 High-Speed Vision pipeline, decoupling tactical PID steering from strategic Horizon Speed Control.}
-    \label{fig:speed_track_arch}
+    % Nhớ upload ảnh sơ đồ mà bạn đã vẽ lên Overleaf và đổi tên file ở dưới cho khớp nhé!
+    \includegraphics[width=\linewidth]{sp.drawio.png}
+    \caption{The overall system architecture of the autonomous racing vehicle. The system is composed of three main pipelines: (1) \textbf{Perception}, which handles perspective transformation, morphological color filtering, and parallelizes lane feature extraction with distant predictive scanning (Horizon Scanner) using a \textbf{shared binary mask} to minimize computational overhead; (2) \textbf{Estimation}, utilizing temporal filtering and a finite state machine to maintain robust lane tracking under partial occlusions; and (3) \textbf{Control}, generating lateral and longitudinal actuation commands based on Pure Pursuit kinematics, a geometric area heuristic, and curvature-dependent speed profiles.}
+    \label{fig:speed_track_v3_1_arch}
 \end{figure}
 
 \subsubsection{Distance-Based Dual-Zone HSV Segmentation}
@@ -88,23 +89,64 @@ Traditional HSV-based color segmentation can be susceptible to illumination degr
 
 \subsubsection{Bird's Eye View Transform \& Trajectory Extraction}
 The segmented binary mask undergoes a Perspective Transform to generate a Bird's Eye View (BEV), geometrically aligning the lane markings to be approximately parallel. A Histogram-based Sliding Window algorithm extracts the spatial coordinates of the lane.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}[t]{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth, height=3.5cm]{raw.png}
+        \caption{Raw Camera Input}
+        \label{fig:raw}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth, height=3.5cm]{hsv.png}
+        \caption{Distance-Based HSV Mask}
+        \label{fig:hsv}
+    \end{subfigure}
+    
+    \vspace{0.3cm} % Khoảng cách giữa 2 hàng
+    
+    \begin{subfigure}[t]{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth, height=3.5cm]{bev.png}
+        \caption{BEV \& Sliding Window}
+        \label{fig:bev}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth, height=3.5cm]{horizon.png}
+        \caption{Horizon Scanner Predictor}
+        \label{fig:horizon}
+    \end{subfigure}
+    
+    \caption{Visual pipeline of the V3.1 architecture showing sequential processing stages: extracting tactical trajectory via BEV and strategic predictive tangent via Horizon Scanner.}
+    \label{fig:perception_results}
+\end{figure}
+
 Instead of merely calculating a static Cross-Track Error (CTE), the system derives the localized track curvature $\kappa$ using a second-order polynomial fit. The pixel-space coordinates are first converted into physical metric space ($x_m, y_m$) using camera-specific extrinsic scaling factors ($S_x, S_y$) to ensure physical validity:
 \begin{equation}
     x_m = A y_m^2 + B y_m + C \implies \kappa = \frac{|2A|}{(1 + (2A y_m + B)^2)^{3/2}}
 \end{equation}
 This effective curvature $\kappa_{eff}$ represents the geometric track curvature in metric coordinates (1/m) and is buffered over a short rolling temporal window ($N=3$ frames) to suppress high-frequency noise while minimizing control delay.
 
-\subsubsection{Continuous PID Steering Control}
+\subsubsection{Continuous PID Steering Control \& Geometric Area Heuristic}
 The tactical steering angle $\delta(t)$ of the vehicle is regulated continuously by a Proportional-Integral-Derivative (PID) controller. The Cross-Track Error $e(t)$ is calculated as the lateral deviation from the desired lane center in the BEV space. To improve curve tracking, we introduce a curvature feed-forward term:
 \begin{equation}
     \delta(t) = K_p \cdot e(t) + K_d \cdot \frac{de(t)}{dt} + K_{ff} \cdot \kappa_{eff}
 \end{equation}
 The integral term ($K_i$) is intentionally omitted to prevent integrator windup during high-speed oscillatory maneuvers.
 
-\subsubsection{Look-Ahead Horizon Scanner \& Fail-Safe Automata}
+To further prevent catastrophic tracking failures (e.g., steering lock when line features are momentarily lost), the filtered PID output is fused with a geometric \textbf{Area Heuristic}. This mechanism evaluates the differential pixel area between the left and right lane halves. Crucially, the Area Heuristic is strictly gated by the system's Tracking State Machine—deactivating during \texttt{PREDICTING} or \texttt{RECOVERY} states—to avoid unbounded error accumulation and ensure the steering low-pass filter maintains internal state synchronization.
+
+\subsubsection{Look-Ahead Horizon Scanner \& Shared Mask Optimization}
 To achieve competitive lap times, the vehicle must accelerate proactively on straightaways. To optimize computational efficiency on the Edge device while maximizing predictive capability, we introduce the \textbf{Distal Presence-Based Automata}. This ROI is empirically positioned far ahead of the vehicle. 
 
-The geometric properties of perspective projection dictate that a straight track will converge vertically. Thus, rather than fitting computationally expensive polynomials or relying on arbitrary lateral shifts, the scanner isolates the largest lane contour and employs a Least-Squares Linear Regression (\texttt{cv2.fitLine}) to extract its tangent angle $\theta_{line}$ relative to the vertical axis. 
+Rather than performing a redundant and computationally expensive color space conversion (HSV) for this distant ROI, our architecture implements a \textbf{Shared Binary Mask} optimization. The Horizon Scanner extracts its processing region directly from the dual-zone semantic mask already generated by the primary color segmenter. This parallelization eliminates duplicate morphological operations and significantly reduces CPU overhead, directly improving the system's real-time Frame Per Second (FPS).
+
+The geometric properties of perspective projection dictate that a straight track will converge vertically. Thus, rather than fitting computationally expensive polynomials or relying on arbitrary lateral shifts, the scanner isolates the largest lane contour from the shared mask and employs a Least-Squares Linear Regression (\texttt{cv2.fitLine}) to extract its tangent angle $\theta_{line}$ relative to the vertical axis. 
 
 For the vehicle to safely accelerate, the track must be robustly visible ($\Sigma_{px} > 50$) and the line angle must indicate a straight path ($\theta_{line} \leq 18^\circ$). To prevent false positives from transient camera glare or sensor vibration causing state chatter, we implement a \textbf{Debounce Filter} requiring $N=5$ consecutive frames (approx. 0.15s) of validation. The core operational state $S_{horizon}$ evaluates as:
 \begin{equation}
@@ -123,7 +165,7 @@ The final longitudinal control bridges the steering geometry with the Horizon Sc
     v_{curve} = \sqrt{\frac{a_{lat\_max}}{|\kappa_{eff}| + \epsilon}}
 \end{equation}
 
-The Horizon Automata dynamically overrides this baseline. If $S_{horizon} = \text{STRAIGHT}$ and the vehicle's current $\kappa_{eff} < 0.3$ (indicating structural stability on a straightaway), the target speed is increased to $v_{max}$. To guarantee absolute safety during prolonged straightaways, a \textbf{Maximum Boost Timeout} (e.g., 5.0 seconds) is strictly enforced. If the timer expires, or if $S_{horizon}$ transitions to \text{CURVE} or \texttt{UNKNOWN}, the system instantly terminates the boost and safely reverts to $v_{curve}$.
+The Horizon Automata dynamically overrides this baseline. If $S_{horizon} = \text{STRAIGHT}$ and the vehicle's current $\kappa_{eff} < 0.3$ (indicating structural stability on a straightaway), the target speed is increased to $v_{max}$. To guarantee absolute safety during prolonged straightaways, a \textbf{Maximum Boost Timeout} (e.g., 5.0 seconds) is strictly enforced. Furthermore, to prevent sudden traction loss (wheel slip) upon entering the boost state, a \textbf{Linear Ramp-up} algorithm is applied during the first 1.0 second, gradually interpolating the velocity toward $v_{max}$. If the timer expires, or if $S_{horizon}$ transitions to \text{CURVE} or \texttt{UNKNOWN}, the system instantly terminates the boost and safely reverts to $v_{curve}$.
 
 To prevent traction loss during these sudden state transitions, the raw target velocity $v_{target}$ is passed through an Asymmetric Exponential Moving Average (EMA) Low-Pass Filter:
 \begin{equation}
@@ -131,59 +173,38 @@ To prevent traction loss during these sudden state transitions, the raw target v
 \end{equation}
 We apply $\alpha = 0.05$ for acceleration and $\alpha = 0.30$ for deceleration. Under a loss of track condition (Emergency Stop), the filter is bypassed entirely ($\alpha = 1.0$) to facilitate rapid cessation of movement.
 
-
 % ---------------------------------------------------------
-\section{Approach 3: Smart City Perception and Event-Driven Intersection Automata}
+\section{Smart City: Parallel Perception and Autonomous Control Architectures}
+The ``Smart City'' navigation challenge requires the vehicle to handle complex urban scenarios, including traffic signs, pedestrian crosswalks, and intersecting lanes. To address this, our system is structured around a unified, parallel perception pipeline that feeds into one of two distinct control architectures.
 
-The ``Smart City'' navigation challenge demands a highly reliable cognitive workflow to handle complex structural road scenes containing traffic signs and signal lights. To preserve computational bandwidth on the edge platform, we formalize this task into a discrete Finite State Machine (FSM) governed by a multi-variable matrix: spatial distance and visual semantic classification.
+\begin{figure*}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{perception_pipeline.jpg}
+    \caption{Architecture of the Parallel Perception and Autonomous Control Pipeline.}
+    \label{fig:smart_city_pipeline}
+\end{figure*}
 
-\subsection{State Space Taxonomy and Core Topology}
-The behavioral control of the vehicle at any intersection is dynamically mapped by monitoring two environmental vectors: Object Distance ($D \in \{\text{Far}, \text{Near}\}$) and Sign Attributes ($S \in \{\text{Position Known}, \text{Type Known}\}$). This combinatoric matrix yields four discrete operational states:
+
+\subsection{Parallel Hybrid Perception Pipeline}
+To ensure robust environmental awareness on the edge device, two perception algorithms execute concurrently in real-time:
+
+\textbf{1. YOLO-SEG for Topological Segmentation and Lane Tracking:} 
+We deploy a quantized YOLO-SEG (Instance Segmentation) model explicitly trained to segment three primary classes: Left Lane, Right Lane, and Pedestrian Crosswalks. 
 \begin{itemize}
-    \item \textbf{State 1 ($S_1$: Far + Type Known):} The vehicle is physically distant from the intersection but successfully extracts the classification type or semantic meaning of the signpost.
-    \item \textbf{State 2 ($S_2$: Near + Position Known):} The vehicle has advanced close to the intersection, but due to severe perspective distortion, glare, or cropping, the camera can only track the physical coordinates/side of the signpost without verifying its category.
-    \item \textbf{State 3 ($S_3$: Far + Structural Baseline):} The exploratory starting state. The vehicle defaults to continuous PID lane keeping while continuously scanning the look-ahead horizon for upcoming traffic signs or light poles.
-    \item \textbf{State 4 ($S_4$: Near + Type Known):} The ultimate target state ($\geq 90\%$ spatial probability threshold). The vehicle is positioned precisely at the intersection node boundary, facing the signpost for final validation.
+    \item \textit{Drivable Area \& Trajectory:} The intersection area between the detected left and right lanes delineates the drivable path. Once this mask is generated, the system applies the geometric line-tracking algorithm—previously developed for the Speed Track challenge—to execute continuous, stable lane-keeping.
+    \item \textit{Spatial Decision Anchors:} The segmented pedestrian crosswalk serves as a critical spatial marker. Its physical coordinates in the camera frame indicate the exact position where the vehicle must initiate a decision-making sequence (e.g., executing a left turn, right turn, or stop).
 \end{itemize}
 
-\subsection{Automata Transition Mechanics and Memory Registers}
-The operational workflow is systematically engineered to enforce convergence toward State 4. The structural lifecycle is formalized as follows:
-\begin{equation}
-S_3 \longrightarrow \{S_1 \text{ or } S_2\} \longrightarrow S_4
-\end{equation}
+\textbf{2. Hybrid Traffic Sign Detection:} 
+Running in parallel with the YOLO-SEG model, the traffic sign detection system utilizes a two-stage hybrid approach. First, a deterministic color-filtering algorithm rapidly isolates Regions of Interest (ROI) based on specific hue boundaries. Subsequently, a lightweight AI classification model re-evaluates these proposed regions to verify the semantic meaning of the sign. This synergistic combination drastically reduces false positives while minimizing computational load.
 
-As shown in Fig.~\ref{fig:smart_city_fsm}, the vehicle starts from the exploratory baseline state $S_3$, then transitions through either far-field semantic recognition ($S_1$) or near-field positional tracking ($S_2$), before reaching the final validation state $S_4$ at the intersection boundary.
+\subsection{Control Approach 1: Deterministic Hard Algorithm (Modular Pipeline)}
+The first control methodology relies on explicit, hard-coded algorithms to compute the \texttt{steer} and \texttt{throttle} outputs for all specific scenarios. 
+In this modular architecture, the parallel perception pipeline acts purely as a sensory input to a central decision-making unit. For example, under normal conditions, the vehicle follows the segmented lane path using the established PID-based line tracking algorithm. However, upon reaching the spatial anchor (pedestrian crosswalk) with a recognized ``Turn Right'' sign, the control algorithm overrides the continuous PID controller. It dictates a hard-coded sequence of fixed steering angles and throttles to execute the turn deterministically. This approach guarantees safety, high predictability, and straightforward debugging (fail-closed mechanics).
 
-\begin{figure}[htbp]
-    \centering
-    \includegraphics[width=\linewidth]{721144236_4538574843132885_8422374236532373294_n.png}
-    \caption{State space transition diagram for Smart City intersection automata.}
-    \label{fig:smart_city_fsm}
-\end{figure}
-
-Each individual state triggers a unique scheduling loop:
-
-In $S_3$, the vehicle performs normal lane-tracking operations. Once a peripheral object is identified, the system transitions to either $S_1$ or $S_2$. 
-
-When transitioning into $S_1$, the system processes the far-field visual data and instantiates a dynamic temporary guidance register, denoted as $V_{temp}$. The vehicle maintains its lane tracking sequence until the camera and localized topological node-detection algorithms signal arrival at the intersection entry boundary. 
-
-If sensory occlusion or illumination noise disrupts classification during the physical approach, the system falls back to $S_2$. In this fail-safe phase, the vehicle bypasses real-time classification and forces navigation commands by extracting the historical direction stored inside $V_{temp}$.
-
-Conversely, when the system moves from $S_1$ directly to $S_4$, the vehicle executes a pre-programmed spatial realignment, physically pivoting the camera directly toward the bounding coordinates of the signpost. The system executes a near-field classification, cross-referencing the result against $V_{temp}$. If the outputs match, the vehicle fulfills the instruction. If a structural conflict arises, the real-time classification at $S_4$ takes supreme priority.
-
-\subsection{Hybrid Semantic Perception: YOLOv8 Segmentation and Hough Circle Transform}
-To achieve robust traffic sign recognition under varying illumination and perspective distortions in the Smart City environment, we implement a hybrid perception pipeline:
-
-\textit{Geometric Extraction via Hough Circle Transform:} Before invoking heavy neural networks, the system leverages the Hough Gradient Method (\texttt{cv2.HoughCircles}) on the pre-processed grayscale image to rapidly detect circular contours. This acts as a highly efficient Region of Interest (ROI) proposal mechanism, ensuring that only geometrically valid candidate regions containing traffic signs are processed further.
-
-\textit{Semantic Classification via YOLOv8 Segmentation:} Once a circular ROI is validated, a quantized YOLOv8 segmentation model evaluates the localized patch. By operating strictly on the Hough-proposed cropped regions rather than the full camera frame, the YOLOv8 model drastically reduces VRAM consumption and inference latency. This synergistic pipeline ensures high-confidence classification of directional and regulatory signs (e.g., \textit{``Turn Right''}, \textit{``No Entry''}) while preserving the strict real-time constraints of the edge device.
-
-\subsection{Preemptive Traffic Light Handling Hierarchy}
-Across all operational states, traffic light state registration runs with absolute execution priority. Upon converging at the intersection boundary ($S_4$), the system enforces a strict hierarchical policy before evaluating any signpost attributes:
-\begin{enumerate}
-    \item \textbf{Red Light Assertion:} The FSM instantly overrides steering commands and triggers immediate braking. The vehicle remains locked in a stationary read loop. Sign verification is suppressed until a Green light condition is met.
-    \item \textbf{Green Light Clearance:} The vehicle instantly transitions to sign-alignment, cross-references the semantic classification with $V_{temp}$, and executes the directional trajectory.
-\end{enumerate}
+\subsection{Control Approach 2: End-to-End Imitation Learning}
+As an advanced alternative to manual rule-based programming, the second approach employs Imitation Learning (Behavioral Cloning) to govern vehicle dynamics. 
+Rather than explicitly defining logic for each intersection scenario via a Hard Algorithm, a deep learning model is trained directly on a dataset of expert human driving telemetry (joystick inputs paired with synchronized camera frames). The model inherently learns to interpret the visual presence of segmented lanes, crosswalks, and traffic signs, mapping these visual features directly to continuous \texttt{steer} and \texttt{throttle} outputs. While this approach eliminates the need for complex, hard-coded intersection rules and can produce exceptionally smooth trajectories, it operates as a ``black box,'' making it challenging to debug specific edge-case failures.
 
 % ---------------------------------------------------------
 \section{Experimental Plan}
@@ -246,8 +267,6 @@ This proposal details a hybrid perception architecture decoupling strategic FSMs
 
 \bibitem{farkh2023vision} R. Farkh and K. Aljaloud, ``Vision Navigation Based PID Control for Line Tracking Robot,'' \textit{Intelligent Automation \& Soft Computing}, vol. 35, no. 1, pp. 901--911, 2023, doi: 10.32604/iasc.2023.027614.
 
-\bibitem{chen2020realtime}
-W. Chen, J. Sun, W. Li, and D. Zhao, ``A real-time multi-constraints obstacle avoidance method using LiDAR,'' \textit{arXiv preprint arXiv:2006.00142}, 2020.
 
 \bibitem{szeliski2022}
 R. Szeliski,
@@ -266,3 +285,4 @@ pp. 35--45,
 \end{thebibliography}
 
 \end{document}
+

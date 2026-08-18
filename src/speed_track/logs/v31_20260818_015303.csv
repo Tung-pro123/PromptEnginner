@@ -1,1 +1,0 @@
-timestamp,fps,left_conf,center_conf,right_conf,lane_width_m,lateral_error_m,heading_error_deg,curvature,lookahead_m,target_speed,actual_speed,steer_raw,steer_filtered,tracking_state,reconstruction_method

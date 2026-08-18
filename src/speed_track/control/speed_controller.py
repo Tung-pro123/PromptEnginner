@@ -112,13 +112,15 @@ class SpeedController:
                 
             # Đang trong trạng thái Boost
             if self._is_boosting:
-                if time.time() - self._boost_start_time <= 5.0:
-                    v_target = cfg.max_speed
+                boost_duration = time.time() - self._boost_start_time
+                if boost_duration <= 5.0:
+                    # Tăng tốc dần dần (ramp-up) trong 1.0 giây đầu tiên để tránh giật trượt bánh
+                    ramp_factor = min(1.0, boost_duration / 1.0)
+                    v_target = v_target + (cfg.max_speed - v_target) * ramp_factor
                 else:
                     # Đã quá 5 giây (Timeout) -> Tự động ngắt để đảm bảo an toàn
-                    if self._is_boosting:
-                        print("[BOOST] Hết thời gian an toàn (5s). Ngắt bứt tốc!")
-                        self._is_boosting = False
+                    print("[BOOST] Hết thời gian an toàn (5s). Ngắt bứt tốc!")
+                    self._is_boosting = False
         else:
             # UNKNOWN hoặc mất vạch
             self._straight_frames = 0

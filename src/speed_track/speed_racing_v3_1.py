@@ -285,38 +285,30 @@ class SpeedRacingV31:
         # ---- 3.5. Horizon Scanner (Cơ chế mới: Định nghĩa STRAIGHT bằng sự hiện diện của vạch ở xa) ----
         horizon_state = "UNKNOWN"
         if getattr(cfg, 'horizon_warning_enabled', False):
-            # Scan độc lập với ROI chính. Lấy tọa độ gốc chưa scale để map 1:1 với Calibrator.
+            # Lấy tọa độ gốc chưa scale để map 1:1 với Calibrator.
             h_start_raw = getattr(cfg, 'horizon_scan_y_start', 152)
             h_end_raw = getattr(cfg, 'horizon_scan_y_end', 234)
             
+            # Tọa độ cắt trên mask (đã áp dụng processing_scale)
+            h_start_proc = int(h_start_raw * cfg.processing_scale)
+            h_end_proc = int(h_end_raw * cfg.processing_scale)
+            
+            h_start_proc = max(0, min(h_start_proc, mask.shape[0]))
+            h_end_proc = max(h_start_proc, min(h_end_proc, mask.shape[0]))
+            
+            # Tọa độ trên frame gốc để vẽ
             h_start = max(0, min(h_start_raw, frame.shape[0]))
             h_end = max(h_start, min(h_end_raw, frame.shape[0]))
             
-            if h_end > h_start:
-                # Cắt trực tiếp từ ảnh GỐC (frame) chưa bị cắt đen bởi ROI và chưa bị undistort
-                horizon_roi = frame[h_start:h_end, :].copy()
-                
-                # Làm mờ
-                blur_sz = getattr(cfg, 'morph_kernel_size', 1)
-                if blur_sz % 2 == 0: blur_sz += 1
-                if blur_sz < 1: blur_sz = 1
-                blur = cv2.GaussianBlur(horizon_roi, (blur_sz, blur_sz), 0)
-                
-                # Lọc HSV
-                hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
-                lower = np.array([cfg.hsv_h1_min, cfg.hsv_s_min, cfg.hsv_v_min])
-                upper = np.array([cfg.hsv_h1_max, getattr(cfg, 'hsv_s_max', 255), getattr(cfg, 'hsv_v_max', 255)])
-                h_mask = cv2.inRange(hsv, lower, upper)
-                
-                # Lọc LAB (nếu bật)
-                if getattr(cfg, 'use_lab_constraint', False):
-                    lab = cv2.cvtColor(blur, cv2.COLOR_BGR2LAB)
-                    a_channel = lab[:, :, 1]
-                    l_mask = cv2.inRange(a_channel, getattr(cfg, 'lab_a_min', 0), 255)
-                    h_mask = cv2.bitwise_and(h_mask, l_mask)
+            if h_end_proc > h_start_proc:
+                # Tận dụng luôn mask đã được lọc màu ở bước 3, không cần HSV lại!
+                h_mask_proc = mask[h_start_proc:h_end_proc, :].copy()
                 
                 # Tính số lượng điểm ảnh (Dùng non-zero thay vì moments)
-                pixel_count = cv2.countNonZero(h_mask)
+                pixel_count_proc = cv2.countNonZero(h_mask_proc)
+                
+                # Đưa pixel count về tỷ lệ gốc để không bị sai với config GUI
+                pixel_count = pixel_count_proc / (cfg.processing_scale ** 2) if cfg.processing_scale > 0 else 0
                 
                 # ĐỊNH NGHĨA KHI NÀO LÀ STRAIGHT (CHẾ ĐỘ FITLINE):
                 # 1. Phải NHÌN THẤY đường ở xa (pixel_count > ngưỡng)
@@ -328,12 +320,14 @@ class SpeedRacingV31:
                 pix_thresh = getattr(cfg, 'horizon_pix_thresh', 50)
                 
                 if pixel_count > pix_thresh:
-                    contours, _ = cv2.findContours(h_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    contours, _ = cv2.findContours(h_mask_proc, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     if contours:
-                        valid_contours = [c for c in contours if cv2.contourArea(c) > 10]
+                        # Scale area threshold
+                        min_area_proc = 10 * (cfg.processing_scale ** 2) if cfg.processing_scale > 0 else 10
+                        valid_contours = [c for c in contours if cv2.contourArea(c) > min_area_proc]
                         if valid_contours:
-                            img_center = horizon_roi.shape[1] / 2.0
-                            center_zone = getattr(cfg, 'horizon_center_zone', 120)
+                            img_center_proc = h_mask_proc.shape[1] / 2.0
+                            center_zone_proc = getattr(cfg, 'horizon_center_zone', 120) * cfg.processing_scale
                             
                             best_contour = None
                             min_dist = float('inf')
@@ -342,10 +336,10 @@ class SpeedRacingV31:
                                 M = cv2.moments(c)
                                 if M["m00"] > 0:
                                     cx = int(M["m10"] / M["m00"])
-                                    dist = abs(cx - img_center)
+                                    dist = abs(cx - img_center_proc)
                                     
                                     # Chỉ lấy line trong Center_Zone
-                                    if dist > center_zone:
+                                    if dist > center_zone_proc:
                                         continue
                                         
                                     if dist < min_dist:
@@ -359,6 +353,11 @@ class SpeedRacingV31:
                                 vy = float(vy[0])
                                 x = float(x[0])
                                 y = float(y[0])
+                                
+                                # Đưa x, y về hệ quy chiếu ảnh gốc
+                                if cfg.processing_scale > 0:
+                                    x = x / cfg.processing_scale
+                                    y = y / cfg.processing_scale
                                 
                                 if vy == 0:
                                     angle_deg = 90.0
@@ -410,9 +409,12 @@ class SpeedRacingV31:
                 
                 # Hiển thị Debug
                 if self.visualizer is not None or self.video_writer is not None:
+                    horizon_roi = frame[h_start:h_end, :]
                     tint = np.zeros_like(horizon_roi)
-                    tint[h_mask == 255] = [255, 0, 255] # Màu Tím
-                    frame[h_start:h_end, :] = cv2.addWeighted(frame[h_start:h_end, :], 0.6, tint, 0.4, 0)
+                    # Resize mask đã xử lý lên để vẽ đè lên frame gốc
+                    h_mask_disp = cv2.resize(h_mask_proc, (horizon_roi.shape[1], horizon_roi.shape[0]), interpolation=cv2.INTER_NEAREST)
+                    tint[h_mask_disp == 255] = [255, 0, 255] # Màu Tím
+                    frame[h_start:h_end, :] = cv2.addWeighted(horizon_roi, 0.6, tint, 0.4, 0)
                     
                     # Trục ảnh giữa và Center Zone
                     img_center = int(frame.shape[1] / 2.0)
@@ -478,7 +480,7 @@ class SpeedRacingV31:
             steer_raw, current_speed=self.current_throttle)
 
         # ---- 10.5. Area Heuristic V2 (V3.1: deadband + speed-dependent) ----
-        if lane_state.centerline_poly is not None:
+        if lane_state.centerline_poly is not None and lane_state.tracking_state == TrackingState.TRACKING:
             y_vals = np.arange(0, pcfg.image_height)
             poly_x = np.polyval(lane_state.centerline_poly, y_vals)
             poly_x_clipped = np.clip(poly_x, 0, pcfg.image_width)
@@ -507,11 +509,13 @@ class SpeedRacingV31:
                     # VD: steer=0.8, area=0.2 -> bù thêm 0.2 * (1 - 0.8) = 0.04 -> tổng 0.84 (không bị giật)
                     steer_filtered += area_steer * (1.0 - min(1.0, abs(steer_filtered)))
                 else:
-                    # Ngược chiều: Pure Pursuit đang bẻ lái sai so với mạng lưới an toàn (diện tích).
-                    # Cho phép trừ trực tiếp để kéo vô lăng lại.
                     steer_filtered += area_steer
 
             steer_filtered = max(-1.0, min(1.0, steer_filtered))
+            
+            # [V3.1 FIX] Cập nhật lại trạng thái bên trong của bộ lọc vô lăng 
+            # để tránh bị kẹt (lệch pha) ở các frame tiếp theo
+            self.steering_filter.prev_output = steer_filtered
 
         # ---- 11. Speed controller (V3.1: predictive curvature + early brake) ----
         throttle = self.speed_controller.compute(
