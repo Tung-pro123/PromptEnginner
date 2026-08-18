@@ -7,189 +7,156 @@
 
 ---
 
-## 📁 Cấu Trúc Thư Mục
+## 📁 Cấu Trúc Thư Mục Dự Án
 
 ```
 Jetson/
-├── docs/                          # 📄 Tài liệu cuộc thi
+├── diagnostics/                   # 🔍 Các script chẩn đoán phần cứng hệ thống (Python 3)
+│   ├── diagnose.py               #   Kiểm tra I2C (quét cổng 0x40), kiểm tra các thư viện điều khiển gốc
+│   └── inspect_jetracer.py       #   Kiểm tra import thư viện jetracer sau khi lọc path Python 2
+│
+├── docs/                          # 📄 Tài liệu hướng dẫn & thể lệ cuộc thi
 │   ├── Thể lệ.docx.pdf           #   Thể lệ & luật thi chính thức
 │   ├── Đề bài chi tiết.docx.pdf   #   Đề bài chi tiết (Speed Track + Smart City)
-│   ├── PromptEngineer_...pdf       #   Proposal của đội mình đã nộp
-│   └── 03 - PromptEngineer.pdf    #   Feedback từ giám khảo về proposal
+│   ├── TERMINAL_COMMANDS.md      #   Sổ tay tra cứu nhanh các câu lệnh Terminal trên xe
+│   └── SPEED_TRACK_ALGORITHM.md  #   Tài liệu giải thích thuật toán điều khiển LQR & né vật cản
 │
-├── src/                           # 🧑‍💻 SOURCE CODE CHÍNH (code ở đây!)
-│   ├── core/                      #   🔧 Module dùng chung cho cả 2 bài thi
-│   │   ├── perception/            #     👁️ Xử lý Camera & LiDAR (Dual-ROI, HSV filter)
-│   │   │                          #     → TODO: Tách logic xử lý ảnh từ main vào đây
-│   │   ├── control/               #     🎮 Điều khiển động cơ (PID, bám line, né vật cản)
-│   │   │                          #     → TODO: Tách logic correct_course(), turn_robot() vào đây
-│   │   ├── planning/              #     🗺️ Điều hướng & tìm đường
-│   │   │   ├── map_navigator.py   #       Thuật toán A* / Dijkstra tìm đường ngắn nhất trên đồ thị
-│   │   │   └── callmap.py         #       Gọi API server để lấy bản đồ mới nhất (map.json)
-│   │   └── utils/                 #     🛠️ Tiện ích & cấu hình
-│   │       ├── map.json           #       File bản đồ sa bàn (đồ thị các node + cạnh)
-│   │       └── opposite_detector.py #     Phát hiện giao lộ bằng LiDAR (đối xứng 2 bên)
+├── src/                           # 🧑‍💻 SOURCE CODE CHÍNH (code thuật toán ở đây!)
+│   ├── core/                      #   🔧 Module lõi dùng chung cho cả 2 bài thi
+│   │   ├── perception/            #     👁️ Xử lý cảm biến (Dual-ROI camera, LiDAR)
+│   │   ├── control/               #     🎮 Điều khiển động cơ xe
+│   │   │   ├── racer_controller.py #      Bộ điều khiển động cơ gốc (Hỗ trợ Ackermann & JetBot)
+│   │   │   └── lqr_controller.py  #       Bộ điều khiển LQR bám làn & Tránh vật cản (S-Curve offset)
+│   │   ├── planning/              #     🗺️ Điều hướng & tìm đường (A*, Dijkstra)
+│   │   └── utils/                 #     🛠️ Tiện ích & dữ liệu
 │   │
 │   ├── speed_track/               #   🏁 BÀI THI 1: SPEED TRACK (30% điểm)
-│   │   └── main_speed_track.py    #     File chạy chính - bám lane, né vật cản, checkpoint
-│   │                              #     → Dựa trên problem_a cũ
+│   │   └── main_speed_track.py    #     File chạy chính bám làn tốc độ cao & né vật cản
 │   │
 │   └── smart_city/                #   🏙️ BÀI THI 2: SMART CITY (40% điểm)
-│       └── main_smart_city.py     #     File chạy chính - FSM, biển báo, QR, điều hướng
-│                                  #     → Dựa trên problem_b cũ (có Roboflow API)
+│       └── main_smart_city.py     #     File chạy chính - FSM biển báo, QR code, điều hướng giao lộ
 │
-├── archive/                       # 📦 Code cũ từ Hackathon (backup, KHÔNG SỬA Ở ĐÂY)
-│   ├── problem_a/                 #   Bài A cũ (line following + map navigation)
-│   ├── problem_b/                 #   Bài B cũ (biển báo + Roboflow + submit API)
-│   └── problem_c/                 #   Bài C cũ (tương tự A)
+├── tests/                         # 🧪 CÁC FILE TEST VÀ CÂN CHỈNH RIÊNG BIỆT (Gọn gàng & Cách ly)
+│   ├── test_car.py               #   Kiểm tra ga/lái, cân chỉnh lái thẳng & rẽ 90 độ
+│   ├── test_obstacle_avoidance.py #   Chạy thử nghiệm thuật toán né vật cản đường thẳng (LQR)
+│   ├── test_only_camera.py       #   Test camera riêng lẻ (Lưu chuỗi ảnh không ghi đè vào captured_images/)
+│   ├── test_only_lidar.py        #   Bản đồ ASCII theo dõi khoảng cách LiDAR thời gian thực
+│   ├── test_only_motors.py       #   Test cơ cấu đánh lái trái/phải và ga độc lập
+│   ├── test_path_ordering.py     #   Kiểm tra thứ tự đường dẫn sys.path của Python 2 & Python 3
+│   └── test_sensors.py           #   Quét báo cáo sức khỏe tổng quan của tất cả cảm biến (Cam/LiDAR/IMU)
 │
-├── restructure.py                 # 🔨 Script tự động tái cấu trúc (đã chạy xong, giữ lại để tham khảo)
-├── .gitignore                     # Git ignore
-└── README.md                      # 📖 File này
+├── captured_images/               # 📸 Thư mục tự động tạo chứa ảnh chụp từ test_only_camera.py
+├── archive/                       # 📦 Code backup cũ từ Hackathon (KHÔNG SỬA Ở ĐÂY)
+├── .gitignore                     # Git ignore các file tạm, ảnh test, môi trường ảo venv
+└── README.md                      # 📖 File này (Hướng dẫn tổng quan cho thành viên)
 ```
 
 ---
 
-## 🏁 2 Bài Thi Chính
+## 🏁 Tóm tắt 2 Bài Thi
 
-### Bài 1: Speed Track (30% điểm tổng)
-**File chính:** `src/speed_track/main_speed_track.py`
+### Bài 1: Speed Track (30% điểm)
+* **File chạy chính:** `src/speed_track/main_speed_track.py`
+* **Thuật toán cốt lõi:** Bám làn đường thẳng/cong bằng bộ điều khiển tối ưu **LQR Controller** kết hợp cảm biến **LiDAR** phát hiện vật cản để dịch vạch ảo (**Offset S-Curve**) giúp xe lách tránh mượt mà.
 
-| Yêu cầu | Mô tả |
-|---|---|
-| Bám lane | Robot đi theo vạch kẻ đường bằng camera (HSV filter + Dual ROI) |
-| Né vật cản | Phát hiện và tránh vật cản trên đường đua |
-| Checkpoint | Đi qua đúng các checkpoint trên sa bàn |
-| Tốc độ | Hoàn thành đường đua nhanh nhất có thể |
-
-### Bài 2: Smart City (40% điểm tổng)
-**File chính:** `src/smart_city/main_smart_city.py`
-
-| Yêu cầu | Mô tả |
-|---|---|
-| Điều hướng | Đi từ Start → End theo đường ngắn nhất trên sa bàn đồ thị |
-| Nhận diện biển báo | Dùng Roboflow API nhận diện biển chỉ dẫn (N/E/S/W) và biển cấm (NN/NE/NS/NW) |
-| Xử lý giao lộ | FSM (Finite State Machine) quản lý trạng thái tại mỗi giao lộ |
-| QR Code / Toán | Đọc QR code hoặc giải toán tại các node đặc biệt |
-| Submit kết quả | Gửi kết quả nhận diện lên server qua API |
+### Bài 2: Smart City (40% điểm)
+* **File chạy chính:** `src/smart_city/main_smart_city.py`
+* **Thuật toán cốt lõi:** Di chuyển ngắn nhất theo đồ thị (A* / Dijkstra), quản lý hành vi tại giao lộ bằng **FSM (Finite State Machine)**, nhận diện biển báo giao thông thời gian thực qua **Roboflow API/YOLO**.
 
 ---
 
-## 🚀 Hướng Dẫn Chạy Nhanh
+## 🚀 Hướng Dẫn Thiết Lập & Chạy Nhanh Cho Thành Viên
 
-### Chuẩn bị trên Jetson
+### 1. Tạo Môi Trường Ảo (Chạy 1 lần duy nhất khi mượn xe mới)
+Tránh cài thư viện trực tiếp vào hệ thống của xe để không làm lỗi OpenCV và driver GPU gốc:
 ```bash
 # 1. Clone repo
 git clone <repo_url>
 cd Jetson
 
 # 2. Bật LiDAR
-roslaunch jetbot_pro lidar.launch
+roslaunch jetracer lidar.launch
 
 # 3. Bật Camera (mở terminal mới)
-roslaunch jetbot_pro csi_camera.launch
+roslaunch jetracer csi_camera.launch
 
 # 4a. Chạy Speed Track (mở terminal mới)
 cd src/speed_track
 python3 main_speed_track.py
 
-# 4b. HOẶC chạy Smart City
-cd src/smart_city
-python3 main_smart_city.py
+# Kích hoạt môi trường ảo (Cần chạy mỗi khi mở Terminal mới)
+source ~/my_env/bin/activate
 ```
 
-### Cập nhật bản đồ mới từ server
+### 2. Cài Đặt ONNX Runtime GPU (Tải bản build riêng của NVIDIA)
+Vì xe chạy Python 3.6 và chip ARM64, hãy chạy lệnh này trong venv để cài đặt nhanh bản GPU:
 ```bash
-cd src/core/planning
-python3 callmap.py
+# 1. Tải file .whl chuẩn
+wget -O onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl https://nvidia.box.com/shared/static/jy7nqva7l88mq9i8bw3g3sklzf4kccn2.whl
+
+# 2. Tiến hành cài đặt
+pip3 install onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl
 ```
 
----
+### 3. Quy Trình Tránh Xung Đột Động Cơ (Không Chạy Lệnh Tổng Khi Debug)
+Do code Python (`RacerController`) và ROS node `jetracer` đều ghi vào cổng I2C điều khiển động cơ nên sẽ gây xung đột khóa bánh. Khi muốn chạy code của chúng ta kết hợp cảm biến, hãy làm như sau:
 
-## 🔧 Cấu Hình Quan Trọng
-
-### Biến môi trường cần thiết (cho Smart City)
-```bash
-export ROBOFLOW_API_KEY="<api_key_của_đội>"    # API key Roboflow để nhận diện biển báo
-export TEAM_NAME="PromptEngineer"               # Tên đội
-export SUBMIT_URL="<url_submit_server>"         # URL server nộp kết quả
-```
-
-### Tham số có thể điều chỉnh (trong `setup_parameters()`)
-| Tham số | Mô tả | Giá trị mặc định |
-|---|---|---|
-| `BASE_SPEED` | Tốc độ di chuyển cơ bản | Speed: 0.27 / Smart: 0.16 |
-| `TURN_SPEED` | Tốc độ khi quay | 0.2 |
-| `TURN_DURATION_90_DEG` | Thời gian quay 90° (giây) | 0.8 |
-| `CORRECTION_GAIN` | Hệ số hiệu chỉnh bám line | 0.5 |
-| `LINE_COLOR_LOWER/UPPER` | Ngưỡng HSV phát hiện vạch kẻ | [0,0,0] / [180,255,75] |
-| `YOLO_CONF_THRESHOLD` | Ngưỡng tin cậy nhận diện | 0.6 |
-
----
-
-## 📋 TODO - Phân Công Công Việc
-
-### 🔴 Ưu tiên cao (Làm trước khi test trên xe)
-- [ ] Cập nhật `map.json` theo sa bàn chính thức cuộc thi 2026
-- [ ] Điền `ROBOFLOW_API_KEY` và kiểm tra model nhận diện biển báo mới
-- [ ] Cập nhật token trong `callmap.py` (token API server cuộc thi mới)
-- [ ] Calibrate lại `TURN_DURATION_90_DEG` và `BASE_SPEED` trên xe thật
-
-### 🟡 Ưu tiên trung bình (Tối ưu hóa)
-- [ ] Tách logic xử lý ảnh (HSV, ROI) từ `main_*.py` ra `src/core/perception/`
-- [ ] Tách logic điều khiển motor (`correct_course`, `turn_robot`) ra `src/core/control/`
-- [ ] Thêm logic xử lý đèn giao thông (nếu có trong đề thi)
-- [ ] Tối ưu PID controller cho bám line mượt hơn
-
-### 🟢 Ưu tiên thấp (Nice to have)
-- [ ] Thêm dashboard MQTT để giám sát robot real-time
-- [ ] Cải thiện logic `stabilize_after_turn()` sau khi rẽ
-- [ ] Thêm unit tests cho `map_navigator.py`
+* **Terminal 1:** Chỉ bật trung tâm điều phối:
+  ```bash
+  roscore
+  ```
+* **Terminal 2:** Nạp môi trường ROS và bật cảm biến:
+  ```bash
+  source /opt/ros/melodic/setup.bash
+  source ~/catkin_ws/devel/setup.bash
+  # Bật LiDAR & Camera
+  roslaunch jetracer lidar.launch
+  roslaunch jetracer csi_camera.launch
+  ```
+* **Terminal 3:** Kích hoạt môi trường ảo và chạy code thuật toán:
+  ```bash
+  source ~/my_env/bin/activate
+  cd ~/Desktop/Admin
+  # Ví dụ chạy file test né vật cản
+  python3 tests/test_obstacle_avoidance.py
+  ```
 
 ---
 
-## 🧠 Kiến Trúc FSM (Finite State Machine)
+## 🧪 Hướng Dẫn Cân Chỉnh Xe (Calibrate)
 
-```
-WAITING_FOR_LINE → DRIVING_STRAIGHT → APPROACHING_INTERSECTION
-                        ↑                       ↓
-                  REACQUIRING_LINE ← LEAVING_INTERSECTION ← HANDLING_EVENT
-                        ↓
-                    DEAD_END / GOAL_REACHED
-```
+Các thành viên phụ trách phần **Control** cần chạy các script test sau để tinh chỉnh tham số phần cứng:
 
-| Trạng thái | Mô tả |
-|---|---|
-| `WAITING_FOR_LINE` | Chờ camera nhìn thấy vạch kẻ đường |
-| `DRIVING_STRAIGHT` | Đang bám line, kiểm tra LiDAR + ROI dự báo |
-| `APPROACHING_INTERSECTION` | Tiến vào trung tâm giao lộ |
-| `HANDLING_EVENT` | Dừng, nhận diện biển báo, quyết định hướng đi |
-| `LEAVING_INTERSECTION` | Đi thẳng thoát khỏi giao lộ |
-| `REACQUIRING_LINE` | Tìm lại vạch kẻ đường sau khi rẽ |
-| `GOAL_REACHED` | Đã đến đích, dừng robot |
-| `DEAD_END` | Lỗi hoặc không tìm được đường, dừng robot |
+1. **Căn chỉnh lái thẳng & góc rẽ 90 độ:**
+   ```bash
+   python3 tests/test_car.py
+   ```
+   * Chọn Option 1, 3, 4 để kiểm tra xe đi thẳng có bị lệch không. Nếu lệch, chỉnh sửa giá trị `STEERING_OFFSET` trong file cấu hình `src/core/utils/config.py` (hoặc `.json`).
+   * Chọn Option 5, 6 để test rẽ góc. Chỉnh sửa `STEERING_VALUE_FOR_TURN` và `TURN_DURATION_90_DEG` cho tới khi xe ôm cua tròn đúng 90 độ.
 
----
+2. **Kiểm tra mắt đọc cảm biến:**
+   ```bash
+   # Quét sức khỏe toàn bộ cảm biến
+   python3 tests/test_sensors.py
+   
+   # Theo dõi khoảng cách LiDAR thời gian thực dưới dạng ASCII trực quan
+   python3 tests/test_only_lidar.py
+   ```
 
-## ⚠️ Lưu Ý Quan Trọng
-
-1. **KHÔNG sửa code trong `archive/`** - Đó là backup code cũ. Mọi thay đổi code trong `src/`.
-2. **Luôn test trên xe thật** trước khi nộp - Các tham số tốc độ, góc quay rất phụ thuộc vào phần cứng.
-3. **Kiểm tra pin** trước mỗi lần chạy - Pin yếu ảnh hưởng đến tốc độ motor và kết quả bám line.
-4. **Ghi video debug** - Robot tự ghi video `jetbot_run.avi` mỗi lần chạy, dùng để phân tích lỗi.
-5. **Map mới** - Nhớ chạy `callmap.py` để lấy map mới trước mỗi lượt thi (BTC có thể đổi map).
+3. **Chụp ảnh test camera:**
+   ```bash
+   python3 tests/test_only_camera.py
+   ```
+   * File ảnh chụp sẽ được lưu tự động dạng `frame_direct_1.jpg`, `frame_direct_2.jpg`,... trong thư mục `captured_images/` mà không lo bị đè ảnh cũ.
 
 ---
 
-## 👥 Thành Viên Nhóm
+## ⚠️ Lưu Ý Quan Trọng Cho Cả Đội
 
-| Vai trò | Nhiệm vụ chính |
-|---|---|
-| **Leader / Tích hợp** | Ghép các module, test trên xe, quản lý git |
-| **Perception** | Camera processing, LiDAR, nhận diện biển báo (Roboflow) |
-| **Planning / Control** | Thuật toán tìm đường, PID tuning, điều khiển motor |
-| **Infrastructure** | MQTT dashboard, API submit, logging & debug |
+1. **Nạp môi trường ROS:** Mỗi khi mở tab Terminal mới, luôn nhớ gõ `source ~/catkin_ws/devel/setup.bash` trước khi chạy các lệnh ROS.
+2. **Quản lý file test:** Vui lòng không tạo thêm các file test lẻ tẻ ngoài thư mục gốc. Hãy cho tất cả vào thư mục `tests/` và kế thừa cách import thư mục gốc bằng `sys.path`.
+3. **Pin xe:** Khi pin sụt dưới 11V, tốc độ động cơ sẽ bị yếu đi và góc lái servo có thể bị trễ. Luôn đo pin trước khi calibrate hệ số PID/LQR.
+4. **Tài liệu tra cứu:** Mở file [TERMINAL_COMMANDS.md](file:///d:/Jetson/Jetson/docs/TERMINAL_COMMANDS.md) trong thư mục `docs/` để xem tất cả các câu lệnh mẫu khi lên sân thi.
 
 ---
-
-*Last updated: 26/06/2026*
+*Chúc đội thi PromptEngineer có một mùa giải thành công rực rỡ! 🚀🏆*

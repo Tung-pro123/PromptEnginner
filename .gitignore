@@ -32,3 +32,5 @@ models/*.onnx
 # restructure.py
 
 logs/*
+# Dataset
+dataset/
