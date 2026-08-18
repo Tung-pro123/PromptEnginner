@@ -72,6 +72,13 @@ Our system architecture relies on the duality of continuous control loops for la
 \subsection{Speed Track: High-Speed Vision-Based Navigation (V3.1 Architecture)}
 For the Speed Track challenge, relying solely on end-to-end Deep Learning may introduce latency issues, while basic PID controllers often lack the predictive capability required for competitive high-speed racing. To optimize lap time while maintaining reliable stability, we propose the \textbf{V3.1 Architecture}, a structured, multi-stage hybrid pipeline.
 
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\linewidth]{speed_track_v3_1_arch.png}
+    \caption{The proposed V3.1 High-Speed Vision pipeline, decoupling tactical PID steering from strategic Horizon Speed Control.}
+    \label{fig:speed_track_arch}
+\end{figure}
+
 \subsubsection{Distance-Based Dual-Zone HSV Segmentation}
 Traditional HSV-based color segmentation can be susceptible to illumination degradation and floor glare in the distal (far) regions of the camera frame. To address this, we implement a \textbf{Distance-Based Dual-Zone Segmentation} mechanism based on the camera's extrinsic pitch angle:
 \begin{itemize}
