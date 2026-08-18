@@ -637,6 +637,7 @@ def main():
     # Apply CLI overrides
     if args.debug:
         config.debug_mode = True
+        config.record_video = True
     if args.full_res:
         config.processing_scale = 1.0
     if args.max_speed is not None:
@@ -645,6 +646,8 @@ def main():
         print(f"Max speed override: {args.max_speed}")
 
     # For offline replay, always enable debug
+    # if args
+
     if args.video:
         config.debug_mode = True
 
