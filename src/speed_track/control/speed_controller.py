@@ -38,6 +38,8 @@ class SpeedController:
         self._integral = 0.0
         self._prev_error = 0.0
         self._prev_time = None
+        self._cycle_progress = 0.0
+        self._prev_time_cycle = None
 
         # V3.1: Curvature history for stability detection
         self._curvature_history = []
@@ -123,12 +125,57 @@ class SpeedController:
             v_target = 0.0
 
         # Step 4: Convert to throttle
-        if cfg.use_encoder and actual_speed is not None:
-            # Closed-loop PID
-            throttle = self._pid_compute(v_target, actual_speed)
+        if getattr(cfg, 'use_cyclic_throttle', False):
+            # Vận hành theo chu trình (Cyclic Throttle)
+            import time
+            current_time = time.time()
+            if self._prev_time_cycle is None:
+                dt = 0.05
+            else:
+                dt = current_time - self._prev_time_cycle
+            self._prev_time_cycle = current_time
+            
+            # Kiểm tra xem đang đi thẳng hay vào cua
+            curve_thresh = getattr(cfg, 'curve_threshold', 0.15)
+            is_curve = (effective_curvature > curve_thresh) or (horizon_state in ["CURVE_LEFT", "CURVE_RIGHT"])
+            
+            if is_curve:
+                cycle_duration = getattr(cfg, 'cycle_duration_curve', 1.0)
+            else:
+                cycle_duration = getattr(cfg, 'cycle_duration_straight', 2.0)
+            
+            # Cập nhật tiến trình (phase) liên tục để không bị nhảy cóc khi duration thay đổi
+            self._cycle_progress += dt / cycle_duration
+            if self._cycle_progress >= 1.0:
+                self._cycle_progress -= 1.0
+            elif self._cycle_progress < 0.0:
+                self._cycle_progress = 0.0
+            
+            # Chu trình: Giảm dần từ max_speed xuống min_speed
+            cyclic_throttle = cfg.max_speed - self._cycle_progress * (cfg.max_speed - cfg.min_speed)
+            
+            # CẢI TIẾN: Chỉ dùng Cyclic Throttle làm "mức trần" (trên đường thẳng).
+            # Vẫn tính v_curve để nếu tới cua gắt, xe bắt buộc phải hãm lại theo đường cong.
+            # (Đảm bảo an toàn vật lý khi ôm cua)
+            safe_curve_throttle = v_target * cfg.speed_to_throttle_factor
+            throttle = min(cyclic_throttle, safe_curve_throttle)
+            
+            # Vẫn giữ bảo vệ giảm tốc khi mất vạch (Confidence) và State Machine
+            if confidence < cfg.speed_confidence_thresh:
+                throttle *= max(0.3, confidence / cfg.speed_confidence_thresh)
+                
+            if tracking_state in [TrackingState.SEARCH, TrackingState.PREDICTING, TrackingState.RECOVERY]:
+                throttle = cfg.min_speed
+            elif tracking_state == TrackingState.E_STOP:
+                throttle = 0.0
+                
         else:
-            # Open-loop mapping
-            throttle = v_target * cfg.speed_to_throttle_factor
+            if cfg.use_encoder and actual_speed is not None:
+                # Closed-loop PID
+                throttle = self._pid_compute(v_target, actual_speed)
+            else:
+                # Open-loop mapping
+                throttle = v_target * cfg.speed_to_throttle_factor
 
         # Final clamp
         target_throttle = max(0.0, min(cfg.max_speed, throttle))

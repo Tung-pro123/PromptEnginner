@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 V3 / V3.1 Lane Tracking — Centralized Configuration
 
@@ -193,9 +194,9 @@ class V3Config:
     # ================================================================
     # SPEED CONTROL
     # ================================================================
-    max_speed: float = 0.50                # [TUNE] throttle
-    min_speed: float = 0.18                # [TUNE]
-    cruise_speed: float = 0.40             # [TUNE] default straight-line speed
+    max_speed: float = 0.70                # [TUNE] throttle
+    min_speed: float = 0.20                # [TUNE]
+    cruise_speed: float = 0.50             # [TUNE] default straight-line speed
     a_lat_max: float = 2.0                 # [TUNE] lateral accel limit (m/s²)
     speed_confidence_thresh: float = 0.5   # reduce speed below this confidence
     speed_to_throttle_factor: float = 1.0  # [CALIBRATE] TĂNG HỆ SỐ NÀY ĐỂ XE BỐC HƠN (v(m/s) → throttle)
@@ -205,6 +206,12 @@ class V3Config:
     speed_pid_ki: float = 0.0
     speed_pid_kd: float = 0.1
     use_encoder: bool = False              # [CALIBRATE] set True if encoder available
+
+    # Cyclic Throttle config
+    use_cyclic_throttle: bool = True       # [TEST] Thay đổi throttle theo chu trình
+    cycle_duration_straight: float = 2.0   # [TEST] Thời gian chu trình khi đi thẳng (giây)
+    cycle_duration_curve: float = 1.0      # [TEST] Thời gian chu trình khi vào cua (giây)
+    curve_threshold: float = 0.15          # [TEST] Ngưỡng độ cong để xe nhận diện là đang cua
 
     # ================================================================
     # STATE MACHINE TIMEOUTS
@@ -253,7 +260,7 @@ class V3Config:
     curvature_stability_thresh: float = 0.1  # [V3.1] std threshold for "stable"
 
     # Area heuristic V2
-    area_k: float = 0.15                   # [V3.1] area correction gain (V3 default)
+    area_k: float = 0.35                   # [V3.1] area correction gain (V3 default was 0.15)
     area_deadband: float = 0.0             # [V3.1] ignore area_ratio below this (V3 = 0)
 
     # Early Horizon Scanner

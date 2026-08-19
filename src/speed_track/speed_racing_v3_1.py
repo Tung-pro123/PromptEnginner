@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Speed Track Racing V3.1.00 — Performance-Optimized V3
 

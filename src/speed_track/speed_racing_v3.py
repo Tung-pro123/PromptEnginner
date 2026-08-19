@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Speed Track Racing V3.0 — Multi-Lane Temporal Tracking Architecture
 
@@ -243,7 +244,7 @@ class SpeedRacingV3:
                 area_ratio = (area_left - area_right) / total_area
                 
                 # Áp dụng trực tiếp tỷ lệ diện tích thành lực bẻ lái bù trừ
-                k_area = 0.15 
+                k_area = getattr(self.cfg, 'area_k', 0.35) 
                 steer_filtered += k_area * area_ratio
                 
             # Đảm bảo steering không vượt ngưỡng [-1.0, 1.0]
