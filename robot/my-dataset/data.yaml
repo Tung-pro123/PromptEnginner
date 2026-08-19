@@ -1,0 +1,6 @@
+names:
+  0: Land
+  1: Bg
+  2: Center
+path: .
+train: train.txt

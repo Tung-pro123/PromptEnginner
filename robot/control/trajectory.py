@@ -36,6 +36,7 @@ class TrajectoryResult:
     target: Optional[TrajectoryPoint] = None  # Selected target at Ld
     lookahead_m: float = 0.0       # Adaptive lookahead distance (m)
     curvature: float = 0.0         # Metric curvature at vehicle (1/m)
+    max_upcoming_curvature: float = 0.0 # [V3.1] Max curvature along the trajectory
     heading_error: float = 0.0     # Heading error (radians)
     lateral_error_m: float = 0.0   # Lateral error (meters)
 
@@ -94,6 +95,13 @@ class TrajectoryGenerator:
         # Compute curvature at vehicle position (in metric coordinates)
         kappa_func = self.bev.curvature_px_to_metric(poly)
         result.curvature = kappa_func(float(bev_h))
+
+        # V3.1: Predictive curvature (find max curvature along the trajectory)
+        kappas = [abs(kappa_func(y_px)) for y_px in y_values]
+        if kappas:
+            result.max_upcoming_curvature = max(kappas)
+        else:
+            result.max_upcoming_curvature = abs(result.curvature)
 
         # Compute heading error at vehicle position
         a, b = poly[0], poly[1]

@@ -110,8 +110,46 @@ robot-jeston/
 
 ## 🚀 Quy Trình Vận Hành Trên Xe Thật
 
+<<<<<<< HEAD
 ### Bước 1: Khởi động ROS Core & Cảm Biến
 * **Terminal 1:**
+=======
+### 1. Tạo Môi Trường Ảo (Chạy 1 lần duy nhất khi mượn xe mới)
+Tránh cài thư viện trực tiếp vào hệ thống của xe để không làm lỗi OpenCV và driver GPU gốc:
+```bash
+# 1. Clone repo
+git clone <repo_url>
+cd Jetson
+
+# 2. Bật LiDAR
+roslaunch jetracer lidar.launch
+
+# 3. Bật Camera (mở terminal mới)
+roslaunch jetracer csi_camera.launch
+
+# 4a. Chạy Speed Track (mở terminal mới)
+cd src/speed_track
+python3 main_speed_track.py
+
+# Kích hoạt môi trường ảo (Cần chạy mỗi khi mở Terminal mới)
+source ~/my_env/bin/activate
+```
+
+### 2. Cài Đặt ONNX Runtime GPU (Tải bản build riêng của NVIDIA)
+Vì xe chạy Python 3.6 và chip ARM64, hãy chạy lệnh này trong venv để cài đặt nhanh bản GPU:
+```bash
+# 1. Tải file .whl chuẩn
+wget -O onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl https://nvidia.box.com/shared/static/jy7nqva7l88mq9i8bw3g3sklzf4kccn2.whl
+
+# 2. Tiến hành cài đặt
+pip3 install onnxruntime_gpu-1.10.0-cp36-cp36m-linux_aarch64.whl
+```
+
+### 3. Quy Trình Tránh Xung Đột Động Cơ (Không Chạy Lệnh Tổng Khi Debug)
+Do code Python (`RacerController`) và ROS node `jetracer` đều ghi vào cổng I2C điều khiển động cơ nên sẽ gây xung đột khóa bánh. Khi muốn chạy code của chúng ta kết hợp cảm biến, hãy làm như sau:
+
+* **Terminal 1:** Chỉ bật trung tâm điều phối:
+>>>>>>> 85515ebaf10e224399136d4b82da7392ebe63e7c
   ```bash
   roscore
   ```

@@ -44,7 +44,7 @@ class DebugVisualizer:
 
     def render(self, frame, bev_mask, detection_result, lane_state,
                trajectory_result, steer_raw, steer_filtered, throttle,
-               fps, actual_speed=0.0):
+               fps, actual_speed=0.0, raw_mask=None):
         """Render complete debug dashboard.
 
         Args:
@@ -58,9 +58,10 @@ class DebugVisualizer:
             throttle: Current throttle command.
             fps: Current FPS.
             actual_speed: Actual speed from encoder (m/s).
+            raw_mask: Raw HSV mask before BEV transformation (optional).
 
         Returns:
-            Combined dashboard image (1280x480) or None if inputs are invalid.
+            Combined dashboard image or None if inputs are invalid.
         """
         if frame is None:
             return None
@@ -72,7 +73,7 @@ class DebugVisualizer:
         # --- Left panel: Original frame with overlays ---
         left_panel = frame.copy()
         self._draw_roi(left_panel)
-        self._draw_state_text(left_panel, lane_state, steer_filtered, throttle, fps)
+        self._draw_state_text(left_panel, lane_state, trajectory_result, steer_filtered, throttle, fps)
 
         # --- Right panel: BEV with lane lines ---
         if bev_mask is not None:
@@ -90,7 +91,16 @@ class DebugVisualizer:
         if right_panel.shape[:2] != (self.H, self.W):
             right_panel = cv2.resize(right_panel, (self.W, self.H))
 
-        dashboard = np.hstack((left_panel, right_panel))
+        if raw_mask is not None:
+            middle_panel = cv2.cvtColor(raw_mask, cv2.COLOR_GRAY2BGR)
+            if middle_panel.shape[:2] != (self.H, self.W):
+                middle_panel = cv2.resize(middle_panel, (self.W, self.H))
+            # Draw a title on middle panel
+            cv2.putText(middle_panel, "HSV Mask", (10, 30), self.font, 0.7, self.COLOR_TEXT, 2)
+            dashboard = np.hstack((left_panel, middle_panel, right_panel))
+        else:
+            dashboard = np.hstack((left_panel, right_panel))
+            
         return dashboard
 
     def _draw_roi(self, frame):
@@ -103,7 +113,7 @@ class DebugVisualizer:
         pts = np.int32(self.cfg.bev_src_pts)
         cv2.polylines(frame, [pts], True, (255, 0, 0), 1)
 
-    def _draw_state_text(self, frame, lane_state, steer, throttle, fps):
+    def _draw_state_text(self, frame, lane_state, traj, steer, throttle, fps):
         """Draw tracking state and key info on original frame."""
         state_name = lane_state.tracking_state.name if lane_state else 'INIT'
 
@@ -125,7 +135,18 @@ class DebugVisualizer:
         y += 30
         cv2.putText(frame, f"FPS: {fps:.1f}", (10, y),
                      self.font, 0.5, self.COLOR_TEXT, 1)
-        y += 22
+        
+        # Draw Trajectory Text
+        if traj is not None:
+            if traj.curvature is not None:
+                cv2.putText(frame, f"K(now): {traj.curvature:.2f}", (10, 85),
+                            self.font, 0.7, self.COLOR_TEXT, 2)
+            if hasattr(traj, 'max_upcoming_curvature') and traj.max_upcoming_curvature is not None:
+                # Hiện thông số nhìn xa (Predictive Curvature)
+                cv2.putText(frame, f"K(ahead): {traj.max_upcoming_curvature:.2f}", (10, 110),
+                            self.font, 0.7, (0, 165, 255), 2)  # Orange
+
+        y += 115
         cv2.putText(frame, f"Steer: {steer:.3f}", (10, y),
                      self.font, 0.5, self.COLOR_TEXT, 1)
         y += 22

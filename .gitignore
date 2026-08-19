@@ -32,7 +32,12 @@ models/*.onnx
 # restructure.py
 
 logs/*
+<<<<<<< HEAD
 sam_method/*
 
 experiments/weights/*
 experiments/*
+=======
+# Dataset
+dataset/
+>>>>>>> 85515ebaf10e224399136d4b82da7392ebe63e7c
