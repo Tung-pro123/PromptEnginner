@@ -17,9 +17,21 @@ import numpy as np
 import sys
 import os
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import settings
+class DummySettings:
+    TRAFFIC_ROI_TOP_RATIO = 0.5
+    TRAFFIC_MIN_AREA_LIGHT = 100
+    TRAFFIC_MIN_AREA_SIGN = 200
+    TRAFFIC_HISTORY_LEN = 3
+    TRAFFIC_RED_HSV_LOWER1 = [0, 100, 100]
+    TRAFFIC_RED_HSV_UPPER1 = [10, 255, 255]
+    TRAFFIC_RED_HSV_LOWER2 = [160, 100, 100]
+    TRAFFIC_RED_HSV_UPPER2 = [180, 255, 255]
+    TRAFFIC_GREEN_HSV_LOWER = [40, 50, 50]
+    TRAFFIC_GREEN_HSV_UPPER = [90, 255, 255]
+    TRAFFIC_BLUE_HSV_LOWER = [100, 100, 100]
+    TRAFFIC_BLUE_HSV_UPPER = [140, 255, 255]
 
+settings = DummySettings()
 
 class TrafficSign:
     """Hằng số biển báo chỉ dẫn."""
