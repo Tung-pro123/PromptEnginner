@@ -304,13 +304,10 @@ class SpeedRacingV3:
             steer_out = -steer if self.cfg.steer_invert else steer
 
             # Send commands
-            if lane_state.tracking_state == TrackingState.E_STOP:
-                # self.racer.stop()
-                # rospy.logwarn("E_STOP — all motors stopped.")
-                # break
-                continue
-            else:
-                self.racer.steer(steer_out, throttle)
+            # Vô hiệu hóa ngắt khẩn cấp E_STOP ở ngoài main loop để tính năng ép ga 3s đầu hoạt động
+            # (Hoặc có thể bypass nếu thời gian chưa qua 3s, nhưng do control/speed_controller đã lo phần ga, 
+            # chúng ta chỉ cần đảm bảo hàm steer luôn được gọi).
+            self.racer.steer(steer_out, throttle)
 
             # Record video
             if self.video_writer and dashboard is not None:

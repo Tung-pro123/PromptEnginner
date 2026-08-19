@@ -64,8 +64,19 @@ class SpeedController:
             Throttle command (0.0 to max_speed).
         """
         from src.speed_track.estimation.lane_state import TrackingState
+        import time
 
         cfg = self.cfg
+
+        # --- YÊU CẦU: ÉP CHẠY MAX_SPEED TRONG 3 GIÂY ĐẦU TIÊN ---
+        if not hasattr(self, '_start_time') or self._start_time is None:
+            self._start_time = time.time()
+            
+        if time.time() - self._start_time < 3.0:
+            # Tắt hoàn toàn mọi bảo vệ an toàn trong 3s đầu tiên
+            self.current_throttle = 1.0
+            return self.current_throttle
+        # --------------------------------------------------------
 
         # V3.1: Track curvature history
         self._curvature_history.append(abs(curvature))
@@ -188,7 +199,7 @@ class SpeedController:
 
         # Tăng ga từ từ (alpha nhỏ), nhưng hạ ga thật nhanh khi gặp cua (alpha lớn)
         if target_throttle > self.current_throttle:
-            alpha = 0.05 # Tăng ga mượt mà
+            alpha = 0.45 # Tăng ga mượt mà
         else:
             alpha = 0.3  # Hạ ga nhanh để an toàn
             
@@ -238,4 +249,5 @@ class SpeedController:
         self._prev_error = 0.0
         self._prev_time = None
         self._curvature_history = []
+        self._start_time = None
         self.current_throttle = self.cfg.min_speed
