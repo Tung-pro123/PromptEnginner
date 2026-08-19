@@ -89,13 +89,17 @@ class SpeedController:
         v_curve = math.sqrt(cfg.a_lat_max / (effective_curvature + epsilon))
         v_target = min(v_curve * stability_bonus, cfg.cruise_speed)
 
-        # V3.1: Explicit Horizon Control (Phóng nhanh / Đi chậm)
-        if horizon_state in ["CURVE_LEFT", "CURVE_RIGHT"]:
-            # Nhìn thấy cua gắt phía xa -> TRỞ VỀ BÁM ĐƯỜNG BÌNH THƯỜNG (không ép đi chậm)
-            # Hệ thống sẽ dùng vận tốc bám đường (v_curve) vốn rất ổn định.
-            pass
-        elif horizon_state == "STRAIGHT" and effective_curvature < 0.3:
-            # Nhìn thấy đường thẳng tắp VÀ gầm xe cũng đã thoát cua -> Đặt mục tiêu tốc độ tối đa!
+        # V3.3: PREDICTIVE CORNER BRAKING (Phanh sớm chủ động khi vào cua gắt)
+        corner_thresh = getattr(cfg, 'corner_brake_curvature_thresh', 0.75)
+        corner_safe_v = getattr(cfg, 'corner_safe_speed', 0.26)
+
+        if effective_curvature >= corner_thresh:
+            # Vào cua gắt -> Ép hạ tốc độ về mức an toàn tránh văng lốp
+            v_target = min(v_target, corner_safe_v)
+        elif horizon_state in ["CURVE_LEFT", "CURVE_RIGHT"]:
+            v_target = min(v_target, cfg.cruise_speed * 0.8)
+        elif horizon_state == "STRAIGHT" and effective_curvature < 0.25:
+            # Đường thẳng tắp -> Phóng ga tối đa!
             v_target = cfg.max_speed
 
         # Step 2: Confidence scaling
@@ -133,17 +137,16 @@ class SpeedController:
         # Final clamp
         target_throttle = max(0.0, min(cfg.max_speed, throttle))
 
-        # V3.1: Mượt mà hóa chân ga (Smooth Throttle)
-        # BỎ QUA LÀM MƯỢT TRONG TRƯỜNG HỢP KHẨN CẤP!
+        # V3.1 / V3.3: Mượt mà hóa chân ga (Smooth Throttle)
         if tracking_state in [TrackingState.E_STOP, TrackingState.SEARCH]:
             self.current_throttle = target_throttle
             return self.current_throttle
 
-        # Tăng ga từ từ (alpha nhỏ), nhưng hạ ga thật nhanh khi gặp cua (alpha lớn)
+        # Tăng ga từ từ (alpha nhỏ), nhưng hạ ga cực nhanh khi gặp cua gắt (alpha lớn)
         if target_throttle > self.current_throttle:
-            alpha = 0.05 # Tăng ga mượt mà
+            alpha = 0.06 # Tăng ga mượt mà
         else:
-            alpha = 0.3  # Hạ ga nhanh để an toàn
+            alpha = 0.50 if effective_curvature >= corner_thresh else 0.30  # Phanh gấp khi vào cua
             
         self.current_throttle = (1.0 - alpha) * self.current_throttle + alpha * target_throttle
 

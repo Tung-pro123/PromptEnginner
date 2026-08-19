@@ -130,6 +130,14 @@ class SpeedRacingV3:
         self.fps_timer = time.time()
         self.current_fps = 0.0
 
+        # ---- Smart Recovery FSM (V3.3) ----
+        self._lost_line_start_time = None
+        self._is_reversing = False
+        self._reverse_start_time = None
+        self._reverse_steer = 0.0
+        self._reverse_attempt_done = False
+        self._last_valid_steer = 0.0
+
     # ==================================================================
     # ROS CALLBACKS
     # ==================================================================
@@ -257,6 +265,45 @@ class SpeedRacingV3:
             actual_speed=None  # TODO: encoder feedback
         )
 
+        # ---- SMART RECOVERY FSM (V3.3: Lùi cứu nguy khi kẹt cua gắt) ----
+        if lane_state.confidence >= 0.40 and lane_state.tracking_state not in [TrackingState.RECOVERY, TrackingState.E_STOP]:
+            self._lost_line_start_time = None
+            self._reverse_attempt_done = False
+            self._last_valid_steer = steer_filtered
+        else:
+            # Mất line hoặc rơi vào trạng thái nguy hiểm
+            if self._lost_line_start_time is None:
+                self._lost_line_start_time = time.time()
+            else:
+                lost_dur = time.time() - self._lost_line_start_time
+                reverse_enabled = getattr(cfg, 'reverse_escape_enabled', True)
+                trigger_timeout = getattr(cfg, 'reverse_trigger_timeout', 1.2)
+                
+                if reverse_enabled and not self._reverse_attempt_done:
+                    if not self._is_reversing and lost_dur >= trigger_timeout:
+                        # Kích hoạt pha lùi cứu nguy
+                        self._is_reversing = True
+                        self._reverse_start_time = time.time()
+                        # Bẻ ngược góc lái cũ để xoay đầu xe vào lại tâm đường
+                        self._reverse_steer = -self._last_valid_steer if abs(self._last_valid_steer) > 0.15 else 0.5
+                        print(f"🚨 [SAFETY FSM] Mất line > {lost_dur:.1f}s -> Kích hoạt lùi cứu nguy: Steer={self._reverse_steer:.2f}")
+
+        if self._is_reversing:
+            rev_elapsed = time.time() - self._reverse_start_time
+            rev_duration = getattr(cfg, 'reverse_duration', 0.7)
+            if rev_elapsed < rev_duration:
+                steer_filtered = self._reverse_steer
+                throttle = getattr(cfg, 'reverse_throttle', -0.16)
+            else:
+                # Kết thúc lùi -> Phanh dừng nhẹ để khóa lại vạch giữa
+                self._is_reversing = False
+                self._reverse_attempt_done = True
+                self._lost_line_start_time = None
+                throttle = 0.0
+                if hasattr(self.lane_detector, '_locked_center_poly'):
+                    self.lane_detector._locked_center_poly = None  # Quét mới
+                print("✅ [SAFETY FSM] Hoàn thành lùi cứu nguy -> Khóa lại vạch giữa và tiếp tục đua.")
+
         # ---- 12. Debug visualization ----
         dashboard = self.visualizer.render(
             frame, bev_mask, detection, lane_state, traj,
@@ -303,10 +350,9 @@ class SpeedRacingV3:
             steer_out = -steer if self.cfg.steer_invert else steer
 
             # Send commands
-            if lane_state.tracking_state == TrackingState.E_STOP:
-                # self.racer.stop()
-                # rospy.logwarn("E_STOP — all motors stopped.")
-                # break
+            if lane_state.tracking_state == TrackingState.E_STOP and not self._is_reversing:
+                # Dừng xe khẩn cấp khi không còn khả năng phục hồi
+                self.racer.stop()
                 continue
             else:
                 self.racer.steer(steer_out, throttle)

@@ -67,9 +67,13 @@ class MultiLaneDetector:
         self.bev_h = config.image_height
         self.bev_w = config.image_width
         self._last_center_x = None
+        self._locked_center_poly = None   # Đa thức vạch giữa đã khóa
+        self._center_lock_count = 0        # Số frame khóa liên tiếp
+        self._lost_center_count = 0        # Số frame tạm mất vạch giữa
 
     def detect(self, bev_mask):
         """Detect all three lane lines on a BEV binary mask.
+        Ưu tiên khóa chặt và duy trì bám vạch giữa nét đứt qua Search Corridor.
 
         Args:
             bev_mask: Binary mask (uint8, 0 or 255) in BEV space.
@@ -77,36 +81,49 @@ class MultiLaneDetector:
         Returns:
             LaneDetectionResult containing left, center, right detections.
         """
-        # Step 1: Histogram of bottom 75%
-        histogram = np.sum(bev_mask[self.bev_h // 4:, :], axis=0)
+        center = LineDetection()
+        center_locked_success = False
 
-        # Step 2: Find peaks in the overall ROI
-        peaks = self._find_peaks(histogram)
-        
-        # NEW: Bottom-Anchor (Bottom 50% to securely jump over dashed line gaps)
-        bottom_hist = np.sum(bev_mask[int(self.bev_h * 0.50):, :], axis=0)
-        bottom_peaks = self._find_peaks(bottom_hist)
-        
-        if bottom_peaks:
-            if self._last_center_x is None:
-                # Khởi tạo ban đầu: vạch gần tâm camera nhất
-                true_center = min(bottom_peaks, key=lambda p: abs(p - self.bev_w // 2))
-                # Chỉ chấp nhận nếu nó thực sự ở gần tâm (tránh nhận vạch biên làm tâm)
-                if abs(true_center - self.bev_w // 2) < self.bev_w // 3:
-                    self._last_center_x = true_center
+        # ---- TẦNG 1: SEARCH CORRIDOR (Khóa bám vạch giữa từ đa thức frame trước) ----
+        if getattr(self.cfg, 'center_lock_enabled', True) and self._locked_center_poly is not None:
+            corridor_margin = getattr(self.cfg, 'center_corridor_margin', 45)
+            center = self._search_corridor(bev_mask, self._locked_center_poly, corridor_margin)
+            
+            min_pts = getattr(self.cfg, 'center_lock_min_pts', 60)
+            if center.detected and center.n_inliers >= min_pts and center.confidence >= 0.20:
+                # Cập nhật trơn đa thức vạch giữa (EMA)
+                alpha = getattr(self.cfg, 'center_poly_ema_alpha', 0.35)
+                self._locked_center_poly = alpha * center.poly + (1.0 - alpha) * self._locked_center_poly
+                center.poly = self._locked_center_poly.copy()
+                self._center_lock_count += 1
+                self._lost_center_count = 0
+                center_locked_success = True
             else:
-                # Các frame sau: vạch phải gần với Mỏ neo cũ nhất
-                true_center = min(bottom_peaks, key=lambda p: abs(p - self._last_center_x))
-                if abs(true_center - self._last_center_x) < 150:
-                    self._last_center_x = true_center
+                self._lost_center_count += 1
+                # Nếu mất quá 5 frame liên tiếp mới hủy khóa để tìm kiếm lại từ đầu
+                if self._lost_center_count > 5:
+                    self._locked_center_poly = None
+                    self._center_lock_count = 0
 
-        # Step 3: Assign peaks to L/C/R
+        # ---- TẦNG 2: HISTOGRAM PEAK SEARCH (Nếu chưa khóa được vạch giữa hoặc tìm 2 vạch biên) ----
+        histogram = np.sum(bev_mask[self.bev_h // 4:, :], axis=0)
+        peaks = self._find_peaks(histogram)
+
+        # Gán đỉnh cho 3 vạch
         left_base, center_base, right_base = self._assign_peaks(peaks)
 
-        # Step 4-6: Sliding window + RANSAC + confidence for each line
+        # Quét 2 vạch biên bằng sliding window
         left = self._detect_line(bev_mask, left_base) if left_base is not None else LineDetection()
-        center = self._detect_line(bev_mask, center_base) if center_base is not None else LineDetection()
         right = self._detect_line(bev_mask, right_base) if right_base is not None else LineDetection()
+
+        # Nếu Search Corridor chưa bắt được vạch giữa thì dùng sliding window
+        if not center_locked_success:
+            center = self._detect_line(bev_mask, center_base) if center_base is not None else LineDetection()
+            if center.detected and center.confidence >= 0.35 and center.poly is not None:
+                # Khởi tạo khóa mới cho các frame sau
+                self._locked_center_poly = center.poly.copy()
+                self._center_lock_count = 1
+                self._lost_center_count = 0
 
         return LaneDetectionResult(
             left=left, center=center, right=right,
@@ -241,8 +258,60 @@ class MultiLaneDetector:
             detected=True
         )
 
+    def _search_corridor(self, bev_mask, poly, margin):
+        """Khóa bám vạch nét đứt bằng Hành lang tìm kiếm (Search Corridor).
+        Trích xuất nhanh các pixel nằm trong phạm vi x_poly(y) +- margin.
+
+        Args:
+            bev_mask: Binary mask trong không gian BEV.
+            poly: Đa thức [a, b, c] của vạch giữa ở frame trước.
+            margin: Bề rộng hành lang (pixels).
+
+        Returns:
+            LineDetection kết quả.
+        """
+        nonzero_y, nonzero_x = bev_mask.nonzero()
+        if len(nonzero_y) == 0:
+            return LineDetection()
+
+        # Tính vị trí x mong đợi theo đa thức cũ: x = a*y^2 + b*y + c
+        expected_x = np.polyval(poly, nonzero_y)
+
+        # Lọc các điểm rơi đúng vào bên trong hành lang
+        in_corridor = (nonzero_x >= (expected_x - margin)) & (nonzero_x <= (expected_x + margin))
+
+        corridor_x = nonzero_x[in_corridor]
+        corridor_y = nonzero_y[in_corridor]
+
+        if len(corridor_x) < getattr(self.cfg, 'center_lock_min_pts', 60):
+            return LineDetection(n_total=len(corridor_x))
+
+        # Fit đa thức mới từ các điểm trong hành lang
+        new_poly, inlier_mask, rmse = self._ransac_polyfit(corridor_y, corridor_x)
+        if new_poly is None:
+            return LineDetection(n_total=len(corridor_x))
+
+        n_inliers = int(np.sum(inlier_mask))
+        inlier_ratio = n_inliers / len(corridor_x) if len(corridor_x) > 0 else 0.0
+        inlier_x = corridor_x[inlier_mask]
+        inlier_y = corridor_y[inlier_mask]
+
+        confidence = self._compute_confidence(n_inliers, rmse, inlier_ratio)
+
+        return LineDetection(
+            poly=new_poly,
+            confidence=confidence,
+            n_inliers=n_inliers,
+            n_total=len(corridor_x),
+            rmse=rmse,
+            inlier_ratio=inlier_ratio,
+            x_pixels=inlier_x,
+            y_pixels=inlier_y,
+            detected=True
+        )
+
     def _sliding_window(self, bev_mask, base_x):
-        """Sliding window search from bottom to top of the BEV mask.
+        """Sliding window search từ dưới lên trên kèm cơ chế Gap-Bridging (vượt khoảng đứt).
 
         Args:
             bev_mask: Binary mask (0/255).
@@ -254,24 +323,24 @@ class MultiLaneDetector:
         n_windows = self.cfg.sw_n_windows
         margin = self.cfg.sw_margin
         min_pix = self.cfg.sw_min_pix
+        max_empty = getattr(self.cfg, 'gap_bridge_max_empty', 3)
 
         window_height = self.bev_h // n_windows
         current_x = int(base_x)
+        last_dx = 0  # Xu hướng độ dốc để vượt khoảng đứt
+        empty_windows = 0
 
         all_x = []
         all_y = []
 
-        # Find all nonzero pixel positions in the mask
         nonzero_y, nonzero_x = bev_mask.nonzero()
 
         for win_idx in range(n_windows):
-            # Window boundaries
             y_low = self.bev_h - (win_idx + 1) * window_height
             y_high = self.bev_h - win_idx * window_height
             x_low = max(0, current_x - margin)
             x_high = min(self.bev_w, current_x + margin)
 
-            # Find pixels within the window
             in_window = (
                 (nonzero_y >= y_low) & (nonzero_y < y_high) &
                 (nonzero_x >= x_low) & (nonzero_x < x_high)
@@ -282,9 +351,16 @@ class MultiLaneDetector:
             all_x.append(window_x)
             all_y.append(window_y)
 
-            # Recenter window if enough pixels found
             if len(window_x) >= min_pix:
-                current_x = int(np.mean(window_x))
+                new_x = int(np.mean(window_x))
+                last_dx = new_x - current_x
+                current_x = new_x
+                empty_windows = 0
+            else:
+                # Gặp khoảng đứt (Gap) -> Nhảy cóc theo xu hướng độ cong cũ
+                empty_windows += 1
+                if empty_windows <= max_empty:
+                    current_x = int(np.clip(current_x + last_dx, 0, self.bev_w - 1))
 
         if len(all_x) == 0:
             return np.array([]), np.array([])

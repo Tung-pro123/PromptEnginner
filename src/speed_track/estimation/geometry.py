@@ -91,102 +91,72 @@ class LaneGeometry:
 
         # ---- Centerline reconstruction ----
 
-        if has_L and has_R:
-            # Case 1 or 2: Both boundaries visible
+        # ƯU TIÊN SỐ 1: Vạch giữa nét đứt (has_C) — Ground Truth của đường đua
+        if has_C:
+            obs.centerline_poly = center.poly.copy()
+            if has_L and has_R:
+                obs.method = 'L+C+R_fused'
+                width_px = self._compute_width(left.poly, right.poly)
+                self._prev_width_px = width_px
+                obs.overall_confidence = max(0.7, (left.confidence + right.confidence + center.confidence) / 3.0)
+            elif has_L:
+                obs.method = 'L+C'
+                obs.overall_confidence = max(0.6, (left.confidence * 0.4 + center.confidence * 0.6))
+            elif has_R:
+                obs.method = 'R+C'
+                obs.overall_confidence = max(0.6, (right.confidence * 0.4 + center.confidence * 0.6))
+            else:
+                obs.method = 'CENTER_LOCKED'
+                obs.overall_confidence = center.confidence
+            
+            obs.lane_width_px = self._prev_width_px
+            obs.lane_width_m = self._prev_width_px / self.cfg.px_per_meter_x
+            obs.valid = True
+
+        elif has_L and has_R:
+            # ƯU TIÊN SỐ 2: 2 vạch biên (không có vạch giữa) -> Lấy trung điểm
             center_from_boundaries = self._average_poly(left.poly, right.poly)
             width_px = self._compute_width(left.poly, right.poly)
             width_m = width_px / self.cfg.px_per_meter_x
 
-            # Validate lane width
-            if not self._width_valid(width_m):
-                # Width is unreasonable — reject this observation
-                obs.valid = False
-                obs.method = 'rejected_width'
-                return obs
-
-            if has_C:
-                # Case 1: All three lines — force centerline to exactly match the yellow line
-                obs.centerline_poly = center.poly
-                obs.method = 'L+C+R_fused'
-            else:
-                # Case 2: L + R only (center dashed line not visible)
+            if self._width_valid(width_m):
                 obs.centerline_poly = center_from_boundaries
                 obs.method = 'L+R_midpoint'
-
-            obs.lane_width_px = width_px
-            obs.lane_width_m = width_m
-            obs.overall_confidence = min(1.0, (left.confidence + right.confidence) / 2.0)
-            if has_C:
-                obs.overall_confidence = min(1.0, obs.overall_confidence * 0.7 + center.confidence * 0.3)
-            obs.valid = True
-            self._prev_width_px = width_px
-
-        elif has_L and has_C:
-            # Case 3a: Left boundary + center line
-            width_px = self._compute_half_width(left.poly, center.poly) * 2.0
-            width_m = width_px / self.cfg.px_per_meter_x
-            if self._width_valid(width_m):
-                obs.centerline_poly = center.poly
                 obs.lane_width_px = width_px
                 obs.lane_width_m = width_m
-                obs.overall_confidence = min(1.0, (left.confidence * 0.5 + center.confidence * 0.5))
+                obs.overall_confidence = min(1.0, (left.confidence + right.confidence) / 2.0)
                 obs.valid = True
-                obs.method = 'L+C'
                 self._prev_width_px = width_px
             else:
                 obs.valid = False
-                obs.method = 'rejected_width_LC'
-
-        elif has_R and has_C:
-            # Case 3b: Right boundary + center line
-            width_px = self._compute_half_width(center.poly, right.poly) * 2.0
-            width_m = width_px / self.cfg.px_per_meter_x
-            if self._width_valid(width_m):
-                obs.centerline_poly = center.poly
-                obs.lane_width_px = width_px
-                obs.lane_width_m = width_m
-                obs.overall_confidence = min(1.0, (right.confidence * 0.5 + center.confidence * 0.5))
-                obs.valid = True
-                obs.method = 'R+C'
-                self._prev_width_px = width_px
-            else:
-                obs.valid = False
-                obs.method = 'rejected_width_RC'
+                obs.method = 'rejected_width'
 
         elif has_L:
-            # Case 4a: Only left boundary visible
-            # Reconstruct center using previous lane width
-            half_w = self._prev_width_px / 2.0
+            # ƯU TIÊN SỐ 3a: Chỉ có vạch biên TRÁI -> Dịch sang PHẢI 1 khoảng cố định chuẩn
+            offset_m = getattr(self.cfg, 'single_line_offset_m', 0.225)
+            offset_px = offset_m * self.cfg.px_per_meter_x
             obs.centerline_poly = left.poly.copy()
-            obs.centerline_poly[-1] += half_w  # Shift right by half lane width
+            obs.centerline_poly[-1] += offset_px  # Shift right
             obs.lane_width_px = self._prev_width_px
             obs.lane_width_m = self._prev_width_px / self.cfg.px_per_meter_x
-            obs.overall_confidence = left.confidence * 0.5  # Reduced confidence
+            obs.overall_confidence = left.confidence * 0.5
             obs.valid = True
             obs.method = 'L_only'
 
         elif has_R:
-            # Case 4b: Only right boundary visible
-            half_w = self._prev_width_px / 2.0
+            # ƯU TIÊN SỐ 3b: Chỉ có vạch biên PHẢI -> Dịch sang TRÁI 1 khoảng cố định chuẩn
+            offset_m = getattr(self.cfg, 'single_line_offset_m', 0.225)
+            offset_px = offset_m * self.cfg.px_per_meter_x
             obs.centerline_poly = right.poly.copy()
-            obs.centerline_poly[-1] -= half_w  # Shift left by half lane width
+            obs.centerline_poly[-1] -= offset_px  # Shift left
             obs.lane_width_px = self._prev_width_px
             obs.lane_width_m = self._prev_width_px / self.cfg.px_per_meter_x
             obs.overall_confidence = right.confidence * 0.5
             obs.valid = True
             obs.method = 'R_only'
 
-        elif has_C:
-            # Case: Only center line visible (unusual but possible)
-            obs.centerline_poly = center.poly
-            obs.lane_width_px = self._prev_width_px
-            obs.lane_width_m = self._prev_width_px / self.cfg.px_per_meter_x
-            obs.overall_confidence = center.confidence * 0.8
-            obs.valid = True
-            obs.method = 'C_only'
-
         else:
-            # Case 5: No lines detected
+            # Không thấy bất kỳ vạch nào
             obs.valid = False
             obs.method = 'none'
 

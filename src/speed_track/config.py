@@ -138,6 +138,16 @@ class V3Config:
     conf_weight_inlier_ratio: float = 0.2
 
     # ================================================================
+    # LOCKED-ON DASHED CENTERLINE TRACKING (V3.3)
+    # ================================================================
+    center_lock_enabled: bool = True         # Luôn ưu tiên khóa và bám vạch giữa nét đứt
+    center_corridor_margin: int = 45          # Bề rộng hành lang tìm kiếm bám đuôi (pixels)
+    gap_bridge_max_empty: int = 3             # Số window rỗng tối đa được phép vượt qua khi gặp khoảng đứt
+    center_lock_min_pts: int = 60             # Số điểm ảnh tối thiểu để công nhận vạch giữa hợp lệ
+    center_poly_ema_alpha: float = 0.35       # Hệ số làm mượt đa thức chống giật lái (EMA)
+    single_line_offset_m: float = 0.225       # Nửa bề rộng làn chuẩn khi buộc phải dùng 1 vạch biên
+
+    # ================================================================
     # LANE GEOMETRY
     # ================================================================
     # Physical lane width (distance between the two boundary lines)
@@ -191,11 +201,13 @@ class V3Config:
     high_speed_steer_gain: float = 1.0    # [V3.1] gain tại max_speed (1.0 = no change, 0.65 = reduce 35%)
 
     # ================================================================
-    # SPEED CONTROL
+    # SPEED CONTROL & PREDICTIVE CORNER BRAKING (V3.3)
     # ================================================================
-    max_speed: float = 0.50                # [TUNE] throttle
+    max_speed: float = 0.50                # [TUNE] throttle trên đường thẳng
     min_speed: float = 0.18                # [TUNE]
-    cruise_speed: float = 0.40             # [TUNE] default straight-line speed
+    cruise_speed: float = 0.40             # [TUNE] default speed
+    corner_brake_curvature_thresh: float = 0.75  # [TUNE] Ngưỡng độ cong (|kappa| >= 0.75) để phanh sớm
+    corner_safe_speed: float = 0.26        # [TUNE] Tốc độ an toàn tối đa khi vào cua gắt (tránh văng lốp)
     a_lat_max: float = 2.0                 # [TUNE] lateral accel limit (m/s²)
     speed_confidence_thresh: float = 0.5   # reduce speed below this confidence
     speed_to_throttle_factor: float = 1.0  # [CALIBRATE] TĂNG HỆ SỐ NÀY ĐỂ XE BỐC HƠN (v(m/s) → throttle)
@@ -205,6 +217,14 @@ class V3Config:
     speed_pid_ki: float = 0.0
     speed_pid_kd: float = 0.1
     use_encoder: bool = False              # [CALIBRATE] set True if encoder available
+
+    # ================================================================
+    # SMART REVERSE ESCAPE PROTOCOL (V3.3)
+    # ================================================================
+    reverse_escape_enabled: bool = True     # Bật tính năng lùi cứu nguy khi kẹt cua gắt
+    reverse_trigger_timeout: float = 1.2    # Mất line liên tiếp quá 1.2s -> Kích hoạt lùi
+    reverse_duration: float = 0.7           # Thời gian lùi xoay đầu xe (giây)
+    reverse_throttle: float = -0.16         # Ga lùi êm ái (giá trị âm)
 
     # ================================================================
     # STATE MACHINE TIMEOUTS
