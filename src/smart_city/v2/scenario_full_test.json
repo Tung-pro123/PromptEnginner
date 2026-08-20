@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "validated_for_live": false,
+  "route_id": "FULL_TEST_ALL_CASES",
+  "description": "Route test toàn diện: bao phủ ngã tư + đèn, ngã 3 + biển cấm, góc, biển lệnh, rẽ trái/phải/thẳng. Xuất phát: I9 (góc dưới-phải), hướng TRÁI. Không dùng cho thi thật.",
+  "preference": ["STRAIGHT", "RIGHT", "LEFT"],
+  "intersections": [
+    {
+      "id": "I08_T_bottom_center",
+      "type_note": "Ngã 3 đáy giữa. Xe đến từ phải, heading LEFT",
+      "allowed": ["STRAIGHT", "RIGHT"],
+      "mock_sign": "NO_STRAIGHT",
+      "_comment": "Case 1: Biển CẤM đi thẳng tại ngã 3 → xe phải rẽ RIGHT (lên I5)"
+    },
+    {
+      "id": "I05_4way_center_1st",
+      "type_note": "Ngã tư trung tâm, có đèn giao thông",
+      "allowed": ["LEFT", "STRAIGHT", "RIGHT"],
+      "action": "STRAIGHT",
+      "_comment": "Case 2: Ngã tư + đèn giao thông → đi thẳng lên I2"
+    },
+    {
+      "id": "I02_T_top_center",
+      "type_note": "Ngã 3 đỉnh giữa. Xe heading UP",
+      "allowed": ["LEFT", "RIGHT"],
+      "mock_sign": "NO_LEFT",
+      "_comment": "Case 3: Biển CẤM rẽ trái tại ngã 3 → xe phải rẽ RIGHT (sang I3)"
+    },
+    {
+      "id": "I03_corner_top_right",
+      "type_note": "Góc trên-phải. Xe heading RIGHT, chỉ 1 exit",
+      "allowed": ["RIGHT"],
+      "action": "RIGHT",
+      "_comment": "Case 4: Góc → bắt buộc rẽ RIGHT (xuống I6)"
+    },
+    {
+      "id": "I06_T_right",
+      "type_note": "Ngã 3 cạnh phải. Xe heading DOWN",
+      "allowed": ["STRAIGHT", "RIGHT"],
+      "mock_sign": "TURN_RIGHT",
+      "_comment": "Case 5: Biển LỆNH rẽ phải → xe vào I5 (sang trái theo hướng xe)"
+    },
+    {
+      "id": "I05_4way_center_2nd",
+      "type_note": "Ngã tư trung tâm lần 2. Xe heading LEFT",
+      "allowed": ["LEFT", "STRAIGHT", "RIGHT"],
+      "action": "STRAIGHT",
+      "_comment": "Case 6: Ngã tư → đi thẳng sang I4"
+    },
+    {
+      "id": "I04_T_left",
+      "type_note": "Ngã 3 cạnh trái. Xe heading LEFT",
+      "allowed": ["LEFT", "RIGHT"],
+      "mock_sign": "TURN_LEFT",
+      "_comment": "Case 7: Biển LỆNH rẽ trái → xe xuống I7"
+    },
+    {
+      "id": "I07_corner_bottom_left",
+      "type_note": "Góc dưới-trái. Xe heading DOWN, chỉ 1 exit",
+      "allowed": ["LEFT"],
+      "action": "LEFT",
+      "_comment": "Case 8: Góc → bắt buộc rẽ LEFT (sang phải I8)"
+    },
+    {
+      "id": "I08_T_bottom_center_2nd",
+      "type_note": "Ngã 3 đáy giữa lần 2. Xe heading RIGHT",
+      "allowed": ["STRAIGHT", "LEFT"],
+      "action": "STRAIGHT",
+      "_comment": "Case 9: Ngã 3 → đi thẳng sang I9"
+    },
+    {
+      "id": "I09_finish",
+      "type_note": "Góc dưới-phải = ĐÍCH",
+      "allowed": ["STRAIGHT"],
+      "action": "END",
+      "_comment": "Case 10: KẾT THÚC"
+    }
+  ]
+}

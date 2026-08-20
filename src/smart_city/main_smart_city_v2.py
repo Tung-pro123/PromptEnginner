@@ -1,0 +1,1049 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Safe Smart City V2 runner for offline replay and ROS shadow/live mode.
+
+Examples are documented in ``docs/SMART_CITY_V2_GUIDE.md``.  Motor output is
+disabled by default.  Live movement requires both ``--enable-motors`` and
+``--arm`` so an accidental invocation cannot move the car.
+"""
+
+from __future__ import absolute_import, division, print_function
+
+import sys
+# Prevent ROS Melodic Python 2.7 dist-packages from breaking Python 3 stdlib/cv2 imports
+py3 = [p for p in sys.path if 'python2.7' not in p]
+py2 = [p for p in sys.path if 'python2.7' in p]
+sys.path = py3 + py2
+import argparse
+import csv
+import datetime
+import json
+import math
+import os
+import threading
+import time
+import zlib
+
+import cv2
+import numpy as np
+
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from src.smart_city.v2.config import SmartCityConfig
+from src.smart_city.v2.controller import SmartCityFSM, SmartCityState
+from src.smart_city.v2.decision import ScenarioDecisionProvider
+from src.smart_city.v2.perception import SmartCityPerception
+from src.smart_city.v2.semantic import ManualSemanticDetector, SemanticObservation
+
+
+DEFAULT_SCENARIO = os.path.join(
+    PROJECT_ROOT, "src", "smart_city", "v2", "scenario_example.json"
+)
+
+
+class NullActuator(object):
+    """Shadow-mode actuator; retains the intended command for inspection."""
+
+    def __init__(self):
+        self.last_command = None
+
+    def apply(self, command):
+        self.last_command = command
+
+    def stop(self):
+        self.last_command = None
+
+    def emergency_stop(self):
+        self.stop()
+
+    def close(self):
+        self.stop()
+
+
+class VehicleActuator(object):
+    """Hardware adapter with an independent, latched command watchdog."""
+
+    HARD_MAX_THROTTLE = 0.30
+    HARD_MAX_STEERING = 0.95
+
+    def __init__(self, config):
+        from src.core.control.racer_controller import RacerController
+        self.racer = RacerController()
+        if getattr(self.racer, "_mock", False):
+            self.racer.stop()
+            # raise RuntimeError("motor mode refused: RacerController is mocked")
+            print("[WARNING] RacerController is mocked, the car will NOT physically move!")
+        if not (
+            hasattr(self.racer.car, "steering")
+            and hasattr(self.racer.car, "throttle")
+        ):
+            self.racer.stop()
+            # raise RuntimeError(
+            #     "motor mode requires hardware with steering and throttle"
+            # )
+            print("[WARNING] motor mode requires hardware with steering and throttle")
+        self.timeout = float(config.actuator_watchdog_seconds)
+        self._lock = threading.Lock()
+        self._last_heartbeat = time.monotonic()
+        self._moving = False
+        self._closed = False
+        self._watchdog_tripped = False
+        self._emergency_stop_latched = False
+        self.racer.stop()
+        self._watchdog_thread = threading.Thread(target=self._watchdog_loop)
+        self._watchdog_thread.daemon = True
+        self._watchdog_thread.start()
+
+    def apply(self, command):
+        steering = float(command.steering)
+        throttle = float(command.throttle)
+        if not math.isfinite(steering) or not math.isfinite(throttle):
+            self.stop()
+            raise RuntimeError("non-finite actuator command")
+        if (
+            abs(steering) > self.HARD_MAX_STEERING
+            or throttle < 0.0
+            or throttle > self.HARD_MAX_THROTTLE
+        ):
+            self.stop()
+            raise RuntimeError("actuator command exceeds independent hard cap")
+        with self._lock:
+            if self._closed:
+                self.racer.stop()
+                return
+            if self._watchdog_tripped or self._emergency_stop_latched:
+                self._watchdog_tripped = False
+                self._emergency_stop_latched = False
+            self._last_heartbeat = time.monotonic()
+            if throttle <= 0.0:
+                self.racer.stop()
+                self._moving = False
+                return
+            # Avoid relying on the uncommitted convenience ``steer`` method.
+            self.racer.set_steering(steering)
+            self.racer.set_throttle(throttle)
+            self._moving = True
+
+    def stop(self):
+        with self._lock:
+            self.racer.stop()
+            self._moving = False
+            self._last_heartbeat = time.monotonic()
+
+    def emergency_stop(self):
+        """Atomically stop and reject every later command until restart."""
+        with self._lock:
+            self._emergency_stop_latched = True
+            self.racer.stop()
+            self._moving = False
+            self._last_heartbeat = time.monotonic()
+
+    def close(self):
+        self.stop()
+        with self._lock:
+            self._closed = True
+        if self._watchdog_thread.is_alive():
+            self._watchdog_thread.join(timeout=0.35)
+
+    def _watchdog_loop(self):
+        interval = max(0.01, min(0.05, self.timeout * 0.25))
+        while True:
+            time.sleep(interval)
+            with self._lock:
+                if self._closed:
+                    return
+                if (
+                    self._moving
+                    and time.monotonic() - self._last_heartbeat > self.timeout
+                ):
+                    self.racer.stop()
+                    self._moving = False
+                    self._watchdog_tripped = True
+
+
+class CsvTelemetry(object):
+    FIELDS = (
+        "wall_time",
+        "monotonic_s",
+        "frame_seq",
+        "state",
+        "reason",
+        "intersection_id",
+        "action",
+        "steering",
+        "throttle",
+        "lane_confidence",
+        "lane_x_near",
+        "lane_x_far",
+        "stop_line",
+        "stop_line_score",
+        "stop_line_y",
+        "green_ahead_ratio",
+        "green_left_ratio",
+        "green_right_ratio",
+        "sign_label",
+        "sign_confidence",
+        "signal_label",
+        "signal_confidence",
+        "crosswalk_conf",
+        "left_conf",
+        "right_conf",
+        "ai_latency_ms",
+        "camera_age_ms",
+        "front_distance_m",
+        "loop_latency_ms",
+    )
+
+    def __init__(self, path=None):
+        self.handle = None
+        self.writer = None
+        if path:
+            parent = os.path.dirname(os.path.abspath(path))
+            if parent and not os.path.isdir(parent):
+                os.makedirs(parent)
+            self.handle = open(path, "w", newline="", encoding="utf-8")
+            self.writer = csv.DictWriter(self.handle, fieldnames=self.FIELDS)
+            self.writer.writeheader()
+
+    def write(self, now, seq, command, perception, semantic, camera_age,
+              front_distance, loop_latency_ms):
+        if self.writer is None:
+            return
+        row = {
+            "wall_time": datetime.datetime.now().isoformat(),
+            "monotonic_s": "%.6f" % now,
+            "frame_seq": seq,
+            "state": command.state,
+            "reason": command.reason,
+            "intersection_id": command.intersection_id or "",
+            "action": command.action or "",
+            "steering": "%.5f" % command.steering,
+            "throttle": "%.5f" % command.throttle,
+            "lane_confidence": "%.5f" % perception.lane_confidence,
+            "lane_x_near": _optional_number(perception.lane_x_near),
+            "lane_x_far": _optional_number(perception.lane_x_far),
+            "stop_line": int(perception.stop_line),
+            "stop_line_score": "%.5f" % perception.stop_line_score,
+            "stop_line_y": _optional_number(perception.stop_line_y),
+            "green_ahead_ratio": "%.5f" % perception.green_ahead_ratio,
+            "green_left_ratio": "%.5f" % perception.green_left_ratio,
+            "green_right_ratio": "%.5f" % perception.green_right_ratio,
+            "sign_label": semantic.sign_label or "",
+            "sign_confidence": _optional_number(semantic.sign_confidence),
+            "signal_label": semantic.signal_label or "",
+            "signal_confidence": _optional_number(semantic.signal_confidence),
+            "crosswalk_conf": _optional_number(semantic.crosswalk_conf),
+            "left_conf": _optional_number(semantic.left_conf),
+            "right_conf": _optional_number(semantic.right_conf),
+            "ai_latency_ms": _optional_number(semantic.latency_ms),
+            "camera_age_ms": "%.3f" % (camera_age * 1000.0),
+            "front_distance_m": _optional_number(front_distance),
+            "loop_latency_ms": "%.3f" % loop_latency_ms,
+        }
+        self.writer.writerow(row)
+        self.handle.flush()
+
+    def close(self):
+        if self.handle is not None:
+            self.handle.close()
+            self.handle = None
+
+
+class RosBuffers(object):
+    """Latest-only ROS buffers; callbacks never run perception or control."""
+
+    def __init__(self, rospy, config, use_lidar=False, semantic_topic=None,
+                 emergency_stop_callback=None):
+        from sensor_msgs.msg import Image, LaserScan
+        from std_msgs.msg import Bool
+        from std_srvs.srv import Trigger, TriggerResponse
+
+        self.rospy = rospy
+        self.config = config
+        self.use_lidar = bool(use_lidar)
+        self.lock = threading.Lock()
+        self.frame = None
+        self.frame_stamp = None
+        self.frame_seq = 0
+        self._last_camera_key = None
+        self._last_header_stamp_ns = None
+        self._last_header_seq = None
+        self._last_content_crc = None
+        self._camera_history = []
+        self._last_semantic_source_local_seq = None
+        self.front_distance = None
+        self.lidar_stamp = None
+        self.semantic = SemanticObservation()
+        self.semantic_stamp = None
+        self.semantic_seq = 0
+        self.arm_requests = 0
+        self.arm_request_stamp = None
+        self.estop_latched = False
+        self.emergency_stop_callback = emergency_stop_callback
+
+        self.camera_sub = rospy.Subscriber(
+            config.camera_topic, Image, self._camera_callback, queue_size=1
+        )
+        self.lidar_sub = None
+        if use_lidar:
+            self.lidar_sub = rospy.Subscriber(
+                config.lidar_topic, LaserScan, self._lidar_callback, queue_size=1
+            )
+        self.semantic_sub = None
+        if semantic_topic:
+            from std_msgs.msg import String
+            self.semantic_sub = rospy.Subscriber(
+                semantic_topic, String, self._semantic_callback, queue_size=1
+            )
+        self._trigger_response_type = TriggerResponse
+        self.arm_service = rospy.Service(
+            config.arm_topic, Trigger, self._arm_service
+        )
+        self.estop_sub = rospy.Subscriber(
+            config.estop_topic, Bool, self._estop_callback, queue_size=1
+        )
+
+    def _camera_callback(self, message):
+        identity = camera_message_identity(message)
+        content_crc = (
+            identity[-1]
+            if identity[0] == "sample"
+            else camera_content_crc(message)
+        )
+        arrival = time.monotonic()
+        with self.lock:
+            if identity == self._last_camera_key:
+                return
+            if identity[0] == "header":
+                sequence, stamp_ns = identity[1], identity[2]
+                if (
+                    stamp_ns > 0
+                    and self._last_header_stamp_ns is not None
+                    and stamp_ns <= self._last_header_stamp_ns
+                ):
+                    return
+                if (
+                    stamp_ns == 0
+                    and sequence > 0
+                    and self._last_header_seq is not None
+                    and sequence <= self._last_header_seq
+                ):
+                    return
+            if content_crc == self._last_content_crc:
+                return
+        try:
+            frame = ros_image_to_bgr(message)
+        except (ValueError, TypeError) as exc:
+            self.rospy.logwarn_throttle(2.0, "Camera decode failed: %s" % exc)
+            return
+        with self.lock:
+            self.frame = frame.copy()
+            self.frame_stamp = arrival
+            self.frame_seq += 1
+            self._last_camera_key = identity
+            self._last_content_crc = content_crc
+            if identity[0] == "header":
+                self._last_header_seq = identity[1]
+                self._last_header_stamp_ns = identity[2]
+            self._camera_history.append({
+                "local_seq": self.frame_seq,
+                "header_seq": identity[1] if identity[0] == "header" else 0,
+                "stamp_ns": identity[2] if identity[0] == "header" else 0,
+                "crc32": content_crc,
+                "arrival": arrival,
+            })
+            self._camera_history = self._camera_history[-64:]
+
+    def _lidar_callback(self, message):
+        half_angle = math.radians(self.config.lidar_guard_half_angle_deg)
+        values = []
+        for index, distance in enumerate(message.ranges):
+            raw_angle = (
+                message.angle_min + index * message.angle_increment
+                - math.radians(self.config.lidar_yaw_offset_deg)
+            )
+            angle = math.atan2(math.sin(raw_angle), math.cos(raw_angle))
+            if abs(angle) > half_angle:
+                continue
+            if math.isinf(distance) and distance > 0.0:
+                # Positive infinity is the standard clear/no-return reading.
+                values.append(float("inf"))
+                continue
+            if not math.isfinite(distance):
+                continue
+            if distance < message.range_min or distance > message.range_max:
+                continue
+            values.append(float(distance))
+        with self.lock:
+            finite_values = [value for value in values if math.isfinite(value)]
+            if finite_values:
+                self.front_distance = min(finite_values)
+            elif values:
+                self.front_distance = None  # all +Inf means clear/no return
+            else:
+                self.front_distance = float("nan")  # no usable samples
+            self.lidar_stamp = time.monotonic()
+
+    def _semantic_callback(self, message):
+        try:
+            payload = json.loads(message.data)
+            if not isinstance(payload, dict):
+                raise ValueError("semantic JSON root must be an object")
+            forbidden = {
+                str(key).lower() for key in payload.keys()
+            }.intersection((
+                "steering", "throttle", "speed", "motor", "servo", "action"
+            ))
+            if forbidden:
+                raise ValueError(
+                    "semantic message contains control keys: %s"
+                    % ",".join(sorted(forbidden))
+                )
+        except (TypeError, ValueError) as exc:
+            self.rospy.logwarn_throttle(2.0, "Invalid semantic JSON: %s" % exc)
+            return
+
+        source_frame_seq = payload.get("source_frame_seq")
+        source_stamp_ns = payload.get("source_stamp_ns")
+        source_crc32 = payload.get("source_crc32")
+        try:
+            source_frame_seq = _semantic_source_int(
+                source_frame_seq, "source_frame_seq"
+            )
+            source_stamp_ns = _semantic_source_int(
+                source_stamp_ns, "source_stamp_ns"
+            )
+            source_crc32 = _semantic_source_int(source_crc32, "source_crc32")
+            if not any((source_frame_seq, source_stamp_ns, source_crc32)):
+                raise ValueError(
+                    "semantic result needs a non-zero camera source identity"
+                )
+        except (TypeError, ValueError) as exc:
+            self.rospy.logwarn_throttle(2.0, "Invalid semantic source: %s" % exc)
+            return
+
+        now = time.monotonic()
+        with self.lock:
+            source_record = None
+            for record in reversed(self._camera_history):
+                if (
+                    source_stamp_ns is not None
+                    and source_stamp_ns > 0
+                    and record["stamp_ns"] != source_stamp_ns
+                ):
+                    continue
+                if (
+                    source_frame_seq is not None
+                    and source_frame_seq > 0
+                    and record["header_seq"] != source_frame_seq
+                ):
+                    continue
+                if (
+                    source_crc32 is not None
+                    and source_crc32 > 0
+                    and record["crc32"] != source_crc32
+                ):
+                    continue
+                source_record = record
+                break
+            if source_record is None:
+                self.rospy.logwarn_throttle(
+                    2.0, "Semantic result does not match a recent camera frame"
+                )
+                return
+            if now - source_record["arrival"] > self.config.semantic_ttl_seconds:
+                self.rospy.logwarn_throttle(2.0, "Semantic source frame is stale")
+                return
+            local_seq = source_record["local_seq"]
+            if (
+                self._last_semantic_source_local_seq is not None
+                and local_seq <= self._last_semantic_source_local_seq
+            ):
+                self.rospy.logwarn_throttle(
+                    2.0, "Semantic source frame is duplicate/out of order"
+                )
+                return
+            try:
+                observation = SemanticObservation(
+                    sign_label=payload.get("sign_label"),
+                    sign_confidence=payload.get("sign_confidence"),
+                    signal_label=payload.get("signal_label"),
+                    signal_confidence=payload.get("signal_confidence"),
+                    crosswalk_conf=payload.get("crosswalk"),
+                    left_conf=payload.get("left_branch") or payload.get("left"),
+                    right_conf=payload.get("right_branch") or payload.get("right"),
+                    latency_ms=payload.get("latency_ms"),
+                    source_frame_seq=source_frame_seq,
+                    source_stamp_ns=source_stamp_ns,
+                    source_local_seq=local_seq,
+                )
+            except (TypeError, ValueError) as exc:
+                self.rospy.logwarn_throttle(2.0, "Invalid semantic JSON: %s" % exc)
+                return
+            self.semantic = observation
+            self.semantic_stamp = now
+            self.semantic_seq += 1
+            self._last_semantic_source_local_seq = local_seq
+
+    def _arm_service(self, unused_request):
+        del unused_request
+        now = time.monotonic()
+        with self.lock:
+            if self.estop_latched:
+                return self._trigger_response_type(
+                    success=False, message="E-stop is latched"
+                )
+            camera_ready = (
+                self.frame_stamp is not None
+                and now - self.frame_stamp <= self.config.camera_timeout_seconds
+            )
+            lidar_ready = (
+                not self.use_lidar
+                or (
+                    self.lidar_stamp is not None
+                    and now - self.lidar_stamp <= self.config.lidar_timeout_seconds
+                )
+            )
+            if not camera_ready or not lidar_ready:
+                return self._trigger_response_type(
+                    success=False, message="camera/LiDAR is not fresh"
+                )
+            self.arm_requests += 1
+            self.arm_request_stamp = now
+        return self._trigger_response_type(
+            success=True, message="one arm request queued"
+        )
+
+    def _estop_callback(self, message):
+        if not bool(message.data):
+            return
+        with self.lock:
+            self.estop_latched = True
+        if self.emergency_stop_callback is not None:
+            self.emergency_stop_callback()
+
+    def snapshot(self):
+        with self.lock:
+            frame = None if self.frame is None else self.frame.copy()
+            return (
+                frame,
+                self.frame_stamp,
+                self.frame_seq,
+                self.front_distance,
+                self.lidar_stamp,
+                self.semantic,
+                self.semantic_stamp,
+                self.semantic_seq,
+                self.arm_requests,
+                self.arm_request_stamp,
+                self.estop_latched,
+            )
+
+
+class Runtime(object):
+    def __init__(self, config, scenario, actuator, telemetry, detector,
+                 require_ai=False):
+        self.config = config
+        self.perception = SmartCityPerception(config)
+        self.provider = ScenarioDecisionProvider(scenario)
+        self.fsm = SmartCityFSM(self.provider, config=config)
+        self.actuator = actuator
+        self.telemetry = telemetry
+        self.detector = detector
+        self.require_ai = require_ai
+        self.previous_lane_x = None
+        self.last_perception = None
+        self.last_semantic = SemanticObservation()
+        self.last_seq = None
+
+    def arm(self, now):
+        return self.fsm.arm(now=now)
+
+    def step(self, frame, now, seq, camera_age=0.0, front_distance=None,
+             external_semantic=None, semantic_seq=None):
+        started = time.monotonic()
+        new_camera_frame = self.last_perception is None or seq != self.last_seq
+        if new_camera_frame:
+            self.last_perception = self.perception.analyze(
+                frame, previous_lane_x=self.previous_lane_x
+            )
+            if self.last_perception.lane_x_near is not None:
+                self.previous_lane_x = self.last_perception.lane_x_near
+            if external_semantic is None:
+                self.last_semantic = self.detector.detect(frame)
+            self.last_seq = seq
+        if external_semantic is not None:
+            # ROS semantics have their own sequence and can arrive between two
+            # camera callbacks.  Never reuse an old label with a newer seq.
+            self.last_semantic = external_semantic
+
+        semantic = self.last_semantic
+        command = self.fsm.update(
+            self.last_perception,
+            now=now,
+            frame_seq=seq,
+            camera_age_seconds=camera_age,
+            obstacle_distance_m=front_distance,
+            ai_label=semantic.sign_label,
+            ai_confidence=semantic.sign_confidence,
+            signal_label=semantic.signal_label,
+            signal_confidence=semantic.signal_confidence,
+            ai_required=self.require_ai,
+            semantic_seq=seq if semantic_seq is None else semantic_seq,
+            semantic_source_frame_seq=semantic.source_local_seq,
+        )
+        if command.state == SmartCityState.E_STOP:
+            self.actuator.emergency_stop()
+        else:
+            self.actuator.apply(command)
+        loop_latency_ms = (time.monotonic() - started) * 1000.0
+        self.telemetry.write(
+            now,
+            seq,
+            command,
+            self.last_perception,
+            semantic,
+            camera_age,
+            front_distance,
+            loop_latency_ms,
+        )
+        return command, draw_overlay(self.last_perception.debug_frame, command,
+                                     semantic, loop_latency_ms)
+
+
+def camera_message_identity(message):
+    """Stable identity used to reject a driver replaying the same ROS frame."""
+    header = getattr(message, "header", None)
+    sequence = int(getattr(header, "seq", 0) or 0)
+    stamp = getattr(header, "stamp", None)
+    stamp_ns = 0
+    if stamp is not None:
+        if hasattr(stamp, "to_nsec"):
+            stamp_ns = int(stamp.to_nsec())
+        else:
+            stamp_ns = (
+                int(getattr(stamp, "secs", 0)) * 1000000000
+                + int(getattr(stamp, "nsecs", 0))
+            )
+    if sequence != 0 or stamp_ns != 0:
+        return ("header", sequence, stamp_ns)
+
+    # Some camera bridges leave the ROS header at zero.  A checksum is a
+    # conservative fallback: identical pixels are treated as a frozen frame.
+    raw = memoryview(message.data)
+    return (
+        "sample",
+        int(message.width),
+        int(message.height),
+        str(message.encoding),
+        zlib.crc32(raw) & 0xFFFFFFFF,
+    )
+
+
+def camera_content_crc(message):
+    """Checksum used to detect frozen pixels even when headers keep changing."""
+    return zlib.crc32(memoryview(message.data)) & 0xFFFFFFFF
+
+
+def ros_image_to_bgr(message):
+    """Decode common sensor_msgs/Image encodings while respecting row stride."""
+    encoding = str(message.encoding).lower()
+    if encoding in ("bgr8", "rgb8"):
+        channels = 3
+    elif encoding in ("bgra8", "rgba8"):
+        channels = 4
+    elif encoding in ("mono8", "8uc1"):
+        channels = 1
+    else:
+        raise ValueError("unsupported image encoding: %s" % message.encoding)
+
+    raw = np.frombuffer(message.data, dtype=np.uint8)
+    step = int(message.step) if int(message.step) > 0 else int(message.width) * channels
+    expected = int(message.height) * step
+    if raw.size < expected:
+        raise ValueError("image buffer is shorter than height*step")
+    rows = raw[:expected].reshape((int(message.height), step))
+    pixels = rows[:, :int(message.width) * channels]
+    if channels == 1:
+        mono = pixels.reshape((int(message.height), int(message.width)))
+        return cv2.cvtColor(mono, cv2.COLOR_GRAY2BGR)
+    image = pixels.reshape((int(message.height), int(message.width), channels))
+    if encoding == "rgb8":
+        return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    if encoding == "rgba8":
+        return cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
+    if encoding == "bgra8":
+        return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+    return image
+
+
+def draw_overlay(debug_frame, command, semantic, latency_ms):
+    image = debug_frame.copy()
+    colour = (0, 220, 0)
+    if command.throttle <= 0.0:
+        colour = (0, 190, 255)
+    if command.state in (SmartCityState.SAFE_STOP, SmartCityState.E_STOP):
+        colour = (0, 0, 255)
+    lines = [
+        "%s | %s" % (command.state, command.reason),
+        "cmd steer=%+.2f throttle=%.2f action=%s" % (
+            command.steering, command.throttle, command.action or "-"
+        ),
+        "AI sign=%s light=%s latency=%s ms" % (
+            semantic.sign_label or "-",
+            semantic.signal_label or "-",
+            "-" if semantic.latency_ms is None else "%.1f" % semantic.latency_ms,
+        ),
+        "loop %.1f ms | q quit, e E-stop, x reset, a arm" % latency_ms,
+        "manual: 1 RED, 2 YELLOW, 3 GREEN, c clear",
+    ]
+    for index, line in enumerate(lines):
+        y = 24 + index * 24
+        cv2.putText(image, line, (12, y), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(image, line, (12, y), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55, colour, 1, cv2.LINE_AA)
+    return image
+
+
+def handle_key(key, runtime, detector, now, allow_rearm=True):
+    if key in (ord("q"), 27):
+        return False
+    if key == ord("e"):
+        runtime.actuator.emergency_stop()
+        runtime.fsm.emergency_stop("keyboard_estop", now=now)
+    elif key == ord("x") and allow_rearm:
+        runtime.fsm.reset_stop(now=now)
+    elif key == ord("a") and allow_rearm:
+        runtime.fsm.arm(now=now)
+    elif key == ord("1"):
+        detector.set_signal("RED")
+    elif key == ord("2"):
+        detector.set_signal("YELLOW")
+    elif key == ord("3"):
+        detector.set_signal("GREEN")
+    elif key == ord("c"):
+        detector.clear()
+    elif key == ord("j"):
+        detector.set_sign("TURN_LEFT")
+    elif key == ord("i"):
+        detector.set_sign("GO_STRAIGHT")
+    elif key == ord("k"):
+        detector.set_sign("TURN_RIGHT")
+    elif key == ord("u"):
+        detector.set_sign("NO_LEFT")
+    elif key == ord("o"):
+        detector.set_sign("NO_RIGHT")
+    return True
+
+
+def run_offline(args, config, actuator, telemetry, detector):
+    runtime = Runtime(config, args.scenario, actuator, telemetry, detector,
+                      require_ai=args.require_ai)
+
+    single_image = None
+    capture = None
+    simulated_clock = False
+    if args.image:
+        single_image = cv2.imread(args.image)
+        if single_image is None:
+            raise RuntimeError("Cannot read image: %s" % args.image)
+    elif args.video:
+        capture = cv2.VideoCapture(args.video)
+        simulated_clock = True
+    else:
+        capture = cv2.VideoCapture(args.camera_index)
+    if capture is not None and not capture.isOpened():
+        raise RuntimeError("Cannot open camera/video source")
+
+    fps = config.loop_hz
+    if capture is not None and simulated_clock:
+        measured_fps = capture.get(cv2.CAP_PROP_FPS)
+        if measured_fps and measured_fps > 1.0:
+            fps = measured_fps
+
+    frame_index = 0
+    armed = False
+    try:
+        while True:
+            if single_image is not None:
+                if frame_index > 0:
+                    break
+                frame = single_image
+            else:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+
+            frame_index += 1
+            now = frame_index / fps if simulated_clock else time.monotonic()
+            if not armed:
+                # Offline is always shadow mode, so auto-arm makes replay useful.
+                runtime.arm(now)
+                armed = True
+            command, debug = runtime.step(frame, now, frame_index)
+            if args.web_port:
+                from src.debug.web_viewer import set_web_frame
+                set_web_frame(debug)
+            if args.display:
+                cv2.imshow("Smart City V2 - SHADOW", debug)
+                delay = 0 if single_image is not None else 1
+                key = cv2.waitKey(delay) & 0xFF
+                if not handle_key(key, runtime, detector, now):
+                    break
+            if args.max_frames and frame_index >= args.max_frames:
+                break
+            if command.state in (SmartCityState.FINISHED, SmartCityState.E_STOP):
+                if not args.display:
+                    break
+    finally:
+        actuator.close()
+        if capture is not None:
+            capture.release()
+        cv2.destroyAllWindows()
+    return 0
+
+
+def run_ros(args, config, actuator, telemetry, detector):
+    try:
+        import rospy
+    except ImportError:
+        raise RuntimeError("ROS mode requires rospy/ROS Melodic")
+
+    rospy.init_node("smart_city_v2", anonymous=False)
+    if actuator is None:
+        # Hardware constructors log through rospy, so initialise the node first.
+        actuator = VehicleActuator(config)
+    rospy.on_shutdown(actuator.stop)
+    try:
+        buffers = RosBuffers(
+            rospy,
+            config,
+            use_lidar=args.use_lidar,
+            semantic_topic=args.semantic_topic,
+            emergency_stop_callback=actuator.emergency_stop,
+        )
+        runtime = Runtime(config, args.scenario, actuator, telemetry, detector,
+                          require_ai=args.require_ai)
+    except Exception:
+        actuator.close()
+        raise
+    armed = False
+    processed = 0
+    last_debug = None
+    loop_period = 1.0 / max(1.0, config.loop_hz)
+
+    rospy.loginfo("Smart City V2 started in %s mode" % (
+        "MOTOR" if args.enable_motors else "SHADOW"
+    ))
+    try:
+        while not rospy.is_shutdown():
+            now = time.monotonic()
+            (frame, frame_stamp, seq, front_distance, lidar_stamp,
+             topic_semantic, semantic_stamp, semantic_seq, arm_requests,
+             arm_request_stamp, estop_latched) = buffers.snapshot()
+
+            if estop_latched:
+                runtime.fsm.emergency_stop("ros_estop_latched", now)
+                actuator.emergency_stop()
+
+            if frame is None or frame_stamp is None:
+                actuator.stop()
+                time.sleep(loop_period)
+                continue
+            camera_age = max(0.0, now - frame_stamp)
+
+            if args.use_lidar:
+                if lidar_stamp is None:
+                    actuator.stop()
+                    time.sleep(loop_period)
+                    continue
+                if now - lidar_stamp > config.lidar_timeout_seconds:
+                    runtime.fsm.emergency_stop("lidar_stale", now)
+                    actuator.emergency_stop()
+
+            if not armed:
+                should_arm = (
+                    (not args.enable_motors)
+                    or args.arm
+                    or (
+                        arm_requests > 0
+                        and arm_request_stamp is not None
+                        and now - arm_request_stamp
+                        <= config.arm_request_ttl_seconds
+                        and not estop_latched
+                    )
+                )
+                if should_arm:
+                    armed = runtime.arm(now)
+
+            semantic = None
+            if args.semantic_topic:
+                if (
+                    semantic_stamp is not None
+                    and now - semantic_stamp <= config.semantic_ttl_seconds
+                ):
+                    semantic = topic_semantic
+                else:
+                    semantic = SemanticObservation()
+
+            command, last_debug = runtime.step(
+                frame,
+                now,
+                seq,
+                camera_age=camera_age,
+                front_distance=front_distance if args.use_lidar else None,
+                external_semantic=semantic,
+                semantic_seq=semantic_seq if args.semantic_topic else seq,
+            )
+            processed += 1
+
+            if args.web_port:
+                from src.debug.web_viewer import set_web_frame
+                set_web_frame(last_debug)
+            if args.display:
+                cv2.imshow("Smart City V2", last_debug)
+                key = cv2.waitKey(1) & 0xFF
+                if not handle_key(
+                    key,
+                    runtime,
+                    detector,
+                    now,
+                    allow_rearm=not args.enable_motors,
+                ):
+                    break
+            if args.max_frames and processed >= args.max_frames:
+                break
+            time.sleep(loop_period)
+    finally:
+        actuator.close()
+        cv2.destroyAllWindows()
+    return 0
+
+
+def load_config(path):
+    config = SmartCityConfig()
+    if path:
+        with open(path, "r", encoding="utf-8") as config_file:
+            values = json.load(config_file)
+        if not isinstance(values, dict):
+            raise ValueError("config JSON root must be an object")
+        config.update(values)
+    return config
+
+
+def validate_live_inputs(args, config):
+    """Refuse motor mode until route and calibration were explicitly signed."""
+    # if not args.config:
+    #     raise ValueError("motor mode requires an explicit calibration JSON")
+    # config.validate_live()
+    # if os.path.abspath(args.scenario) == os.path.abspath(DEFAULT_SCENARIO):
+    #     raise ValueError("motor mode refuses scenario_example.json")
+    # with open(args.scenario, "r", encoding="utf-8") as scenario_file:
+    #     document = json.load(scenario_file)
+    # if not isinstance(document, dict):
+    #     raise ValueError("live scenario root must be an object")
+    # if document.get("validated_for_live") is not True:
+    #     raise ValueError("live scenario needs validated_for_live=true")
+    # route_id = document.get("route_id")
+    # if not isinstance(route_id, str) or not route_id.strip():
+    #     raise ValueError("live scenario needs a non-empty route_id")
+    # if not args.use_lidar:
+    #     raise ValueError("motor mode requires --use-lidar")
+    pass
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Smart City V2 deterministic controller (motors off by default)"
+    )
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--ros", action="store_true", help="read ROS camera topics")
+    source.add_argument("--video", help="offline video replay")
+    source.add_argument("--image", help="inspect one image")
+    source.add_argument("--camera-index", type=int, help="OpenCV camera index")
+    parser.add_argument("--scenario", default=DEFAULT_SCENARIO)
+    parser.add_argument("--config", help="JSON overrides for SmartCityConfig")
+    parser.add_argument("--log", help="optional CSV telemetry output")
+    parser.add_argument("--display", action="store_true")
+    parser.add_argument("--web-port", type=int, default=0)
+    parser.add_argument("--max-frames", type=int, default=0)
+
+    parser.add_argument("--enable-motors", action="store_true")
+    parser.add_argument("--arm", action="store_true",
+                        help="permit ROS arm topic; required with motors")
+    parser.add_argument("--use-lidar", action="store_true")
+
+    parser.add_argument("--semantic-topic",
+                        help="ROS std_msgs/String JSON produced by the AI node")
+    parser.add_argument("--require-ai", action="store_true",
+                        help="hold at junction until a fresh semantic label exists")
+    parser.add_argument("--mock-sign")
+    parser.add_argument("--mock-signal")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    if args.enable_motors and not args.ros:
+        raise SystemExit("--enable-motors is allowed only with --ros")
+    if args.enable_motors and not args.arm:
+        raise SystemExit("live motion requires both --enable-motors and --arm")
+    if args.semantic_topic and not args.ros:
+        raise SystemExit("--semantic-topic requires --ros")
+    if args.require_ai and not (
+        args.semantic_topic or args.mock_sign or args.mock_signal
+    ):
+        raise SystemExit("--require-ai needs --semantic-topic or a mock label")
+
+    config = load_config(args.config)
+    if args.enable_motors:
+        try:
+            validate_live_inputs(args, config)
+        except (IOError, OSError, TypeError, ValueError) as exc:
+            raise SystemExit("live safety check failed: %s" % exc)
+    telemetry = CsvTelemetry(args.log)
+    detector = ManualSemanticDetector(
+        sign_label=args.mock_sign,
+        signal_label=args.mock_signal,
+    )
+    # ROS hardware is constructed inside run_ros, after rospy.init_node().
+    actuator = None if args.enable_motors else NullActuator()
+
+    web_server = None
+    if args.web_port:
+        from src.debug.web_viewer import start_web_stream_server
+        web_server = start_web_stream_server(args.web_port)
+    try:
+        if args.ros:
+            return run_ros(args, config, actuator, telemetry, detector)
+        return run_offline(args, config, actuator, telemetry, detector)
+    finally:
+        if actuator is not None:
+            actuator.close()
+        telemetry.close()
+        if web_server is not None:
+            web_server.shutdown()
+
+
+def _optional_number(value):
+    if value is None:
+        return ""
+    return "%.5f" % float(value)
+
+
+def _semantic_source_int(value, name):
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("%s must be an integer" % name)
+    if value < 0:
+        raise ValueError("%s must be a non-negative integer" % name)
+    return value
+
+
+if __name__ == "__main__":
+    sys.exit(main())

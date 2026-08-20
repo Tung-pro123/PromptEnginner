@@ -1,0 +1,20 @@
+{
+  "calibrated": false,
+  "calibration_id": "REPLACE_AFTER_MEASURING_ON_THE_REAL_CAR",
+  "white_hsv_lower": [0, 0, 165],
+  "white_hsv_upper": [179, 78, 255],
+  "green_hsv_lower": [32, 45, 30],
+  "green_hsv_upper": [100, 255, 255],
+  "orange_keepout_enabled": true,
+  "cruise_throttle": 0.15,
+  "approach_throttle": 0.10,
+  "turn_throttle": 0.12,
+  "turn_steering_left": -0.76,
+  "turn_steering_right": 0.76,
+  "nudge_left_seconds": 0.34,
+  "nudge_right_seconds": 0.30,
+  "turn_nominal_seconds": 1.15,
+  "turn_max_seconds": 1.80,
+  "straight_cross_seconds": 1.05,
+  "lidar_stop_distance_m": 0.25
+}
