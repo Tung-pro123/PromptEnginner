@@ -2,14 +2,14 @@
 
 ## Kết luận kiến trúc
 
-AI **chỉ nhận diện ngữ nghĩa** của đèn và biển báo. AI không được điều khiển
-servo hoặc motor.
+AI **chỉ nhận diện ngữ nghĩa** của đèn và biển báo. AI không được suy ra
+crosswalk/exit và không được điều khiển servo hoặc motor.
 
 ```text
-Camera ─┬─> OpenCV: làn, vạch dừng, vùng cấm xanh/cam ─┐
-        └─> AI: biển + đèn + confidence ───────────────┤
-                                                       v
-Scenario/allowed exits ─> Decision rules ─> FSM ─> ga/lái ─> Safety ─> xe
+Camera ─┬─> OpenCV: lane + 1..N zebra marker + keep-out xanh/đỏ ─┐
+        └─> AI: sign/light + confidence + source frame/stamp ────┤
+                                                                  v
+Scenario/allowed exits ─> Decision rules ─> FSM ─> Safety ─> actuator ─> xe
 ```
 
 Điều này cho phép dùng `scenario_example.json` khi model chưa có. Khi nhận
@@ -19,8 +19,16 @@ nguyên.
 ## Những gì V2 đã xử lý
 
 - Bám làn bằng các đoạn trắng gần/xa, không lấy tâm ảnh làm làn giả khi mất nét.
-- Nhận vạch trước giao lộ bằng **nhiều thanh trắng cùng hàng**, rồi xác nhận qua
-  nhiều frame mới; một nét đứt dọc hoặc một frame lóe sáng không đủ kích hoạt.
+- Nhận một cụm zebra marker bằng **nhiều thanh trắng cùng hàng**, rồi xác nhận
+  qua nhiều frame mới; một nét đứt dọc hoặc một frame lóe sáng không đủ kích
+  hoạt.
+- Một giao lộ có thể có một hoặc nhiều cụm marker. Từ cụm đầu đã xác nhận đến
+  hết `EXIT_LOCKOUT`, tất cả vẫn là **một intersection episode** và route chỉ
+  được consume đúng một bước.
+- Nếu đồng thời thấy nhiều cụm dọc theo hướng chạy, detector dùng cụm xa hơn
+  (cụm đến sau, gần cổng giao lộ hơn) làm mốc dừng nhưng loại toàn bộ cụm khỏi
+  lane mask. Sau quyết định, `NUDGE` còn chờ marker clear qua nhiều frame và có
+  hard timeout; không rẽ chỉ vì hết một timer ngắn.
 - Xem phần xanh và viền cam/đỏ là vùng keep-out để tạo cảnh báo và bias né.
 - Dừng trước giao lộ, giữ xe đứng, đọc quyết định đúng một lần, sau đó thực thi
   primitive `LEFT`, `RIGHT` hoặc `STRAIGHT`.
@@ -38,7 +46,8 @@ FSM hiện dùng:
 ```text
 DISARMED -> WAIT_SENSORS -> LANE_FOLLOW -> APPROACH_LINE
  -> STOP_HOLD -> WAIT_DECISION
- -> NUDGE/TURNING hoặc CROSSING -> REACQUIRE -> EXIT_LOCKOUT -> LANE_FOLLOW
+ -> NUDGE/TURNING hoặc CROSSING
+ -> REACQUIRE_CENTER -> EXIT_LOCKOUT -> LANE_FOLLOW
 
 SAFE_STOP, E_STOP_LATCHED và FINISHED luôn trả throttle = 0
 ```
@@ -59,6 +68,7 @@ Sao chép
     {
       "id": "I01_T",
       "allowed": ["LEFT", "RIGHT"],
+      "requires_sign": true,
       "mock_sign": "NO_LEFT"
     },
     {
@@ -78,7 +88,16 @@ Sao chép
 Quy tắc:
 
 - `allowed` chỉ chứa đường không đi vào ô xanh/không ra ngoài sa hình.
-- Chọn một trong `mock_sign` hoặc `action`, không dùng đồng thời.
+- Chọn một trong `mock_sign` hoặc `action`, không dùng đồng thời. Mọi
+  `mock_sign`/`mock_signal` chỉ dành cho offline/shadow và bị từ chối ở live;
+  scenario thi dùng `action`, còn semantic topic cung cấp biển/đèn thật.
+- Với giao lộ bắt buộc phải đọc biển, đặt `requires_sign: true`. GREEN không
+  thay cho biển: thiếu/không hiểu biển hoặc hướng biển trái `allowed` sẽ giữ xe
+  tại đúng entry hiện tại, không consume route. Giao lộ không có biển để cờ này
+  là `false` hoặc bỏ hẳn.
+- Riêng offline/shadow, `mock_sign` được xem là biển giả lập khi AI hoàn toàn
+  chưa chạy. Nếu AI đã trả một nhãn nhưng nhãn sai/không an toàn thì hệ thống
+  vẫn giữ xe, không fallback về mock. Live luôn từ chối scenario chứa mock.
 - Biển hỗ trợ: `TURN_LEFT`, `TURN_RIGHT`, `GO_STRAIGHT`, `NO_LEFT`,
   `NO_RIGHT`, `NO_STRAIGHT`, `STOP`.
 - `END` là đích rõ ràng. Hết mảng mà không gặp `END` là lỗi và xe dừng.
@@ -88,6 +107,14 @@ Quy tắc:
   `true`; motor mode từ chối file mẫu và route chưa có `route_id`.
 
 ## Chạy an toàn theo từng tầng
+
+Năm tầng kiểm thử bắt buộc, không được nhảy thẳng tới tầng 5:
+
+1. Unit/regression với frame tổng hợp, không ROS và không phần cứng.
+2. Một ảnh rồi replay video camera gắn xe ở shadow mode.
+3. ROS shadow với camera, AI node và LiDAR thật nhưng không tạo actuator.
+4. Live actuator khi bánh được nâng khỏi mặt đất; thử arm, watchdog và E-stop.
+5. Sân trống tốc độ thấp: từng primitive, từng giao lộ, rồi mới full route.
 
 Từ thư mục gốc dự án, kiểm thử logic thuần:
 
@@ -124,6 +151,7 @@ Chỉ sau khi shadow replay đúng và đã nâng bánh khỏi mặt đất mớ
 ```bash
 python3 src/smart_city/main_smart_city_v2.py \
   --ros --use-lidar --enable-motors --arm \
+  --semantic-topic /smart_city/semantic --require-ai \
   --scenario src/smart_city/v2/my_route.json \
   --config src/smart_city/v2/my_calibration.json \
   --log smart_city_live.csv
@@ -139,8 +167,9 @@ bị từ chối):
 }
 ```
 
-Hai cờ `--enable-motors --arm` chỉ mở quyền arm. Sau khi camera/LiDAR đã ổn và
-người giữ E-stop xác nhận khu vực trống, gửi một yêu cầu arm **mới**:
+`--arm` **không arm và không làm xe tự chạy**; nó chỉ xác nhận chính sách và mở
+service one-shot khi đi cùng `--enable-motors`. Sau khi camera/LiDAR đã fresh và
+người giữ E-stop xác nhận khu vực trống, mới gửi một yêu cầu arm:
 
 ```bash
 rosservice call /smart_city/arm
@@ -198,30 +227,35 @@ python3 src/smart_city/main_smart_city_v2.py \
   --config src/smart_city/v2/my_calibration.json
 ```
 
-`--require-ai` làm xe giữ nguyên tại vạch nếu chưa có nhãn mới. Nhãn chạy phải
-lặp ổn định ít nhất `ai_confirm_frames` message mới (mặc định 3); đỏ/vàng có thể
-dừng ngay. Nhãn cũ quá
+`--require-ai` làm xe giữ nguyên tại vạch nếu chưa có **tín hiệu đèn mới**; một
+nhãn biển đứng riêng không đủ cho đi. Nhãn chạy phải lặp ổn định ít nhất
+`ai_confirm_frames` message mới (mặc định 3); đỏ/vàng có thể dừng ngay. Nhãn cũ quá
 `semantic_ttl_seconds`, confidence dưới `ai_min_confidence`, đỏ/vàng hoặc nhãn
 lạ đều không được cho xe chạy. Đèn xanh là “cổng cho đi”; hướng vẫn lấy từ biển
 hoặc route hợp lệ. Đèn đỏ/vàng không consume bước route.
 
 Mỗi kết quả live phải mang `source_frame_seq` và/hoặc `source_stamp_ns` lấy từ
 `header` của đúng ảnh ROS đã inference. Runner chỉ nhận kết quả khớp một frame
-camera gần đây, đúng thứ tự, chưa hết TTL và phát sinh sau lúc xe vào trạng thái
-chờ quyết định. Vì vậy output AI trễ của giao lộ trước không thể dùng để rẽ ở
-giao lộ sau. RED/YELLOW đến trước khi xe bắt đầu primitive sẽ giữ xe; sau khi đã
-vào giao lộ, FSM tiếp tục thoát giao lộ thay vì phanh giữa đường, còn E-stop,
-LiDAR và vùng keep-out vẫn có quyền dừng tức thời.
+camera gần đây, đúng thứ tự, chưa hết TTL tính từ lúc ảnh nguồn tới máy và phát
+sinh sau lúc xe vào trạng thái chờ quyết định. Vì vậy output AI trễ của giao lộ
+trước không thể dùng để rẽ ở giao lộ sau. RED/YELLOW trong `WAIT_DECISION` hoặc
+`NUDGE` sẽ giữ xe; sau đó cần xác nhận lại đủ GREEN mới được đi. Khi xe đã vào
+`TURNING`/`CROSSING`, FSM tiếp tục thoát giao lộ thay vì phanh giữa đường, còn
+E-stop, LiDAR và vùng keep-out vẫn có quyền dừng tức thời.
 
 `FunctionSemanticDetector` trong `semantic.py` chỉ dành cho test offline/shadow.
 Live phải chạy inference bất đồng bộ ở node riêng; nếu nhúng inference đồng bộ,
-model chậm có thể làm watchdog dừng và latch xe. Adapter chỉ nhận bốn khóa nhãn
-và confidence; kết quả chứa `steering`, `throttle`, `speed`, `motor`, `servo`
-hoặc `action` sẽ bị từ chối.
+model chậm có thể làm watchdog dừng và latch xe. Function adapter chỉ nhận bốn
+trường sign/light + confidence; ROS contract live bổ sung định danh frame nguồn.
+Kết quả chứa `steering`, `throttle`,
+`speed`, `motor`, `servo`, `action`, `exit`, `crosswalk` hoặc geometry sẽ bị từ
+chối.
 
-Model cần gắn detection với ROI của hướng xe đang tiếp cận, không đơn giản lấy
-bbox có confidence cao nhất toàn ảnh: biển/đèn được treo trên bốn góc cùng một
-khung nhôm và camera có thể nhìn thấy tín hiệu của đường khác.
+Khung thi chỉ có một mặt đèn quay về phía xe ở mỗi hướng tiếp cận, nên contract
+không bắt buộc bounding box. Nên crop ROI cố định đã calibrate rồi phân loại
+`RED/GREEN/OFF/UNKNOWN`; bbox có thể giữ riêng để debug nhưng FSM không dùng nó.
+File `models/best.pt` hiện tại nhận lane/crosswalk, **không phải** model semantic
+biển/đèn và không được nối vào contract này.
 
 ## Calibration bắt buộc trên camera gắn xe
 
@@ -230,14 +264,18 @@ ROI hay thời gian cua. Cần video/ảnh từ đúng camera CSI, đúng độ 
 
 1. Khóa exposure/white balance, lấy mẫu HSV trắng, xanh và cam/đỏ ngay tại sân.
 2. Vẽ overlay và chỉnh ROI để chân khung/biển phía trên không thành vạch dừng.
-3. Đẩy xe bằng tay qua vạch, tìm `stop_line_y` phù hợp với cản trước và quãng trôi.
+3. Đẩy xe bằng tay qua vạch, chỉnh `stop_approach_y_ratio` và
+   `stop_close_y_ratio` phù hợp với cản trước và quãng trôi; không lấy ngưỡng từ
+   ảnh chụp toàn cảnh.
 4. Tìm throttle nhỏ nhất xe chạy ổn định ở từng mức pin; đặt cruise chỉ cao hơn
    khoảng 0,02.
 5. Nâng bánh, xác nhận dấu lái: mặc định trái âm, phải dương. Nếu phần cứng ngược
    thì đảo hai giá trị `turn_steering_left/right`.
-6. Đo riêng `nudge_*_seconds`, góc lái và thời gian cua trái/phải trên sân.
-7. Replay ít nhất một vòng bằng shadow, kiểm tra CSV: mỗi vạch chỉ consume một
-   intersection, latency AI dưới 300 ms, không bão hòa lái kéo dài.
+6. Đo riêng `nudge_*_seconds`, `nudge_max_seconds`, số frame marker-clear, góc
+   lái và thời gian cua trái/phải trên sân.
+7. Replay ít nhất một vòng bằng shadow, kiểm tra CSV: một hoặc nhiều cụm marker
+   trong cùng episode chỉ consume một route step, latency AI dưới 300 ms và
+   không bão hòa lái kéo dài.
 8. Hạ xe chạy từng primitive ở ga thấp và đặt chướng ngại mềm; không chạy full
    route ngay lần đầu.
 
@@ -246,6 +284,22 @@ positive; hãy xem log, chỉnh `lidar_guard_half_angle_deg` theo swept footprin
 Chân nằm trong quỹ đạo vẫn phải làm xe dừng.
 
 V2 hiện dùng `allowed` trong scenario làm topology chuẩn; camera chưa chứng minh
-độc lập từng exit trái/thẳng/phải bằng BEV swept-footprint. Vì vậy route sai thứ
-tự vẫn là lỗi nghiêm trọng và motor mode chỉ là khung để calibration có giám
-sát, chưa phải cấu hình “đặt xe xuống là chạy” từ hai ảnh toàn cảnh.
+độc lập từng exit trái/thẳng/phải bằng BEV swept-footprint. Keep-out hiện có
+guard phía trước và planned-side theo ảnh nhưng vẫn phải calibrate margin cùng
+`turn_green_hard_stop_ratio` theo footprint/quỹ đạo cua thật. Vì vậy
+route sai thứ tự vẫn là lỗi nghiêm trọng và bản hiện tại **chưa live-ready**.
+
+## Checklist một ngày cuối
+
+1. Chạy full unit test và tạo checkpoint Git phục hồi được.
+2. Chốt vị trí/hướng xuất phát, đi bộ ghi `allowed` và route thật.
+3. Quay video CSI; chỉnh HSV/ROI zebra marker và keep-out xanh/đỏ bằng shadow.
+4. Cắm AI sign/light theo contract hoặc dùng mock để kiểm tra FSM; không dùng
+   `models/best.pt` làm model semantic. Mock chỉ dành cho shadow; motor mode từ
+   chối mọi `--mock-sign/--mock-signal`.
+5. Xác nhận một/nhiều marker chỉ tạo một episode và mỗi route step consume một
+   lần; sau cua phải qua `REACQUIRE_CENTER` rồi `EXIT_LOCKOUT`.
+6. Nâng bánh: thử polarity, ga 0, arm service, camera/LiDAR stale, watchdog và
+   cả E-stop phần mềm lẫn E-stop vật lý.
+7. Chạy ga thấp từng trái/phải/thẳng với vật cản mềm; chỉ full route khi bốn tầng
+   trước không phát lệnh nguy hiểm. Không chắc chắn thì dừng.

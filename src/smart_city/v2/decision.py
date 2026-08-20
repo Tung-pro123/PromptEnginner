@@ -80,6 +80,18 @@ _PROHIBITION_SIGNS = {
     "NO_RIGHT": Direction.RIGHT,
 }
 
+# Labels that may satisfy a route entry whose decision must come from the
+# semantic sign detector.  Terminal route commands are deliberately excluded:
+# END/FINISH/GOAL are scenario commands, not physical traffic signs.
+_SUPPORTED_SIGN_LABELS = frozenset(
+    tuple(_COMMAND_SIGNS.keys())
+    + tuple(_PROHIBITION_SIGNS.keys())
+    + (
+        "LEFT", "L", "STRAIGHT", "FORWARD", "F", "RIGHT", "R",
+        "STOP", "HALT",
+    )
+)
+
 _RED_LIGHT_LABELS = frozenset(("RED", "RED_LIGHT", "TRAFFIC_LIGHT_RED"))
 _GREEN_LIGHT_LABELS = frozenset((
     "GREEN",
@@ -253,6 +265,17 @@ class ScenarioDecisionProvider(object):
         if preference is None:
             raise ValueError("scenario preference is invalid")
 
+        for index, entry in enumerate(intersections):
+            if (
+                isinstance(entry, dict)
+                and "requires_sign" in entry
+                and not isinstance(entry.get("requires_sign"), bool)
+            ):
+                raise ValueError(
+                    "scenario intersection {0} requires_sign must be boolean"
+                    .format(index + 1)
+                )
+
         self._intersections = list(intersections)
         self._preference = preference
 
@@ -301,7 +324,8 @@ class ScenarioDecisionProvider(object):
         allowed = _parse_allowed(entry.get("allowed", entry.get("allowed_exits")))
         return intersection_id, allowed or ()
 
-    def decide(self, ai_label=None, ai_confidence=None, signal_label=None, left_conf=None, right_conf=None, intersection_id=None):
+    def decide(self, ai_label=None, ai_confidence=None, signal_label=None,
+               left_conf=None, right_conf=None, intersection_id=None):
         """Return the safe decision for the next intersection.
 
         Args:
@@ -309,16 +333,25 @@ class ScenarioDecisionProvider(object):
                 ``action``/``mock_sign``.  RED/GREEN may also be supplied here
                 when the detector emits only one label at a time.
             signal_label: optional separate traffic-light label.
-            left_conf: AI confidence for left branch presence.
-            right_conf: AI confidence for right branch presence.
+            left_conf: deprecated and ignored.  Exit topology is never accepted
+                from the semantic AI adapter.
+            right_conf: deprecated and ignored.  Exit topology comes only from
+                the validated scenario and geometric safety checks.
             intersection_id: explicit intersection ID if tracked externally.
 
         A red/yellow light is a *hold*: the scenario index is not advanced.
-        All other calls consume exactly one intersection, including invalid
-        entries that fail closed to STOP.
+        Missing/invalid semantics at an entry with ``requires_sign=true`` are
+        also non-consuming holds.  Other calls consume exactly one
+        intersection, including invalid entries that fail closed to STOP.
         """
 
-        ai_normalised = _normalise_label(ai_label) if ai_label is not None else None
+        # Confidence is validated by the FSM.  The two branch-confidence
+        # arguments remain in the signature only for compatibility with older
+        # callers; allowing semantic AI to invent physical exits is unsafe.
+        del ai_confidence, left_conf, right_conf
+
+        ai_label_supplied = ai_label is not None
+        ai_normalised = _normalise_label(ai_label) if ai_label_supplied else None
         signal_normalised = (
             _normalise_label(signal_label) if signal_label is not None else None
         )
@@ -354,9 +387,9 @@ class ScenarioDecisionProvider(object):
 
         entry_number = self._index + 1
         entry = self._intersections[self._index]
-        self._index += 1
 
         if not isinstance(entry, dict):
+            self._index += 1
             return self._stop(
                 "invalid_intersection",
                 intersection_id="intersection_{0}".format(entry_number),
@@ -370,32 +403,20 @@ class ScenarioDecisionProvider(object):
             intersection_id = scenario_intersection_id
 
         if not isinstance(intersection_id, str) or not intersection_id.strip():
+            self._index += 1
             return self._stop("invalid_intersection_id")
 
-        # Dynamic allowed exits based on AI
-        allowed_list = [Direction.STRAIGHT] # Always assume straight is possible unless it's a T-junction or end, but let's assume it.
-        # Actually, let's merge with scenario if AI is not confident, or override completely.
-        ai_left = left_conf is not None and left_conf > 0.5
-        ai_right = right_conf is not None and right_conf > 0.5
-        
         scenario_allowed = _parse_allowed(entry.get("allowed", entry.get("allowed_exits")))
-        
-        if ai_left or ai_right:
-            allowed_list = [Direction.STRAIGHT] # By default
-            if ai_left:
-                allowed_list.append(Direction.LEFT)
-            if ai_right:
-                allowed_list.append(Direction.RIGHT)
-            allowed = tuple(allowed_list)
-        else:
-            allowed = scenario_allowed
+        allowed = scenario_allowed
 
         if allowed is None:
+            self._index += 1
             return self._stop(
                 "invalid_allowed_exits",
                 intersection_id=intersection_id,
             )
         if not allowed:
+            self._index += 1
             return self._stop(
                 "no_allowed_exit",
                 intersection_id=intersection_id,
@@ -405,12 +426,24 @@ class ScenarioDecisionProvider(object):
         has_action = "action" in entry
         has_mock_sign = "mock_sign" in entry
         if has_action and has_mock_sign:
+            self._index += 1
             return self._stop(
                 "intersection_has_action_and_mock_sign",
                 intersection_id=intersection_id,
                 allowed=allowed,
             )
-        if not has_action and not has_mock_sign:
+        requires_sign = entry.get("requires_sign", False)
+        # Repeat the type guard here because callers may mutate a dictionary
+        # after provider construction.  Such a route remains fail-closed.
+        if not isinstance(requires_sign, bool):
+            self._index += 1
+            return self._stop(
+                "invalid_requires_sign",
+                intersection_id=intersection_id,
+                allowed=allowed,
+            )
+        if not has_action and not has_mock_sign and not requires_sign:
+            self._index += 1
             return self._stop(
                 "intersection_has_no_decision_source",
                 intersection_id=intersection_id,
@@ -419,6 +452,7 @@ class ScenarioDecisionProvider(object):
 
         preference = _parse_preference(entry.get("preference", self._preference))
         if preference is None:
+            self._index += 1
             return self._stop(
                 "invalid_intersection_preference",
                 intersection_id=intersection_id,
@@ -429,6 +463,44 @@ class ScenarioDecisionProvider(object):
         # label has priority over the development scenario.
         if ai_normalised in _GREEN_LIGHT_LABELS:
             ai_normalised = None
+
+        # A sign-controlled junction must never silently fall back to a route
+        # action.  A development ``mock_sign`` may stand in for an entirely
+        # absent detector during offline/shadow runs; live validation rejects
+        # every scenario containing mocks.  Once AI supplies any label, that
+        # label owns the attempt: an unknown/unsafe result holds and must never
+        # fall back to the mock.
+        if requires_sign:
+            required_label = ai_normalised if ai_label_supplied else None
+            if not ai_label_supplied and has_mock_sign:
+                required_label = _normalise_label(entry.get("mock_sign"))
+            if required_label is None:
+                return self._stop(
+                    (
+                        "required_sign_invalid"
+                        if ai_label_supplied
+                        else "required_sign_missing"
+                    ),
+                    intersection_id=intersection_id,
+                    allowed=allowed,
+                )
+            if required_label not in _SUPPORTED_SIGN_LABELS:
+                return self._stop(
+                    "required_sign_invalid",
+                    intersection_id=intersection_id,
+                    allowed=allowed,
+                    sign_label=required_label,
+                )
+            required_action = resolve_sign_label(
+                required_label, allowed, preference
+            )
+            if required_action is Direction.STOP:
+                return self._stop(
+                    "required_sign_unsafe",
+                    intersection_id=intersection_id,
+                    allowed=allowed,
+                    sign_label=required_label,
+                )
 
         if ai_normalised is not None:
             sign_label = ai_normalised
@@ -441,6 +513,7 @@ class ScenarioDecisionProvider(object):
             source_reason = "mock_sign"
 
         action = resolve_sign_label(sign_label, allowed, preference)
+        self._index += 1
         if action is Direction.STOP:
             # Explicit STOP is valid.  Any other STOP result means the label or
             # requested route was unsafe/invalid.

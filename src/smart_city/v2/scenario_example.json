@@ -8,6 +8,7 @@
     {
       "id": "I01_four_way",
       "allowed": ["LEFT", "STRAIGHT", "RIGHT"],
+      "requires_sign": true,
       "mock_sign": "TURN_STRAIGHT"
     },
     {

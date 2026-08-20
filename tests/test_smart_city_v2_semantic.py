@@ -66,10 +66,24 @@ class SemanticObservationTests(unittest.TestCase):
             source_frame_seq=1842,
             source_stamp_ns=stamp_ns,
             source_local_seq=77,
+            source_arrival_stamp=12.25,
         )
         self.assertEqual(stamp_ns, observation.source_stamp_ns)
+        self.assertEqual(12.25, observation.source_arrival_stamp)
         with self.assertRaises(TypeError):
             SemanticObservation(source_stamp_ns=float(stamp_ns))
+
+    def test_rejects_non_finite_or_negative_timing_metadata(self):
+        for value in (-0.01, float("nan"), float("inf")):
+            with self.subTest(stamp=value):
+                with self.assertRaises(ValueError):
+                    SemanticObservation(stamp=value)
+            with self.subTest(latency_ms=value):
+                with self.assertRaises(ValueError):
+                    SemanticObservation(latency_ms=value)
+            with self.subTest(source_arrival_stamp=value):
+                with self.assertRaises(ValueError):
+                    SemanticObservation(source_arrival_stamp=value)
 
 
 class FunctionSemanticDetectorTests(unittest.TestCase):
@@ -111,6 +125,21 @@ class FunctionSemanticDetectorTests(unittest.TestCase):
                     detector.detect(object())
                 self.assertIn(forbidden_key, str(context.exception))
 
+    def test_rejects_geometry_and_exit_outputs(self):
+        for forbidden_key in (
+            "crosswalk_conf", "left_conf", "right_conf", "left_branch"
+        ):
+            with self.subTest(forbidden_key=forbidden_key):
+                detector = FunctionSemanticDetector(
+                    lambda _frame, key=forbidden_key: {
+                        "signal_label": "GREEN",
+                        key: 0.9,
+                    }
+                )
+                with self.assertRaises(ValueError) as context:
+                    detector.detect(object())
+                self.assertIn(forbidden_key, str(context.exception))
+
     def test_rejects_non_callable_and_non_semantic_output(self):
         with self.assertRaises(TypeError):
             FunctionSemanticDetector(None)
@@ -118,6 +147,18 @@ class FunctionSemanticDetectorTests(unittest.TestCase):
         detector = FunctionSemanticDetector(lambda _frame: "TURN_LEFT")
         with self.assertRaises(TypeError):
             detector.detect(object())
+
+        detector = FunctionSemanticDetector(lambda _frame: {1: "RED"})
+        with self.assertRaises(TypeError):
+            detector.detect(object())
+
+    def test_normalises_dictionary_key_case(self):
+        detector = FunctionSemanticDetector(
+            lambda _frame: {"SIGN_LABEL": "NO_RIGHT", "SIGN_CONFIDENCE": 0.8}
+        )
+        result = detector.detect(object())
+        self.assertEqual("NO_RIGHT", result.sign_label)
+        self.assertAlmostEqual(0.8, result.sign_confidence)
 
     def test_accepts_semantic_observation_from_function(self):
         original = SemanticObservation(sign_label="stop", sign_confidence=0.9)

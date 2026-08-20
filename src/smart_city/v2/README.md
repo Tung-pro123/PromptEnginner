@@ -1,22 +1,24 @@
 # Smart City V2 — README bàn giao cho Antigravity
 
-Cập nhật: 2026-08-18
+Cập nhật: 2026-08-21
 
 ## 1. Mục tiêu và phạm vi
 
 Module này được tạo cho bài thi Smart City (bài 2). Thiết kế hiện tại cố ý tách
 AI ra khỏi điều khiển xe:
 
-- AI chỉ nhận diện **biển báo**, **màu đèn giao thông** và confidence.
-- AI không được xuất steering, throttle, speed hay action điều khiển.
-- OpenCV nhận biết làn trắng, cụm vạch dừng, vùng xanh và viền cam/đỏ.
+- AI chỉ nhận diện **biển báo**, **màu đèn giao thông**, confidence và định danh
+  frame nguồn (`source_frame_seq`, `source_stamp_ns`).
+- AI không được xuất steering, throttle, speed, action, exit hay crosswalk.
+- OpenCV nhận biết làn trắng, một hoặc nhiều cụm zebra marker của giao lộ, vùng
+  xanh và viền cam/đỏ.
 - FSM quyết định lúc bám làn, dừng, chờ, rẽ, đi thẳng và bắt lại làn.
 - File scenario mô phỏng thứ tự giao lộ khi model AI chưa có.
 - Mọi đầu vào thiếu, cũ, sai kiểu, không chắc chắn hoặc trái topology đều phải
   làm xe đứng yên/fail-closed, không tự đoán hướng.
 
 Ảnh toàn cảnh sân cho thấy đường màu đen, các đảo xanh là vùng cấm, viền đảo và
-mép sân có màu cam/đỏ, trước giao lộ có một hàng nhiều thanh trắng. Đèn và biển
+mép sân có màu cam/đỏ, trước giao lộ có một hoặc nhiều cụm thanh trắng. Đèn và biển
 đặt trên khung nhôm bốn chân ở các góc. Ảnh toàn cảnh chỉ đủ hiểu topology;
 không đủ để chốt HSV, ROI, góc lái hay thời gian cua của camera gắn trên xe.
 
@@ -39,19 +41,19 @@ Camera ROS/video/image
         v
 SmartCityPerception ------------------------------+
   - lane near/far                                  |
-  - stop-line bars                                 |
-  - green/orange keep-out                          v
+  - 1..N zebra-marker groups                       |
+  - green + orange/red keep-out                    v
                                            SmartCityFSM
-AI node riêng --> sign/light/confidence --------->  |
+AI node --> sign/light/confidence/source ID ------>  |
 Scenario JSON --> allowed exits/mock action ------>  |
 LiDAR -------------------------------------------->  |
                                                     v
                                            DriveCommand
                                                     |
-                                      Safety/actuator watchdog
+                                      Safety supervisor/watchdog
                                                     |
                                                     v
-                                              RacerController
+                                               Actuator
 ```
 
 Luồng trạng thái chính:
@@ -63,8 +65,8 @@ DISARMED
   -> APPROACH_LINE
   -> STOP_HOLD
   -> WAIT_DECISION
-  -> NUDGE -> TURNING -> REACQUIRE
-       hoặc CROSSING -> REACQUIRE
+  -> NUDGE -> TURNING -> REACQUIRE_CENTER
+       hoặc CROSSING -> REACQUIRE_CENTER
   -> EXIT_LOCKOUT
   -> LANE_FOLLOW
 ```
@@ -90,9 +92,9 @@ docs/SMART_CITY_V2_GUIDE.md                hướng dẫn vận hành/calibratio
 tests/test_smart_city_v2_*.py              unit/regression tests
 ```
 
-Tất cả các file trên hiện là thay đổi mới trong working tree. Không xóa/reset
-các thay đổi khác của chủ dự án trong `speed_track`, `core`, `config`, archive,
-hoặc các file chưa commit không liên quan.
+Các file này được cô lập trên nhánh `recovery/smart-city-v2`, xuất phát từ
+checkpoint phục hồi `18e36cc`. Không xóa/reset các thay đổi khác của chủ dự án
+trong `speed_track`, `core`, `config`, archive hoặc file không liên quan.
 
 ## 5. Những phần đã làm
 
@@ -102,8 +104,14 @@ hoặc các file chưa commit không liên quan.
 - Tìm cặp marker trái/phải ở dải gần và xa để suy ra tâm làn.
 - Nếu không có cặp biên gần hợp lệ thì trả `lane_x_near=None`, không lấy tâm ảnh
   làm làn giả.
-- Vạch dừng phải gồm nhiều blob trắng tách rời, cùng hàng và đủ span ngang.
+- Mỗi zebra marker phải gồm nhiều blob trắng tách rời, cùng hàng và đủ span
+  ngang.
 - Một nét đứt dọc hoặc lóe trắng một frame không đủ kích hoạt giao lộ.
+- Một hoặc nhiều cụm marker trước cùng giao lộ vẫn thuộc một intersection
+  episode; chỉ marker mới sau `EXIT_LOCKOUT` mới được tạo episode tiếp theo.
+- Khi nhiều cụm cùng xuất hiện, cụm xa hơn theo hướng chạy làm gate proxy;
+  `NUDGE` phải thấy marker clear ổn định hoặc cue keep-out của cổng rồi mới cua,
+  đồng thời có hard timeout để không bò mù vô hạn.
 - Tính mật độ keep-out ở trước/trái/phải và bias tránh vùng xanh.
 
 ### Decision/scenario
@@ -115,16 +123,17 @@ hoặc các file chưa commit không liên quan.
 - Đèn đỏ/vàng giữ xe và không consume bước route.
 - Đèn xanh chỉ là cổng cho đi; hướng vẫn lấy từ biển hoặc route hợp lệ.
 - Route hết mà không có `END` thì dừng lỗi, không mặc định đi thẳng.
-- Một event giao lộ chỉ consume đúng một entry; lockout chống đọc cùng vạch hai
-  lần.
+- Một intersection episode chỉ consume đúng một route entry; khóa route và
+  `EXIT_LOCKOUT` chống các cụm marker kế tiếp đọc route lần nữa.
 
 ### FSM/control
 
 - Debounce chỉ đếm frame camera mới, không đếm số vòng lặp.
 - Vạch dừng cần nhiều frame và chuyển động y tương đối nhất quán.
 - Stop hold dùng thời gian monotonic, không dùng `sleep` trong FSM.
-- Rẽ dùng primitive NUDGE/TURN/REACQUIRE có timeout.
-- Bắt lại làn cần cả tâm gần, tâm xa và nhiều frame ổn định.
+- Rẽ dùng primitive `NUDGE/TURN/REACQUIRE_CENTER` có timeout.
+- `REACQUIRE_CENTER` cần cả sai lệch ngang và heading nằm trong ngưỡng qua nhiều
+  frame mới trước khi vào `EXIT_LOCKOUT`.
 - Mất làn khi đang follow/approach/exit làm throttle về 0 ngay, sau đó latch
   SAFE_STOP nếu kéo dài.
 - Camera/LiDAR stale, distance không finite, command NaN/Inf và timeout đều
@@ -135,7 +144,9 @@ hoặc các file chưa commit không liên quan.
 ### Runner và safety
 
 - Mặc định là shadow, không tạo driver motor.
-- Motor chỉ được phép với `--ros --use-lidar --enable-motors --arm`.
+- Motor chỉ được phép với `--ros --use-lidar --enable-motors --arm`, một
+  `--semantic-topic` thật và `--require-ai`; mọi mock label bị từ chối. `--arm`
+  chỉ bật chính sách/service one-shot, **không tự arm và không tự chạy**.
 - Live còn bắt buộc config riêng có `calibrated=true`, `calibration_id`, scenario
   riêng có `validated_for_live=true`, `route_id`; file mẫu bị từ chối.
 - Arm live là service one-shot `/smart_city/arm`, chỉ nhận khi camera/LiDAR mới,
@@ -187,14 +198,21 @@ Quy tắc:
 - Mỗi frame nguồn chỉ publish một kết quả cuối; không lặp cùng ID để đủ debounce.
 - Các ID phải tăng theo thời gian. Kết quả out-of-order bị bỏ.
 - Không được có các khóa `steering`, `throttle`, `speed`, `motor`, `servo`,
-  `action`.
-- Model phải chọn detection trong ROI của hướng xe đang tiếp cận. Khung bốn góc
-  có thể làm camera thấy biển/đèn của hướng đường khác.
-- Khi dùng AI live phải chạy với `--require-ai`.
+  `action`, `exit`, `crosswalk` hay output geometry.
+- Mỗi hướng tiếp cận chỉ có một mặt đèn quay về phía xe. Vì vậy nên crop ROI cố
+  định đã calibrate và phân loại màu; bounding box không bắt buộc trong contract
+  (có thể giữ riêng để debug).
+- Live luôn bắt buộc `--require-ai`: chỉ có biển mà thiếu kênh đèn vẫn phải đứng;
+  cần GREEN mới, đủ confidence/debounce và đúng source frame mới được đi.
 
-Policy đèn đỏ/vàng: tín hiệu nhận được trong `WAIT_DECISION` giữ xe. Khi xe đã
-bắt đầu đi vào giao lộ, FSM ưu tiên thoát giao lộ thay vì phanh giữa đường; lúc
-đó E-stop, LiDAR và keep-out vẫn có quyền dừng tức thời.
+`models/best.pt` đang có là YOLO lane/crosswalk, **không phải** model semantic
+biển/đèn và không được đưa vào giao diện AI nói trên.
+
+Policy đèn đỏ/vàng: tín hiệu nhận được trong `WAIT_DECISION` hoặc lúc xe mới
+`NUDGE` tới cổng sẽ giữ xe. Sau lần giữ này phải xác nhận lại đủ số message
+GREEN mới được tiếp tục; thời gian đứng chờ không bị tính vào timeout chuyển
+động. Khi xe đã vào `TURNING`/`CROSSING`, FSM ưu tiên thoát giao lộ thay vì
+phanh giữa đường; lúc đó E-stop, LiDAR và keep-out vẫn có quyền dừng tức thời.
 
 ## 7. Format scenario
 
@@ -210,6 +228,7 @@ Ví dụ tối thiểu:
     {
       "id": "I01_T",
       "allowed": ["LEFT", "RIGHT"],
+      "requires_sign": true,
       "mock_sign": "NO_LEFT"
     },
     {
@@ -231,24 +250,32 @@ chỉ liệt kê các exit không vào đảo xanh và không ra khỏi sa hình
 `validated_for_live` thành true cho tới khi đã xác nhận đúng vị trí xuất phát,
 hướng đầu xe và toàn bộ thứ tự giao lộ.
 
-## 8. Trạng thái kiểm thử tại lúc bàn giao
+`mock_sign`/`mock_signal` chỉ dùng cho offline và shadow. Validation live từ
+chối mọi mock nằm cả trong CLI lẫn scenario; route thi dùng `action` làm phương
+án hình học, còn biển/đèn thật phải đến qua semantic topic.
 
-Kết quả đã xác nhận **sau toàn bộ patch cuối cùng**:
+Đặt `requires_sign: true` cho mọi giao lộ mà biển là dữ kiện bắt buộc (đặc biệt
+ngã ba dùng biển cấm để chọn lối còn lại). Ở event đó, chỉ GREEN mà thiếu biển,
+biển lạ hoặc biển dẫn tới hướng không thuộc `allowed` đều giữ xe và không
+consume route. Không đặt cờ này cho giao lộ thực sự không có biển.
 
-```text
-62 tests passed
-Python 3.6 grammar OK: 12 files
-one-image offline smoke test passed
-```
+Trong offline/shadow, `mock_sign` được phép thay cho biển khi AI hoàn toàn
+vắng mặt để route mẫu vẫn replay được. Một khi AI đã trả nhãn, nhãn lạ hoặc
+không an toàn không được fallback về mock. Live validation luôn cấm mọi mock.
 
-Hai regression cuối đã được chạy trong bộ 62 test, gồm:
+## 8. Năm tầng kiểm thử bắt buộc
 
-1. Runtime cập nhật semantic mới dù camera seq chưa đổi.
-2. ROS semantic chỉ nhận source camera gần đây/đúng thứ tự.
+Không dùng một con số test pass cũ làm chứng nhận live. Sau mỗi patch phải chạy
+lại đúng commit/config sẽ đưa lên xe và đi tuần tự qua năm tầng:
 
-Runtime cũng đã được kiểm tra lại sau khi đổi mọi `DriveCommand` ở
-`E_STOP_LATCHED` sang `actuator.emergency_stop()` thay vì chỉ apply zero.
-Antigravity vẫn nên chạy lại trên môi trường của mình trước khi sửa tiếp.
+1. Unit/regression với frame tổng hợp; tất cả test phải pass.
+2. Một ảnh rồi replay video CSI ở shadow mode, kiểm tra overlay và CSV.
+3. ROS shadow với camera, semantic node và LiDAR thật nhưng không tạo actuator.
+4. Actuator khi bánh nâng khỏi mặt đất: polarity, arm service, watchdog, stale
+   sensor và E-stop.
+5. Sân trống ga thấp: từng primitive, từng giao lộ, cuối cùng mới full route.
+
+Không được nhảy tầng nếu tầng trước còn failure hoặc output chưa giải thích được.
 
 ### Lệnh test đúng
 
@@ -277,6 +304,12 @@ Smoke test một ảnh:
 python -B src\smart_city\main_smart_city_v2.py --image only_camera_test.jpg --max-frames 1
 ```
 
+Xác minh cuối trên máy phát triển ngày 2026-08-21: `98/98` Smart City V2 tests
+pass, 12 file parse được với grammar Python 3.6, `git diff --check` sạch và smoke
+một ảnh hoàn tất với exit code 0. Đây là xác minh logic/offline, không thay cho
+ROS/hardware/calibration; phải chạy lại chính các lệnh này trên commit và config
+sẽ đưa lên Jetson.
+
 Replay video shadow:
 
 ```powershell
@@ -288,11 +321,12 @@ python -B src\smart_city\main_smart_city_v2.py --video VIDEO_CSI.mp4 --scenario 
 Overlay cần xem:
 
 - lane near/far có bám đúng cặp marker của làn xe hay bắt nhầm hàng ngang;
-- stop-line chỉ bật ở hàng nhiều thanh trắng trước giao lộ;
-- `stop_line_y` tiến gần camera tương đối đều;
+- zebra marker chỉ bật ở hàng nhiều thanh trắng trước giao lộ;
+- `stop_line_y` tiến gần camera tương đối đều; chỉnh
+  `stop_approach_y_ratio` và `stop_close_y_ratio` theo camera/cản trước thật;
 - mask xanh/cam phủ đảo cấm nhưng không phủ mặt đường đen;
 - frame đứng hình phải dẫn tới camera stale, không tự đủ debounce;
-- mỗi vạch chỉ consume một intersection;
+- một hoặc nhiều cụm marker trong cùng episode chỉ consume một route entry;
 - đỏ/vàng giữ `throttle=0`, xanh cần đủ confirmation;
 - hướng quyết định luôn thuộc `allowed`;
 - mất làn/keep-out/timeout đều về 0, không giữ lệnh ga cũ.
@@ -306,7 +340,7 @@ CSV cần kiểm tra:
 - loop latency thấp hơn actuator watchdog;
 - camera age và AI latency nằm trong TTL;
 - intersection ID/action đi đúng thứ tự route;
-- không consume hai entry trong cùng một vùng vạch.
+- không consume hai entry trước khi qua `REACQUIRE_CENTER` và `EXIT_LOCKOUT`.
 
 ## 10. Quy trình calibration bắt buộc
 
@@ -316,8 +350,8 @@ CSV cần kiểm tra:
 3. Chạy shadow, lưu video + CSV + overlay.
 4. Lấy HSV trắng/xanh/cam-đỏ từ video onboard, không lấy trực tiếp ảnh toàn cảnh.
 5. Chỉnh ROI để chân khung nhôm/biển phía trên không thành vạch dừng.
-6. Xác nhận stop-line 3+ frame, line loss sau khi đã confirmed mới được hiểu là
-   đi qua dưới camera.
+6. Xác nhận zebra marker 3+ frame; một hoặc nhiều cụm trước cùng giao lộ chỉ tạo
+   một episode và route step chỉ consume một lần.
 7. Nâng bánh khỏi mặt đất; đo polarity steering trái/phải, throttle deadzone,
    watchdog và E-stop.
 8. Chạy đường thẳng ga thấp; đo quãng trôi vì throttle 0 chỉ nhả ga, không phải
@@ -357,6 +391,11 @@ Sau khi camera/LiDAR đã fresh:
 rosservice call /smart_city/arm
 ```
 
+`--arm` trong lệnh khởi động chỉ enable service/policy trên; nó không auto-arm.
+Live còn bắt buộc config đã đo có `calibrated=true` và `calibration_id`, scenario
+route thật có `validated_for_live=true` và `route_id`, LiDAR fresh, actuator
+watchdog hoạt động và người giữ E-stop vật lý.
+
 E-stop ROS:
 
 ```bash
@@ -367,23 +406,36 @@ Luôn phải có E-stop vật lý/deadman độc lập; software watchdog không
 trường hợp process chết, kernel treo, GIL/hardware setter khóa vĩnh viễn hoặc
 nguồn/mạch công suất lỗi.
 
+### Checklist một ngày cuối
+
+1. Chạy full test/grammar và tạo checkpoint Git phục hồi được.
+2. Chốt vị trí, hướng xuất phát, `allowed` và route thật bằng cách đi bộ sa hình.
+3. Quay video CSI; calibrate HSV/ROI marker và keep-out xanh/đỏ bằng shadow.
+4. Cắm AI sign/light đúng source identity hoặc dùng mock để test FSM; không dùng
+   `models/best.pt` làm model semantic.
+5. Kiểm tra episode 1/N marker, route consume một lần và chuỗi
+   `TURN -> REACQUIRE_CENTER -> EXIT_LOCKOUT`.
+6. Nâng bánh thử arm, polarity, stale camera/LiDAR, watchdog và hai lớp E-stop.
+7. Chạy ga thấp từng primitive với vật cản mềm; không chắc chắn thì dừng.
+
 ## 12. Việc còn thiếu / giới hạn đã biết
 
 ### P0 — chưa được phép chạy thi thật
 
-- Chạy lại test/grammar/smoke sau patch cuối và sửa mọi failure bằng regression.
 - Chưa có video camera CSI chính thức và chưa calibrate HSV/ROI.
 - Chưa biết vị trí/hướng xuất phát và sequence route chính thức.
 - Chưa thử ROS thật, camera driver thật, LiDAR thật hay RacerController trên xe.
 - Chưa đo polarity/deadzone/quãng trôi/góc cua theo pin và mặt sân.
 - Chưa có E-stop vật lý/deadman.
 - `allowed` hiện là topology nhập tay; route mẫu không phải route thi.
+- MVP hiện **chưa live-ready**; không bật motor chỉ vì unit test đã pass.
 
 ### P0/P1 — geometry cần phát triển tiếp
 
-- Keep-out hiện chủ yếu đo corridor ảnh trước mặt. Chưa có BEV metric và swept
-  footprint riêng cho đường cua trái/phải (góc ngoài bánh trước, góc trong bánh
-  sau). Đây là giới hạn quan trọng cạnh đảo xanh.
+- Keep-out hiện có guard ảnh phía trước và guard nửa ảnh theo hướng cua, nhưng
+  chưa có BEV metric/swept footprint thật cho góc ngoài bánh trước và góc trong
+  bánh sau. `turn_green_hard_stop_ratio` cùng margin vẫn phải calibrate theo
+  kích thước/quỹ đạo thật; đây là giới hạn quan trọng cạnh đảo xanh.
 - LiDAR đang là sector phía trước, chưa phải swept sector theo steering/action.
 - Turn completion vẫn dựa thời gian + bắt lại làn; nên thêm IMU/yaw target hoặc
   visual heading đáng tin cậy để tránh bắt lại làn cũ/quay quá góc.
@@ -395,8 +447,10 @@ nguồn/mạch công suất lỗi.
 
 - Node AI phải publish source header theo contract mới.
 - Cần test delayed/out-of-order/duplicate inference trên ROS thật.
-- Cần ROI theo hướng tiếp cận để không lấy đèn/biển của nhánh khác.
+- Cần crop ROI cố định bằng ảnh onboard cho mặt đèn duy nhất quay về phía xe;
+  bbox không bắt buộc.
 - Cần log confusion matrix theo lớp biển/đèn và điều kiện sáng thật.
+- `models/best.pt` chỉ nhận lane/crosswalk, không thay cho model semantic này.
 
 ## 13. Quy trình sửa chữa liên tục
 
@@ -433,11 +487,13 @@ Không sửa lỗi bằng cách:
 1. Đọc file này và `docs/SMART_CITY_V2_GUIDE.md`.
 2. Chỉ làm trong các file Smart City V2/tests liên quan; giữ nguyên dirty worktree
    ngoài phạm vi.
-3. Chạy full tests theo lệnh discover; baseline bàn giao là 62/62.
-4. Rà riêng ba sửa đổi cuối:
+3. Chạy full tests theo lệnh discover; không tiếp tục nếu còn bất kỳ failure nào.
+4. Rà riêng các sửa đổi an toàn cuối:
    - actuator E-stop atomic latch;
-   - Runtime semantic observation/sequence pairing;
-   - RosBuffers camera-source matching và semantic monotonicity.
+   - Runtime semantic observation/sequence pairing và TTL tính từ frame nguồn;
+   - RosBuffers camera-source matching và semantic monotonicity;
+   - `requires_sign` không fallback action ở giao lộ bắt buộc đọc biển;
+   - planned-side keep-out ngay tại frame `NUDGE -> TURNING`.
 5. Thêm/điều chỉnh regression nếu test giả ROS có lỗi import/API.
 6. Chạy Python 3.6 grammar và offline image smoke.
 7. Không bật motor với config/scenario mẫu.
@@ -455,7 +511,8 @@ Tiếp quản Smart City V2, không sửa các thay đổi ngoài src/smart_city
 src/smart_city/main_smart_city_v2.py, tests/test_smart_city_v2_*.py và tài liệu
 liên quan. Đầu tiên chạy full unittest bằng discover, Python 3.6 grammar và
 offline image smoke. Kiểm tra kỹ patch cuối về actuator E-stop latch, semantic
-sequence pairing và camera source identity; viết regression trước mọi sửa đổi.
+sequence/source TTL, requires_sign và planned-side keep-out; viết regression
+trước mọi sửa đổi.
 Không bật motor, không đổi calibrated/validated_for_live, và không dùng route
 mẫu làm route thi. Sau đó báo các blocker còn lại và đề xuất bước calibration
 dựa trên video camera CSI thật.

@@ -74,17 +74,17 @@ class VehicleActuator(object):
         self.racer = RacerController()
         if getattr(self.racer, "_mock", False):
             self.racer.stop()
-            # raise RuntimeError("motor mode refused: RacerController is mocked")
-            print("[WARNING] RacerController is mocked, the car will NOT physically move!")
+            raise RuntimeError("motor mode refused: RacerController is mocked")
+        car = getattr(self.racer, "car", None)
         if not (
-            hasattr(self.racer.car, "steering")
-            and hasattr(self.racer.car, "throttle")
+            car is not None
+            and hasattr(car, "steering")
+            and hasattr(car, "throttle")
         ):
             self.racer.stop()
-            # raise RuntimeError(
-            #     "motor mode requires hardware with steering and throttle"
-            # )
-            print("[WARNING] motor mode requires hardware with steering and throttle")
+            raise RuntimeError(
+                "motor mode requires hardware with steering and throttle"
+            )
         self.timeout = float(config.actuator_watchdog_seconds)
         self._lock = threading.Lock()
         self._last_heartbeat = time.monotonic()
@@ -113,18 +113,34 @@ class VehicleActuator(object):
         with self._lock:
             if self._closed:
                 self.racer.stop()
-                return
-            if self._watchdog_tripped or self._emergency_stop_latched:
-                self._watchdog_tripped = False
-                self._emergency_stop_latched = False
+                raise RuntimeError("actuator is closed")
+            if self._emergency_stop_latched:
+                self.racer.stop()
+                raise RuntimeError("emergency stop is latched; restart required")
+            if self._watchdog_tripped:
+                self.racer.stop()
+                raise RuntimeError("actuator watchdog is latched; restart required")
             self._last_heartbeat = time.monotonic()
             if throttle <= 0.0:
                 self.racer.stop()
                 self._moving = False
                 return
             # Avoid relying on the uncommitted convenience ``steer`` method.
-            self.racer.set_steering(steering)
-            self.racer.set_throttle(throttle)
+            try:
+                self.racer.set_steering(steering)
+                self.racer.set_throttle(throttle)
+            except Exception as exc:
+                # A partial hardware write must never leave the previous
+                # positive throttle active.  Latch the actuator and require a
+                # process restart after attempting an immediate zero command.
+                self._emergency_stop_latched = True
+                self._moving = False
+                self._last_heartbeat = time.monotonic()
+                try:
+                    self.racer.stop()
+                except Exception:
+                    pass
+                raise RuntimeError("hardware actuator write failed") from exc
             self._moving = True
 
     def stop(self):
@@ -142,9 +158,13 @@ class VehicleActuator(object):
             self._last_heartbeat = time.monotonic()
 
     def close(self):
-        self.stop()
+        # Closing and stopping must be one critical section.  Calling stop()
+        # first leaves a gap in which an already-waiting apply() can energise
+        # the motor immediately before _closed is set.
         with self._lock:
             self._closed = True
+            self.racer.stop()
+            self._moving = False
         if self._watchdog_thread.is_alive():
             self._watchdog_thread.join(timeout=0.35)
 
@@ -188,9 +208,6 @@ class CsvTelemetry(object):
         "sign_confidence",
         "signal_label",
         "signal_confidence",
-        "crosswalk_conf",
-        "left_conf",
-        "right_conf",
         "ai_latency_ms",
         "camera_age_ms",
         "front_distance_m",
@@ -235,9 +252,6 @@ class CsvTelemetry(object):
             "sign_confidence": _optional_number(semantic.sign_confidence),
             "signal_label": semantic.signal_label or "",
             "signal_confidence": _optional_number(semantic.signal_confidence),
-            "crosswalk_conf": _optional_number(semantic.crosswalk_conf),
-            "left_conf": _optional_number(semantic.left_conf),
-            "right_conf": _optional_number(semantic.right_conf),
             "ai_latency_ms": _optional_number(semantic.latency_ms),
             "camera_age_ms": "%.3f" % (camera_age * 1000.0),
             "front_distance_m": _optional_number(front_distance),
@@ -254,6 +268,17 @@ class CsvTelemetry(object):
 
 class RosBuffers(object):
     """Latest-only ROS buffers; callbacks never run perception or control."""
+
+    SEMANTIC_KEYS = frozenset((
+        "sign_label",
+        "sign_confidence",
+        "signal_label",
+        "signal_confidence",
+        "latency_ms",
+        "source_frame_seq",
+        "source_stamp_ns",
+        "source_crc32",
+    ))
 
     def __init__(self, rospy, config, use_lidar=False, semantic_topic=None,
                  emergency_stop_callback=None):
@@ -315,24 +340,7 @@ class RosBuffers(object):
         )
         arrival = time.monotonic()
         with self.lock:
-            if identity == self._last_camera_key:
-                return
-            if identity[0] == "header":
-                sequence, stamp_ns = identity[1], identity[2]
-                if (
-                    stamp_ns > 0
-                    and self._last_header_stamp_ns is not None
-                    and stamp_ns <= self._last_header_stamp_ns
-                ):
-                    return
-                if (
-                    stamp_ns == 0
-                    and sequence > 0
-                    and self._last_header_seq is not None
-                    and sequence <= self._last_header_seq
-                ):
-                    return
-            if content_crc == self._last_content_crc:
+            if not self._camera_sample_is_new_locked(identity, content_crc):
                 return
         try:
             frame = ros_image_to_bgr(message)
@@ -340,6 +348,11 @@ class RosBuffers(object):
             self.rospy.logwarn_throttle(2.0, "Camera decode failed: %s" % exc)
             return
         with self.lock:
+            # ROS callbacks normally arrive in order, but decoding happens
+            # outside the lock.  Re-check here so a slow older decode cannot
+            # overwrite a newer frame and corrupt semantic/source pairing.
+            if not self._camera_sample_is_new_locked(identity, content_crc):
+                return
             self.frame = frame.copy()
             self.frame_stamp = arrival
             self.frame_seq += 1
@@ -356,6 +369,28 @@ class RosBuffers(object):
                 "arrival": arrival,
             })
             self._camera_history = self._camera_history[-64:]
+
+    def _camera_sample_is_new_locked(self, identity, content_crc):
+        if identity == self._last_camera_key:
+            return False
+        if identity[0] == "header":
+            sequence, stamp_ns = identity[1], identity[2]
+            if (
+                stamp_ns > 0
+                and self._last_header_stamp_ns is not None
+                and stamp_ns <= self._last_header_stamp_ns
+            ):
+                return False
+            if (
+                stamp_ns == 0
+                and sequence > 0
+                and self._last_header_seq is not None
+                and sequence <= self._last_header_seq
+            ):
+                return False
+        if content_crc == self._last_content_crc:
+            return False
+        return True
 
     def _lidar_callback(self, message):
         half_angle = math.radians(self.config.lidar_guard_half_angle_deg)
@@ -392,17 +427,14 @@ class RosBuffers(object):
             payload = json.loads(message.data)
             if not isinstance(payload, dict):
                 raise ValueError("semantic JSON root must be an object")
-            forbidden = {
-                str(key).lower() for key in payload.keys()
-            }.intersection((
-                "steering", "throttle", "speed", "motor", "servo", "action"
-            ))
-            if forbidden:
+            unexpected = set(payload.keys()).difference(self.SEMANTIC_KEYS)
+            if unexpected:
                 raise ValueError(
-                    "semantic message contains control keys: %s"
-                    % ",".join(sorted(forbidden))
+                    "semantic message contains unsupported keys: %s"
+                    % ",".join(sorted(str(key) for key in unexpected))
                 )
         except (TypeError, ValueError) as exc:
+            self._invalidate_semantic()
             self.rospy.logwarn_throttle(2.0, "Invalid semantic JSON: %s" % exc)
             return
 
@@ -422,6 +454,7 @@ class RosBuffers(object):
                     "semantic result needs a non-zero camera source identity"
                 )
         except (TypeError, ValueError) as exc:
+            self._invalidate_semantic()
             self.rospy.logwarn_throttle(2.0, "Invalid semantic source: %s" % exc)
             return
 
@@ -450,11 +483,13 @@ class RosBuffers(object):
                 source_record = record
                 break
             if source_record is None:
+                self._invalidate_semantic_locked()
                 self.rospy.logwarn_throttle(
                     2.0, "Semantic result does not match a recent camera frame"
                 )
                 return
             if now - source_record["arrival"] > self.config.semantic_ttl_seconds:
+                self._invalidate_semantic_locked()
                 self.rospy.logwarn_throttle(2.0, "Semantic source frame is stale")
                 return
             local_seq = source_record["local_seq"]
@@ -462,6 +497,7 @@ class RosBuffers(object):
                 self._last_semantic_source_local_seq is not None
                 and local_seq <= self._last_semantic_source_local_seq
             ):
+                self._invalidate_semantic_locked()
                 self.rospy.logwarn_throttle(
                     2.0, "Semantic source frame is duplicate/out of order"
                 )
@@ -472,21 +508,31 @@ class RosBuffers(object):
                     sign_confidence=payload.get("sign_confidence"),
                     signal_label=payload.get("signal_label"),
                     signal_confidence=payload.get("signal_confidence"),
-                    crosswalk_conf=payload.get("crosswalk"),
-                    left_conf=payload.get("left_branch") or payload.get("left"),
-                    right_conf=payload.get("right_branch") or payload.get("right"),
                     latency_ms=payload.get("latency_ms"),
+                    stamp=now,
                     source_frame_seq=source_frame_seq,
                     source_stamp_ns=source_stamp_ns,
                     source_local_seq=local_seq,
+                    source_arrival_stamp=source_record["arrival"],
                 )
             except (TypeError, ValueError) as exc:
+                self._invalidate_semantic_locked()
                 self.rospy.logwarn_throttle(2.0, "Invalid semantic JSON: %s" % exc)
                 return
             self.semantic = observation
             self.semantic_stamp = now
             self.semantic_seq += 1
             self._last_semantic_source_local_seq = local_seq
+
+    def _invalidate_semantic(self):
+        with self.lock:
+            self._invalidate_semantic_locked()
+
+    def _invalidate_semantic_locked(self):
+        """Revoke a previously accepted label after bad/stale AI output."""
+        self.semantic = SemanticObservation()
+        self.semantic_stamp = None
+        self.semantic_seq += 1
 
     def _arm_service(self, unused_request):
         del unused_request
@@ -558,6 +604,9 @@ class Runtime(object):
         self.last_perception = None
         self.last_semantic = SemanticObservation()
         self.last_seq = None
+        self._last_external_semantic_seq = None
+        self._last_external_source_local_seq = None
+        self._last_external_fingerprint = None
 
     def arm(self, now):
         return self.fsm.arm(now=now)
@@ -576,9 +625,12 @@ class Runtime(object):
                 self.last_semantic = self.detector.detect(frame)
             self.last_seq = seq
         if external_semantic is not None:
-            # ROS semantics have their own sequence and can arrive between two
-            # camera callbacks.  Never reuse an old label with a newer seq.
-            self.last_semantic = external_semantic
+            # ROS semantics are asynchronous.  Accept a label only when it is
+            # fresh, references a camera frame that already exists, and moves
+            # both the semantic-result and camera-source sequences forward.
+            self._update_external_semantic(
+                external_semantic, semantic_seq, seq, now
+            )
 
         semantic = self.last_semantic
         command = self.fsm.update(
@@ -612,6 +664,98 @@ class Runtime(object):
         )
         return command, draw_overlay(self.last_perception.debug_frame, command,
                                      semantic, loop_latency_ms)
+
+    def _update_external_semantic(self, observation, semantic_seq,
+                                  camera_seq, now):
+        has_label = (
+            observation.sign_label is not None
+            or observation.signal_label is not None
+        )
+        if not has_label:
+            self._clear_external_semantic(now, semantic_seq)
+            return False
+
+        if (
+            isinstance(semantic_seq, bool)
+            or not isinstance(semantic_seq, int)
+            or semantic_seq <= 0
+        ):
+            self._clear_external_semantic(now)
+            return False
+        source_seq = observation.source_local_seq
+        if (
+            isinstance(source_seq, bool)
+            or not isinstance(source_seq, int)
+            or source_seq <= 0
+            or source_seq > camera_seq
+        ):
+            self._clear_external_semantic(now, semantic_seq)
+            return False
+
+        result_age = now - observation.stamp
+        source_arrival_stamp = observation.source_arrival_stamp
+        if source_arrival_stamp is None:
+            self._clear_external_semantic(now, semantic_seq)
+            return False
+        source_age = now - source_arrival_stamp
+        if (
+            result_age < -0.05
+            or result_age > self.config.semantic_ttl_seconds
+            or source_age < -0.05
+            or source_age > self.config.semantic_ttl_seconds
+        ):
+            self._clear_external_semantic(now, semantic_seq)
+            return False
+
+        fingerprint = (
+            observation.sign_label,
+            observation.sign_confidence,
+            observation.signal_label,
+            observation.signal_confidence,
+            observation.source_frame_seq,
+            observation.source_stamp_ns,
+            source_seq,
+            source_arrival_stamp,
+        )
+        if self._last_external_semantic_seq is not None:
+            if semantic_seq < self._last_external_semantic_seq:
+                self._clear_external_semantic(now)
+                return False
+            if semantic_seq == self._last_external_semantic_seq:
+                if fingerprint != self._last_external_fingerprint:
+                    self._clear_external_semantic(now)
+                    return False
+                # Reusing the same accepted result between camera callbacks is
+                # expected; the FSM sees the unchanged semantic_seq and does
+                # not count it as another confirmation frame.
+                self.last_semantic = observation
+                return True
+        if (
+            self._last_external_source_local_seq is not None
+            and source_seq <= self._last_external_source_local_seq
+        ):
+            self._clear_external_semantic(now, semantic_seq)
+            return False
+
+        self.last_semantic = observation
+        self._last_external_semantic_seq = semantic_seq
+        self._last_external_source_local_seq = source_seq
+        self._last_external_fingerprint = fingerprint
+        return True
+
+    def _clear_external_semantic(self, now, semantic_seq=None):
+        self.last_semantic = SemanticObservation(stamp=now)
+        self._last_external_fingerprint = None
+        if (
+            isinstance(semantic_seq, int)
+            and not isinstance(semantic_seq, bool)
+            and semantic_seq > 0
+            and (
+                self._last_external_semantic_seq is None
+                or semantic_seq > self._last_external_semantic_seq
+            )
+        ):
+            self._last_external_semantic_seq = semantic_seq
 
 
 def camera_message_identity(message):
@@ -817,7 +961,9 @@ def run_ros(args, config, actuator, telemetry, detector):
     if actuator is None:
         # Hardware constructors log through rospy, so initialise the node first.
         actuator = VehicleActuator(config)
-    rospy.on_shutdown(actuator.stop)
+    # Shutdown can race a control-loop apply().  Use the latched path so a
+    # command already waiting on the actuator lock cannot re-energise motors.
+    rospy.on_shutdown(actuator.emergency_stop)
     try:
         buffers = RosBuffers(
             rospy,
@@ -866,16 +1012,13 @@ def run_ros(args, config, actuator, telemetry, detector):
                     actuator.emergency_stop()
 
             if not armed:
-                should_arm = (
-                    (not args.enable_motors)
-                    or args.arm
-                    or (
-                        arm_requests > 0
-                        and arm_request_stamp is not None
-                        and now - arm_request_stamp
-                        <= config.arm_request_ttl_seconds
-                        and not estop_latched
-                    )
+                should_arm = should_arm_runtime(
+                    args.enable_motors,
+                    arm_requests,
+                    arm_request_stamp,
+                    now,
+                    config.arm_request_ttl_seconds,
+                    estop_latched,
                 )
                 if should_arm:
                     armed = runtime.arm(now)
@@ -937,23 +1080,68 @@ def load_config(path):
 
 def validate_live_inputs(args, config):
     """Refuse motor mode until route and calibration were explicitly signed."""
-    # if not args.config:
-    #     raise ValueError("motor mode requires an explicit calibration JSON")
-    # config.validate_live()
-    # if os.path.abspath(args.scenario) == os.path.abspath(DEFAULT_SCENARIO):
-    #     raise ValueError("motor mode refuses scenario_example.json")
-    # with open(args.scenario, "r", encoding="utf-8") as scenario_file:
-    #     document = json.load(scenario_file)
-    # if not isinstance(document, dict):
-    #     raise ValueError("live scenario root must be an object")
-    # if document.get("validated_for_live") is not True:
-    #     raise ValueError("live scenario needs validated_for_live=true")
-    # route_id = document.get("route_id")
-    # if not isinstance(route_id, str) or not route_id.strip():
-    #     raise ValueError("live scenario needs a non-empty route_id")
-    # if not args.use_lidar:
-    #     raise ValueError("motor mode requires --use-lidar")
-    pass
+    if not getattr(args, "semantic_topic", None):
+        raise ValueError("motor mode requires a live --semantic-topic")
+    if getattr(args, "require_ai", False) is not True:
+        raise ValueError("motor mode requires --require-ai")
+    if (
+        getattr(args, "mock_sign", None) is not None
+        or getattr(args, "mock_signal", None) is not None
+    ):
+        raise ValueError("motor mode refuses mock sign/signal labels")
+    if not args.config:
+        raise ValueError("motor mode requires an explicit calibration JSON")
+    config.validate_live()
+    if os.path.abspath(args.scenario) == os.path.abspath(DEFAULT_SCENARIO):
+        raise ValueError("motor mode refuses scenario_example.json")
+    with open(args.scenario, "r", encoding="utf-8") as scenario_file:
+        document = json.load(scenario_file)
+    if not isinstance(document, dict):
+        raise ValueError("live scenario root must be an object")
+    if document.get("validated_for_live") is not True:
+        raise ValueError("live scenario needs validated_for_live=true")
+    route_id = document.get("route_id")
+    if not isinstance(route_id, str) or not route_id.strip():
+        raise ValueError("live scenario needs a non-empty route_id")
+    intersections = document.get("intersections")
+    if not isinstance(intersections, list):
+        raise ValueError("live scenario intersections must be an array")
+    for index, entry in enumerate(intersections):
+        if (
+            isinstance(entry, dict)
+            and "requires_sign" in entry
+            and not isinstance(entry.get("requires_sign"), bool)
+        ):
+            raise ValueError(
+                "live scenario entry %d requires_sign must be boolean"
+                % (index + 1)
+            )
+        if isinstance(entry, dict) and (
+            "mock_sign" in entry or "mock_signal" in entry
+        ):
+            raise ValueError(
+                "live scenario entry %d contains a mock label" % (index + 1)
+            )
+    if not args.use_lidar:
+        raise ValueError("motor mode requires --use-lidar")
+
+
+def should_arm_runtime(enable_motors, arm_requests, arm_request_stamp,
+                       now, request_ttl, estop_latched):
+    """Return whether this tick may arm without a startup auto-arm race.
+
+    Shadow mode starts automatically.  Motor mode requires a fresh one-shot
+    service request made after camera/LiDAR became ready; the ``--arm`` CLI flag
+    only acknowledges that policy and never moves the car by itself.
+    """
+    if not enable_motors:
+        return True
+    return bool(
+        arm_requests > 0
+        and arm_request_stamp is not None
+        and 0.0 <= now - arm_request_stamp <= request_ttl
+        and not estop_latched
+    )
 
 
 def build_parser():
@@ -973,14 +1161,20 @@ def build_parser():
     parser.add_argument("--max-frames", type=int, default=0)
 
     parser.add_argument("--enable-motors", action="store_true")
-    parser.add_argument("--arm", action="store_true",
-                        help="permit ROS arm topic; required with motors")
+    parser.add_argument(
+        "--arm",
+        action="store_true",
+        help=(
+            "enable the one-shot ROS arm service; this acknowledgement is "
+            "required with motors but never auto-arms the car"
+        ),
+    )
     parser.add_argument("--use-lidar", action="store_true")
 
     parser.add_argument("--semantic-topic",
                         help="ROS std_msgs/String JSON produced by the AI node")
     parser.add_argument("--require-ai", action="store_true",
-                        help="hold at junction until a fresh semantic label exists")
+                        help="hold at junction until a fresh traffic-light result exists")
     parser.add_argument("--mock-sign")
     parser.add_argument("--mock-signal")
     return parser

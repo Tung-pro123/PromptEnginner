@@ -18,14 +18,12 @@ class SemanticObservation(object):
         "sign_confidence",
         "signal_label",
         "signal_confidence",
-        "crosswalk_conf",
-        "left_conf",
-        "right_conf",
         "latency_ms",
         "stamp",
         "source_frame_seq",
         "source_stamp_ns",
         "source_local_seq",
+        "source_arrival_stamp",
     )
 
     def __init__(
@@ -34,24 +32,23 @@ class SemanticObservation(object):
         sign_confidence=None,
         signal_label=None,
         signal_confidence=None,
-        crosswalk_conf=None,
-        left_conf=None,
-        right_conf=None,
         latency_ms=None,
         stamp=None,
         source_frame_seq=None,
         source_stamp_ns=None,
         source_local_seq=None,
+        source_arrival_stamp=None,
     ):
         self.sign_label = _normalise(sign_label)
         self.sign_confidence = _confidence(sign_confidence)
         self.signal_label = _normalise(signal_label)
         self.signal_confidence = _confidence(signal_confidence)
-        self.crosswalk_conf = _confidence(crosswalk_conf)
-        self.left_conf = _confidence(left_conf)
-        self.right_conf = _confidence(right_conf)
-        self.latency_ms = None if latency_ms is None else float(latency_ms)
-        self.stamp = time.monotonic() if stamp is None else float(stamp)
+        self.latency_ms = _optional_finite_non_negative(
+            latency_ms, "latency_ms"
+        )
+        self.stamp = _finite_non_negative(
+            time.monotonic() if stamp is None else stamp, "stamp"
+        )
         self.source_frame_seq = _optional_non_negative_int(
             source_frame_seq, "source_frame_seq"
         )
@@ -60,6 +57,13 @@ class SemanticObservation(object):
         )
         self.source_local_seq = _optional_non_negative_int(
             source_local_seq, "source_local_seq"
+        )
+        # Internal monotonic timestamp captured when the source camera frame
+        # reached RosBuffers.  Unlike ``stamp`` (AI result arrival), this lets
+        # Runtime enforce one end-to-end TTL instead of granting the result a
+        # fresh TTL after inference completes.
+        self.source_arrival_stamp = _optional_finite_non_negative(
+            source_arrival_stamp, "source_arrival_stamp"
         )
 
     def as_dict(self):
@@ -120,12 +124,16 @@ class FunctionSemanticDetector(object):
     """Adapter for the teammate's model callable: ``model(frame) -> dict``.
 
     Accepted keys are only ``sign_label``, ``sign_confidence``,
-    ``signal_label`` and ``signal_confidence``.  Control-like outputs are
-    rejected explicitly.
+    ``signal_label`` and ``signal_confidence``.  Control and geometric
+    perception outputs are rejected explicitly: AI is not allowed to invent
+    exits, crosswalks, steering, or throttle.
     """
 
     _CONTROL_KEYS = frozenset((
         "steering", "throttle", "speed", "motor", "servo", "action"
+    ))
+    _ALLOWED_KEYS = frozenset((
+        "sign_label", "sign_confidence", "signal_label", "signal_confidence"
     ))
 
     def __init__(self, predict_function):
@@ -142,23 +150,34 @@ class FunctionSemanticDetector(object):
             return output
         if not isinstance(output, dict):
             raise TypeError("AI output must be SemanticObservation or dict")
-        normalised_keys = {
-            key.lower() for key in output.keys() if isinstance(key, str)
-        }
+        normalised_output = {}
+        for key, value in output.items():
+            if not isinstance(key, str):
+                raise TypeError("AI output keys must be strings")
+            normalised_key = key.strip().lower()
+            if not normalised_key:
+                raise ValueError("AI output key must not be empty")
+            if normalised_key in normalised_output:
+                raise ValueError("AI output contains duplicate keys")
+            normalised_output[normalised_key] = value
+        normalised_keys = set(normalised_output)
         forbidden = self._CONTROL_KEYS.intersection(normalised_keys)
         if forbidden:
             raise ValueError(
                 "AI may not output actuator/control keys: %s"
                 % ",".join(sorted(forbidden))
             )
+        unsupported = normalised_keys.difference(self._ALLOWED_KEYS)
+        if unsupported:
+            raise ValueError(
+                "AI output contains unsupported semantic keys: %s"
+                % ",".join(sorted(unsupported))
+            )
         return SemanticObservation(
-            sign_label=output.get("sign_label"),
-            sign_confidence=output.get("sign_confidence"),
-            signal_label=output.get("signal_label"),
-            signal_confidence=output.get("signal_confidence"),
-            crosswalk_conf=output.get("crosswalk_conf"),
-            left_conf=output.get("left_conf"),
-            right_conf=output.get("right_conf"),
+            sign_label=normalised_output.get("sign_label"),
+            sign_confidence=normalised_output.get("sign_confidence"),
+            signal_label=normalised_output.get("signal_label"),
+            signal_confidence=normalised_output.get("signal_confidence"),
             latency_ms=elapsed_ms,
         )
 
@@ -179,6 +198,24 @@ def _confidence(value):
     if not math.isfinite(value) or value < 0.0 or value > 1.0:
         raise ValueError("confidence must be in [0, 1]")
     return value
+
+
+def _finite_non_negative(value, name):
+    if isinstance(value, bool):
+        raise TypeError("%s must be numeric" % name)
+    try:
+        value = float(value)
+    except (OverflowError, TypeError, ValueError):
+        raise TypeError("%s must be numeric" % name)
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError("%s must be finite and non-negative" % name)
+    return value
+
+
+def _optional_finite_non_negative(value, name):
+    if value is None:
+        return None
+    return _finite_non_negative(value, name)
 
 
 def _optional_non_negative_int(value, name):

@@ -25,7 +25,10 @@ class SmartCityState(object):
     NUDGE = "NUDGE"
     TURNING = "TURNING"
     CROSSING = "CROSSING"
-    REACQUIRE = "REACQUIRE"
+    # Compatibility alias: older runners/log readers use ``REACQUIRE`` while
+    # the more precise name documents what must be stable before exit.
+    REACQUIRE_CENTER = "REACQUIRE"
+    REACQUIRE = REACQUIRE_CENTER
     EXIT_LOCKOUT = "EXIT_LOCKOUT"
     FINISHED = "FINISHED"
     SAFE_STOP = "SAFE_STOP"
@@ -105,6 +108,10 @@ class SmartCityFSM(object):
 
         self._decision = None
         self._pending_action = None
+        self._route_step_committed = False
+        self._nudge_clear_streak = 0
+        self._nudge_signal_blocked = False
+        self._nudge_signal_hold_since = None
         self._turn_lane_streak = 0
         self._reacquire_streak = 0
         self._exit_clear_streak = 0
@@ -192,9 +199,6 @@ class SmartCityFSM(object):
         ai_confidence=None,
         signal_label=None,
         signal_confidence=None,
-        crosswalk_conf=None,
-        left_conf=None,
-        right_conf=None,
         ai_required=False,
         semantic_seq=None,
         semantic_source_frame_seq=None,
@@ -283,9 +287,9 @@ class SmartCityFSM(object):
             self._lane_missing_since = None
 
         if self.state == SmartCityState.LANE_FOLLOW:
-            return self._update_lane_follow(perception, now, new_frame, crosswalk_conf)
+            return self._update_lane_follow(perception, now, new_frame)
         if self.state == SmartCityState.APPROACH_LINE:
-            return self._update_approach(perception, now, new_frame, crosswalk_conf)
+            return self._update_approach(perception, now, new_frame)
         if self.state == SmartCityState.STOP_HOLD:
             if now - self.state_since >= self.config.stop_hold_seconds:
                 self._wait_decision_since = now
@@ -299,15 +303,22 @@ class SmartCityFSM(object):
                 ai_confidence,
                 signal_label,
                 signal_confidence,
-                left_conf,
-                right_conf,
                 ai_required,
                 semantic_seq,
                 semantic_source_frame_seq,
                 perception,
             )
         if self.state == SmartCityState.NUDGE:
-            return self._update_nudge(perception, now)
+            signal_guard = self._guard_nudge_signal(
+                now,
+                signal_label,
+                signal_confidence,
+                ai_required,
+                semantic_seq,
+            )
+            if signal_guard is not None:
+                return signal_guard
+            return self._update_nudge(perception, now, new_frame)
         if self.state == SmartCityState.TURNING:
             return self._update_turn(perception, now, new_frame)
         if self.state == SmartCityState.CROSSING:
@@ -315,15 +326,18 @@ class SmartCityFSM(object):
         if self.state == SmartCityState.REACQUIRE:
             return self._update_reacquire(perception, now, new_frame)
         if self.state == SmartCityState.EXIT_LOCKOUT:
-            return self._update_exit_lockout(perception, now, new_frame, crosswalk_conf)
+            return self._update_exit_lockout(perception, now, new_frame)
 
         return self._safe_stop("unknown_fsm_state", now)
 
-    def _update_lane_follow(self, perception, now, new_frame, crosswalk_conf):
+    def _update_lane_follow(self, perception, now, new_frame):
         if new_frame:
-            if self._is_stop_candidate(perception, crosswalk_conf):
+            if self._is_stop_candidate(perception):
                 self._record_stop(perception, detected=True)
-                if self._stop_y_ratio(perception) >= 0.52:
+                if (
+                    self._stop_y_ratio(perception)
+                    >= self.config.stop_approach_y_ratio
+                ):
                     self._transition(SmartCityState.APPROACH_LINE, now)
                     return self._lane_command(
                         perception,
@@ -343,18 +357,21 @@ class SmartCityFSM(object):
             return self._safe_stop("green_keepout_ahead_without_junction", now)
         return self._lane_command(perception, now, "lane_follow")
 
-    def _update_approach(self, perception, now, new_frame, crosswalk_conf):
+    def _update_approach(self, perception, now, new_frame):
         if now - self.state_since > 6.5:
             return self._safe_stop("stop_line_approach_timeout", now)
 
         if new_frame:
-            detected = self._is_stop_candidate(perception, crosswalk_conf)
+            detected = self._is_stop_candidate(perception)
             self._record_stop(perception, detected=detected)
             if self._stop_streak >= self.config.stop_confirm_frames:
                 self._stop_confirmed = True
 
             y_ratio = self._stop_y_ratio(perception)
-            close_enough = y_ratio >= 0.70 or self._closest_stop_y >= 0.76
+            close_enough = (
+                y_ratio >= self.config.stop_close_y_ratio
+                or self._closest_stop_y >= self.config.stop_close_y_ratio
+            )
             if self._stop_confirmed and close_enough:
                 self._intersection_latched = True
                 self._transition(SmartCityState.STOP_HOLD, now)
@@ -363,9 +380,23 @@ class SmartCityFSM(object):
             if not detected:
                 if self._stop_confirmed:
                     if self._stop_lost_streak >= 2:
+                        # Losing a marker only proves that it passed under the
+                        # camera after it had reached the calibrated close
+                        # zone.  A stable but still-far white row can vanish
+                        # because of glare/occlusion; consuming the route there
+                        # would start a turn before the junction gate.
+                        if (
+                            self._closest_stop_y
+                            < self.config.stop_close_y_ratio
+                        ):
+                            return self._safe_stop(
+                                "confirmed_stop_line_lost_before_close", now
+                            )
                         self._intersection_latched = True
                         self._transition(SmartCityState.STOP_HOLD, now)
-                        return self._zero(now, "confirmed_line_passed_under_camera")
+                        return self._zero(
+                            now, "confirmed_line_passed_under_camera"
+                        )
                 elif self._stop_lost_streak >= 2:
                     self._clear_stop_candidate()
                     self._transition(SmartCityState.LANE_FOLLOW, now)
@@ -384,8 +415,6 @@ class SmartCityFSM(object):
         ai_confidence,
         signal_label,
         signal_confidence,
-        left_conf,
-        right_conf,
         ai_required,
         semantic_seq,
         semantic_source_frame_seq,
@@ -419,6 +448,13 @@ class SmartCityFSM(object):
         has_semantics = ai_label is not None or signal_label is not None
         ai_light = self._light_state(ai_label)
         signal_light = self._light_state(signal_label)
+        # On the official course the light is the permission gate.  Requiring
+        # AI must therefore not be satisfied by a sign-only result: loss of the
+        # light channel keeps the car stationary instead of falling back to a
+        # scripted route while the real signal may be red.
+        if ai_required and signal_light is None:
+            self._reset_semantic_confirmation()
+            return self._zero(now, "waiting_for_traffic_light")
         if ai_light is not None and signal_light is not None and ai_light != signal_light:
             self._reset_semantic_confirmation()
             return self._zero(now, "conflicting_traffic_light_labels")
@@ -439,13 +475,24 @@ class SmartCityFSM(object):
             ):
                 return self._zero(now, "confirming_ai_semantics")
 
+        # Every confirmed marker group belongs to the current latched episode
+        # until EXIT_LOCKOUT clears it.  Resolving the route more than once in
+        # that interval would skip an intersection, so fail closed if a future
+        # state-transition regression ever re-enters WAIT_DECISION.
+        if self._route_step_committed:
+            return self._safe_stop("duplicate_route_resolution_blocked", now)
+
         try:
             result = self.decision_provider.decide(
                 ai_label=ai_label,
                 ai_confidence=ai_confidence,
-                left_conf=left_conf,
-                right_conf=right_conf,
-                intersection_id=self._intersection_id,
+                signal_label=signal_label,
+                # The scenario provider owns the route/intersection identity.
+                # Passing ``None`` asks it to use the ID of the current
+                # unconsumed entry.  The previous reference to a nonexistent
+                # ``_intersection_id`` attribute made every decision fail
+                # closed before the provider could run.
+                intersection_id=None,
             )
         except Exception as exc:
             return self._safe_stop(
@@ -457,11 +504,21 @@ class SmartCityFSM(object):
         self._decision = result
 
         if action_name == "STOP":
-            # A red/yellow light is a non-consuming hold.  All other STOPs are
-            # invalid/final commands and remain fail-closed.
-            if result.reason == "traffic_light_hold":
-                return self._zero(now, "traffic_light_hold")
+            # A red/yellow light and unresolved mandatory sign are
+            # non-consuming holds.  A later fresh semantic result must resolve
+            # the same route entry; it may never fall back to scripted action.
+            non_consuming_holds = (
+                "traffic_light_hold",
+                "required_sign_missing",
+                "required_sign_invalid",
+                "required_sign_unsafe",
+            )
+            if result.reason in non_consuming_holds:
+                self._reset_semantic_confirmation()
+                return self._zero(now, result.reason)
+            self._route_step_committed = True
             return self._safe_stop("decision_stop:" + result.reason, now)
+        self._route_step_committed = True
         if action_name in ("END", "FINISH", "GOAL"):
             self.armed = False
             self._transition(SmartCityState.FINISHED, now)
@@ -476,6 +533,9 @@ class SmartCityFSM(object):
             return self._safe_stop("straight_exit_blocked_by_keepout", now)
 
         self._pending_action = action
+        self._nudge_clear_streak = 0
+        self._nudge_signal_blocked = False
+        self._nudge_signal_hold_since = None
         self._turn_lane_streak = 0
         self._reacquire_streak = 0
         if action_name == "STRAIGHT":
@@ -486,8 +546,10 @@ class SmartCityFSM(object):
         self._transition(SmartCityState.NUDGE, now)
         return self._nudge_command(now, "decision_accepted")
 
-    def _update_nudge(self, perception, now):
+    def _update_nudge(self, perception, now, new_frame):
         elapsed = now - self.state_since
+        if elapsed > self.config.nudge_max_seconds:
+            return self._safe_stop("junction_gate_not_reached", now)
         action_name = self._action_name()
         duration = (
             self.config.nudge_left_seconds
@@ -499,23 +561,100 @@ class SmartCityFSM(object):
         green_close = self._green_ahead_ratio(perception)
         if green_close >= 0.48:
             return self._safe_stop("green_keepout_too_close_for_nudge", now)
+        if new_frame:
+            if self._is_stop_candidate(perception):
+                self._nudge_clear_streak = 0
+            else:
+                self._nudge_clear_streak += 1
         early_turn = green_close >= self.config.green_danger_ratio
-        if elapsed >= duration or early_turn:
+        marker_cleared = (
+            self._nudge_clear_streak
+            >= self.config.nudge_marker_clear_frames
+        )
+        if marker_cleared and (early_turn or elapsed >= duration):
+            # Guard the transition frame itself.  Returning a turn command here
+            # used to create a one-cycle hole: _update_turn would stop on the
+            # next frame, after steering and throttle had already been applied
+            # toward a blocked island/course edge.
+            if (
+                self._action_side_keepout_ratio(perception)
+                >= self.config.green_danger_ratio
+            ):
+                return self._safe_stop(
+                    "turn_swept_side_blocked_by_keepout", now
+                )
             self._turn_lane_streak = 0
             self._transition(SmartCityState.TURNING, now)
             return self._turn_command(now, 0.0, "turn_started")
         return self._nudge_command(now, "junction_nudge")
+
+    def _guard_nudge_signal(self, now, signal_label, signal_confidence,
+                            ai_required, semantic_seq):
+        """Keep RED/stale AI from moving the car before it enters the junction.
+
+        Once TURNING/CROSSING begins, stopping in the middle can be worse than
+        clearing the junction.  NUDGE is still before the gate, so it must hold
+        for RED/YELLOW or a missing required light.  Wall-clock phase time is
+        paused while held, and GREEN must be confirmed again after a hold.
+        """
+        normalised, valid = self._normalise_semantic_label(signal_label)
+        confidence_ok = self._confidence_ok(normalised, signal_confidence)
+        light_state = self._light_state(normalised) if valid else None
+        requires_signal = (
+            ai_required
+            or self._semantic_mode_latched
+            or self._nudge_signal_blocked
+        )
+
+        hold_reason = None
+        if not valid or not confidence_ok:
+            hold_reason = "invalid_traffic_light_during_nudge"
+        elif light_state in ("RED", "YELLOW"):
+            hold_reason = "traffic_light_hold_during_nudge"
+        elif requires_signal and light_state != "GREEN":
+            hold_reason = "waiting_for_traffic_light_during_nudge"
+
+        if hold_reason is not None:
+            self._nudge_signal_blocked = True
+            if self._nudge_signal_hold_since is None:
+                self._nudge_signal_hold_since = now
+            self._reset_semantic_confirmation()
+            if (
+                now - self._nudge_signal_hold_since
+                > self.config.red_light_timeout_seconds
+            ):
+                return self._safe_stop("nudge_signal_timeout", now)
+            return self._zero(now, hold_reason)
+
+        if self._nudge_signal_blocked:
+            if not self._confirm_semantics(None, normalised, semantic_seq):
+                return self._zero(now, "confirming_green_during_nudge")
+            if self._nudge_signal_hold_since is not None:
+                # Shift the phase origin so time spent stationary at RED does
+                # not count as forward nudge motion.
+                self.state_since += max(
+                    0.0, now - self._nudge_signal_hold_since
+                )
+            self._nudge_signal_blocked = False
+            self._nudge_signal_hold_since = None
+        return None
 
     def _update_turn(self, perception, now, new_frame):
         elapsed = now - self.state_since
         if elapsed > self.config.turn_max_seconds:
             return self._safe_stop("turn_timeout", now)
 
-        if self._green_ahead_ratio(perception) >= 0.48:
+        green_ahead = self._green_ahead_ratio(perception)
+        if green_ahead >= self.config.turn_green_hard_stop_ratio:
             return self._safe_stop("green_keepout_during_turn", now)
+        if (
+            self._action_side_keepout_ratio(perception)
+            >= self.config.green_danger_ratio
+        ):
+            return self._safe_stop("turn_swept_side_blocked_by_keepout", now)
 
         if new_frame and elapsed >= self.config.turn_min_seconds:
-            if self._lane_centered(perception):
+            if self._lane_turn_candidate(perception):
                 self._turn_lane_streak += 1
             else:
                 self._turn_lane_streak = 0
@@ -587,7 +726,7 @@ class SmartCityFSM(object):
             throttle=self.config.reacquire_throttle,
         )
 
-    def _update_exit_lockout(self, perception, now, new_frame, crosswalk_conf):
+    def _update_exit_lockout(self, perception, now, new_frame):
         elapsed = now - self.state_since
         if elapsed > self.config.exit_lockout_max_seconds:
             return self._safe_stop("intersection_exit_not_cleared", now)
@@ -595,7 +734,7 @@ class SmartCityFSM(object):
             return self._safe_stop("green_keepout_during_exit", now)
 
         if new_frame:
-            if self._is_stop_candidate(perception, crosswalk_conf):
+            if self._is_stop_candidate(perception):
                 self._exit_clear_streak = 0
             else:
                 self._exit_clear_streak += 1
@@ -708,13 +847,26 @@ class SmartCityFSM(object):
         if near is None:
             return False
         try:
+            shape = perception.frame.shape
+            height = float(shape[0])
+            width = float(shape[1])
             near = float(near)
+            far_raw = getattr(perception, "lane_x_far", None)
+            far = None if far_raw is None else float(far_raw)
             confidence = float(getattr(perception, "lane_confidence", 0.0))
-        except (OverflowError, TypeError, ValueError):
+        except (AttributeError, IndexError, OverflowError, TypeError, ValueError):
+            return False
+        geometry_values = (height, width, near, confidence)
+        if not all(math.isfinite(value) for value in geometry_values):
+            return False
+        if height <= 0.0 or width <= 0.0 or not 0.0 <= near < width:
+            return False
+        if far is not None and (
+            not math.isfinite(far) or not 0.0 <= far < width
+        ):
             return False
         return (
-            math.isfinite(near)
-            and math.isfinite(confidence)
+            confidence > 0.0
             and confidence >= self.config.lane_min_confidence
             and confidence <= 1.0
         )
@@ -723,6 +875,25 @@ class SmartCityFSM(object):
     def _green_ahead_ratio(perception):
         try:
             value = float(getattr(perception, "green_ahead_ratio", 0.0))
+        except (OverflowError, TypeError, ValueError):
+            return 1.0
+        if not math.isfinite(value) or value < 0.0 or value > 1.0:
+            return 1.0
+        return value
+
+    def _action_side_keepout_ratio(self, perception):
+        """Conservative image-space guard for the side of the planned turn.
+
+        This is safety-in-depth until a calibrated metric swept footprint is
+        available.  Invalid side occupancy is treated as fully blocked.
+        """
+        attribute = (
+            "green_left_ratio"
+            if self._action_name() == "LEFT"
+            else "green_right_ratio"
+        )
+        try:
+            value = float(getattr(perception, attribute, None))
         except (OverflowError, TypeError, ValueError):
             return 1.0
         if not math.isfinite(value) or value < 0.0 or value > 1.0:
@@ -752,21 +923,56 @@ class SmartCityFSM(object):
             and heading_error <= self.config.reacquire_heading_error_ratio
         )
 
-    def _is_stop_candidate(self, perception, crosswalk_conf=None):
+    def _lane_turn_candidate(self, perception):
+        """Accept a broad new-road corridor, then centre in REACQUIRE.
+
+        Requiring the car to be perfectly centred before leaving TURNING traps
+        an ordinary wide/short turn at full steering until timeout.  The
+        nominal turn time and consecutive-frame streak reject the old lane;
+        this wider gate lets the closed-loop recenter phase correct offset.
+        """
+        if not self._lane_valid(perception):
+            return False
+        try:
+            width = float(perception.frame.shape[1])
+            near_value = float(perception.lane_x_near)
+            far_value = float(perception.lane_x_far)
+        except (AttributeError, OverflowError, TypeError, ValueError):
+            return False
+        if not all(math.isfinite(value) for value in (
+            width, near_value, far_value
+        )) or width <= 0.0:
+            return False
+        centre = width * 0.5
+        near_error = abs(near_value - centre) / centre
+        heading_error = abs(near_value - far_value) / centre
+        centre_limit = max(
+            0.38, self.config.reacquire_center_error_ratio * 2.5
+        )
+        heading_limit = max(
+            0.30, self.config.reacquire_heading_error_ratio * 2.5
+        )
+        return near_error <= centre_limit and heading_error <= heading_limit
+
+    def _is_stop_candidate(self, perception):
         try:
             score = float(getattr(perception, "stop_line_score", 0.0))
-        except (OverflowError, TypeError, ValueError):
+            y_value = float(getattr(perception, "stop_line_y", None))
+            height = float(perception.frame.shape[0])
+        except (
+            AttributeError, IndexError, OverflowError, TypeError, ValueError
+        ):
             return False
             
-        opencv_stop = (
+        return (
             bool(getattr(perception, "stop_line", False))
             and math.isfinite(score)
+            and math.isfinite(y_value)
+            and math.isfinite(height)
+            and height > 0.0
+            and 0.0 <= y_value < height
             and 0.55 <= score <= 1.0
         )
-        
-        ai_stop = crosswalk_conf is not None and crosswalk_conf >= 0.5
-        
-        return opencv_stop or ai_stop
 
     def _record_stop(self, perception, detected):
         if detected:
@@ -803,14 +1009,32 @@ class SmartCityFSM(object):
         y = getattr(perception, "stop_line_y", None)
         if y is None:
             return 0.0
-        height = float(perception.frame.shape[0])
-        return float(y) / max(1.0, height)
+        try:
+            height = float(perception.frame.shape[0])
+            y = float(y)
+        except (
+            AttributeError, IndexError, OverflowError, TypeError, ValueError
+        ):
+            return 0.0
+        if (
+            not math.isfinite(height)
+            or not math.isfinite(y)
+            or height <= 0.0
+            or y < 0.0
+            or y >= height
+        ):
+            return 0.0
+        return y / height
 
     def _reset_intersection_tracking(self):
         self._clear_stop_candidate()
         self._green_streak = 0
         self._decision = None
         self._pending_action = None
+        self._route_step_committed = False
+        self._nudge_clear_streak = 0
+        self._nudge_signal_blocked = False
+        self._nudge_signal_hold_since = None
         self._turn_lane_streak = 0
         self._reacquire_streak = 0
         self._exit_clear_streak = 0

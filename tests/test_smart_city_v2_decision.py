@@ -128,6 +128,20 @@ class ScenarioDecisionProviderTests(unittest.TestCase):
         self.assertEqual(Direction.RIGHT, result.action)
         self.assertEqual((Direction.LEFT, Direction.RIGHT), result.allowed)
 
+    def test_semantic_branch_confidence_cannot_invent_exits(self):
+        provider = ScenarioDecisionProvider(make_scenario([
+            {
+                "id": "left_only",
+                "allowed": ["LEFT"],
+                "action": "LEFT",
+            }
+        ]))
+
+        result = provider.decide(left_conf=0.0, right_conf=1.0)
+
+        self.assertEqual(Direction.LEFT, result.action)
+        self.assertEqual((Direction.LEFT,), result.allowed)
+
     def test_red_light_holds_without_consuming_then_green_continues(self):
         provider = ScenarioDecisionProvider(make_scenario([
             {
@@ -163,6 +177,80 @@ class ScenarioDecisionProviderTests(unittest.TestCase):
 
         self.assertEqual(Direction.RIGHT, result.action)
         self.assertEqual("TURN_RIGHT", result.sign_label)
+
+    def test_required_sign_never_falls_back_and_does_not_consume_on_hold(self):
+        provider = ScenarioDecisionProvider(make_scenario([
+            {
+                "id": "sign_controlled_t_junction",
+                "allowed": ["LEFT", "RIGHT"],
+                "action": "LEFT",
+                "requires_sign": True,
+            }
+        ]))
+
+        missing = provider.decide(signal_label="GREEN")
+        self.assertEqual(Direction.STOP, missing.action)
+        self.assertEqual("required_sign_missing", missing.reason)
+        self.assertEqual(0, provider.consumed)
+
+        invalid = provider.decide(
+            ai_label="UNKNOWN_SIGN", signal_label="GREEN"
+        )
+        self.assertEqual(Direction.STOP, invalid.action)
+        self.assertEqual("required_sign_invalid", invalid.reason)
+        self.assertEqual(0, provider.consumed)
+
+        resolved = provider.decide(
+            ai_label="NO_LEFT", signal_label="GREEN"
+        )
+        self.assertEqual(Direction.RIGHT, resolved.action)
+        self.assertEqual("ai_label:prohibition_resolved", resolved.reason)
+        self.assertEqual(1, provider.consumed)
+
+    def test_required_sign_mock_is_offline_fallback_only_when_ai_absent(self):
+        provider = ScenarioDecisionProvider(make_scenario([
+            {
+                "id": "offline_t_junction",
+                "allowed": ["LEFT", "RIGHT"],
+                "mock_sign": "NO_LEFT",
+                "requires_sign": True,
+            }
+        ]))
+
+        invalid_ai = provider.decide(ai_label="UNKNOWN_SIGN")
+        self.assertEqual(Direction.STOP, invalid_ai.action)
+        self.assertEqual("required_sign_invalid", invalid_ai.reason)
+        self.assertEqual(0, provider.consumed)
+
+        for non_sign_label in ("   ", "GREEN"):
+            with self.subTest(non_sign_label=non_sign_label):
+                invalid_ai = provider.decide(ai_label=non_sign_label)
+                self.assertEqual(Direction.STOP, invalid_ai.action)
+                self.assertEqual("required_sign_invalid", invalid_ai.reason)
+                self.assertEqual(0, provider.consumed)
+
+        mock_result = provider.decide()
+        self.assertEqual(Direction.RIGHT, mock_result.action)
+        self.assertEqual("mock_sign:prohibition_resolved", mock_result.reason)
+        self.assertEqual(1, provider.consumed)
+
+    def test_requires_sign_must_be_a_boolean(self):
+        provider = ScenarioDecisionProvider(make_scenario([
+            {
+                "id": "bad_policy",
+                "allowed": ["LEFT", "RIGHT"],
+                "action": "RIGHT",
+                "requires_sign": "true",
+            }
+        ]))
+
+        result = provider.decide(
+            ai_label="NO_LEFT", signal_label="GREEN"
+        )
+
+        self.assertEqual(Direction.STOP, result.action)
+        self.assertTrue(result.reason.startswith("invalid_scenario:"))
+        self.assertEqual(0, provider.consumed)
 
     def test_disallowed_scripted_action_fails_closed(self):
         provider = ScenarioDecisionProvider(make_scenario([
@@ -219,6 +307,8 @@ class ScenarioDecisionProviderTests(unittest.TestCase):
         )
         provider = ScenarioDecisionProvider(path)
 
+        # I01 requires a sign, but its mock is intentionally usable in this
+        # non-live example so the complete dry-run route works without AI.
         results = [provider.decide() for _ in range(provider.count)]
 
         self.assertEqual(5, len(results))

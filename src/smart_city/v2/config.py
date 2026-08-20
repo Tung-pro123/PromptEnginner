@@ -51,6 +51,8 @@ class SmartCityConfig(object):
         self.stop_min_span_ratio = 0.38
         self.stop_confirm_frames = 3
         self.stop_y_backtrack_tolerance_ratio = 0.06
+        self.stop_approach_y_ratio = 0.52
+        self.stop_close_y_ratio = 0.70
 
         # Green islands are forbidden.  Ratios are mask coverage within each
         # probe region, not a metric distance.
@@ -58,6 +60,7 @@ class SmartCityConfig(object):
         self.green_roi_bottom = 0.98
         self.green_danger_ratio = 0.055
         self.green_bias_start_ratio = 0.025
+        self.turn_green_hard_stop_ratio = 0.18
 
         # Closed-loop lane following (normalised image error -> steering).
         self.lane_kp = 0.92
@@ -79,6 +82,8 @@ class SmartCityConfig(object):
         self.red_light_timeout_seconds = 20.0
         self.nudge_left_seconds = 0.34
         self.nudge_right_seconds = 0.30
+        self.nudge_max_seconds = 1.50
+        self.nudge_marker_clear_frames = 3
         self.turn_min_seconds = 0.72
         self.turn_nominal_seconds = 1.15
         self.turn_max_seconds = 1.80
@@ -110,7 +115,9 @@ class SmartCityConfig(object):
         self.loop_hz = 20.0
         self.ai_min_confidence = 0.60
         self.ai_confirm_frames = 3
-        self.semantic_ttl_seconds = 1.20
+        # A delayed GREEN is unsafe when the physical light may already have
+        # changed.  Keep live semantic freshness close to the camera watchdog.
+        self.semantic_ttl_seconds = 0.35
 
         # Integration defaults.
         self.camera_topic = "/csi_cam_0/image_raw"
@@ -196,9 +203,11 @@ class SmartCityConfig(object):
             "lane_default_width_ratio", "lane_min_confidence",
             "stop_roi_top", "stop_roi_bottom",
             "stop_max_component_area_ratio", "stop_min_span_ratio",
-            "stop_y_backtrack_tolerance_ratio", "green_roi_top",
+            "stop_y_backtrack_tolerance_ratio", "stop_approach_y_ratio",
+            "stop_close_y_ratio", "green_roi_top",
             "green_roi_bottom", "green_danger_ratio",
-            "green_bias_start_ratio", "max_lane_steering",
+            "green_bias_start_ratio", "turn_green_hard_stop_ratio",
+            "max_lane_steering",
             "reacquire_center_error_ratio", "reacquire_heading_error_ratio",
             "ai_min_confidence",
         )
@@ -218,13 +227,23 @@ class SmartCityConfig(object):
                 raise ValueError("%s must be below %s" % (lower_name, upper_name))
         if float(self.scan_far_ratio) >= float(self.scan_near_ratio):
             raise ValueError("scan_far_ratio must be below scan_near_ratio")
+        if not (
+            float(self.stop_roi_top)
+            <= float(self.stop_approach_y_ratio)
+            < float(self.stop_close_y_ratio)
+            <= float(self.stop_roi_bottom)
+        ):
+            raise ValueError(
+                "stop y ratios must satisfy ROI top <= approach < close <= ROI bottom"
+            )
 
         positive = (
             "loop_hz", "camera_timeout_seconds", "actuator_watchdog_seconds",
             "sensor_acquire_timeout_seconds",
             "arm_request_ttl_seconds",
             "lane_loss_stop_seconds", "lane_loss_estop_seconds",
-            "turn_max_seconds", "reacquire_timeout_seconds",
+            "turn_max_seconds", "nudge_max_seconds",
+            "reacquire_timeout_seconds",
             "exit_lockout_max_seconds", "semantic_ttl_seconds",
             "red_light_timeout_seconds", "turn_min_seconds",
             "turn_nominal_seconds", "straight_cross_seconds",
@@ -241,7 +260,8 @@ class SmartCityConfig(object):
             "stop_cluster_y_px",
             "stop_confirm_frames", "initial_lane_stable_frames",
             "green_danger_confirm_frames", "turn_lane_confirm_frames",
-            "reacquire_stable_frames", "exit_clear_frames", "ai_confirm_frames",
+            "nudge_marker_clear_frames", "reacquire_stable_frames",
+            "exit_clear_frames", "ai_confirm_frames",
         )
         for name in integer_fields:
             value = getattr(self, name)
@@ -263,6 +283,10 @@ class SmartCityConfig(object):
             <= float(self.turn_max_seconds)
         ):
             raise ValueError("turn timing must satisfy min <= nominal <= max")
+        if float(self.nudge_max_seconds) < max(
+            float(self.nudge_left_seconds), float(self.nudge_right_seconds)
+        ):
+            raise ValueError("nudge max must cover left/right nudge minimum")
         if float(self.lane_loss_stop_seconds) > float(self.lane_loss_estop_seconds):
             raise ValueError("lane loss stop must not exceed lane loss E-stop")
         if float(self.exit_lockout_max_seconds) < float(
@@ -294,6 +318,12 @@ class SmartCityConfig(object):
             raise ValueError("turn_steering_left is too small for live mode")
         if abs(float(self.turn_steering_right)) < 0.30:
             raise ValueError("turn_steering_right is too small for live mode")
+        if (
+            float(self.turn_steering_left)
+            * float(self.turn_steering_right)
+            >= 0.0
+        ):
+            raise ValueError("live left/right turn steering must have opposite signs")
         if float(self.turn_max_seconds) > 2.50:
             raise ValueError("turn_max_seconds exceeds live hard cap")
         if float(self.straight_cross_seconds) > 2.00:
@@ -313,6 +343,8 @@ class SmartCityConfig(object):
         for name in ("nudge_left_seconds", "nudge_right_seconds"):
             if float(getattr(self, name)) > 0.65:
                 raise ValueError("live nudge exceeds hard cap: %s" % name)
+        if float(self.nudge_max_seconds) > 2.0:
+            raise ValueError("live nudge_max_seconds exceeds hard cap")
         if float(self.turn_min_seconds) < 0.40:
             raise ValueError("live turn_min_seconds must be at least 0.40")
         if float(self.reacquire_timeout_seconds) > 3.0:
@@ -323,12 +355,20 @@ class SmartCityConfig(object):
             raise ValueError("live LiDAR timeout exceeds hard cap")
         if float(self.lane_loss_estop_seconds) > 1.0:
             raise ValueError("live lane-loss timeout exceeds hard cap")
-        if float(self.semantic_ttl_seconds) > 2.0:
-            raise ValueError("live semantic TTL exceeds hard cap")
+        if float(self.semantic_ttl_seconds) > 0.50:
+            raise ValueError("live semantic TTL exceeds 0.50 second hard cap")
         if not 5.0 <= float(self.lidar_guard_half_angle_deg) <= 60.0:
             raise ValueError("live LiDAR guard half-angle must be in [5, 60]")
         if float(self.max_lane_steering) > 0.90:
             raise ValueError("live lane steering exceeds hard cap")
+        if not 0.10 <= float(self.lane_min_confidence) <= 0.80:
+            raise ValueError("live lane_min_confidence must be in [0.10, 0.80]")
+        if float(self.reacquire_center_error_ratio) > 0.30:
+            raise ValueError("live reacquire center tolerance exceeds 0.30")
+        if float(self.reacquire_heading_error_ratio) > 0.25:
+            raise ValueError("live reacquire heading tolerance exceeds 0.25")
+        if float(self.intersection_cooldown_seconds) < 0.50:
+            raise ValueError("live intersection cooldown must be at least 0.50")
         if float(self.steering_slew_per_second) > 6.0:
             raise ValueError("live steering slew exceeds hard cap")
         if not 160 <= int(self.frame_width) <= 1920:
@@ -347,6 +387,14 @@ class SmartCityConfig(object):
             raise ValueError("live lidar stop distance must be in [0.15, 1.0]")
         if not 0.01 <= float(self.green_danger_ratio) <= 0.35:
             raise ValueError("live green danger ratio must be in [0.01, 0.35]")
+        if not (
+            float(self.green_danger_ratio)
+            <= float(self.turn_green_hard_stop_ratio)
+            <= 0.30
+        ):
+            raise ValueError(
+                "live turn green hard-stop ratio must be between danger and 0.30"
+            )
         if not 0.50 <= float(self.ai_min_confidence) <= 1.0:
             raise ValueError("live AI confidence must be in [0.50, 1.0]")
         minima = (
@@ -354,7 +402,9 @@ class SmartCityConfig(object):
             ("initial_lane_stable_frames", 3),
             ("ai_confirm_frames", 3),
             ("turn_lane_confirm_frames", 3),
+            ("nudge_marker_clear_frames", 3),
             ("reacquire_stable_frames", 3),
+            ("exit_clear_frames", 3),
             ("green_danger_confirm_frames", 2),
         )
         for name, minimum in minima:

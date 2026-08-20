@@ -4,7 +4,7 @@
 The module deliberately has no ROS or vehicle-control dependency.  It turns one
 BGR camera frame into conservative observations that a state machine can use:
 
-* a near and a far lane centre from pairs of white dashed lane markers;
+* a near and a far lane centre from white markers or island/course boundaries;
 * a stop-line event only when several separate white bars form one row;
 * green plus optional orange/red-boundary keep-out occupancy inside the
   projected driving corridor and a steering bias away from it.
@@ -20,17 +20,6 @@ import math
 
 import cv2
 import numpy as np
-
-# Import V3 Perception
-import sys
-import os
-try:
-    from src.speed_track.config import V3Config
-    from src.speed_track.perception.bev import BEVTransform
-    from src.speed_track.perception.segmentation import ColorSegmenter
-    from src.speed_track.perception.lane_detector import MultiLaneDetector
-except ImportError:
-    pass
 
 class PerceptionResult(object):
     """Value object returned by :meth:`SmartCityPerception.analyze`.
@@ -117,24 +106,6 @@ class SmartCityPerception(object):
 
     def __init__(self, config=None):
         self.config = config
-
-        # --- V3 SPEED TRACK INTEGRATION ---
-        try:
-            self.v3_cfg = V3Config()
-            
-            # TUNE FOR SMART CITY V2 DASHED LINES
-            self.v3_cfg.sw_min_peak_height = 2
-            self.v3_cfg.sw_min_pix = 2
-            self.v3_cfg.min_inlier_count = 5
-            self.v3_cfg.expected_inlier_count = 50
-            
-            self.bev_transform = BEVTransform(self.v3_cfg)
-            self.segmenter = ColorSegmenter(self.v3_cfg)
-            self.detector = MultiLaneDetector(self.v3_cfg)
-            self.v3_enabled = True
-        except NameError:
-            self.v3_enabled = False
-        # ----------------------------------
 
         # Resize only when both dimensions are explicitly available.  With an
         # empty config the input resolution is intentionally preserved.
@@ -315,7 +286,14 @@ class SmartCityPerception(object):
         white_mask = self._clean_mask(white_mask, opening=True)
         green_mask = self._clean_mask(green_mask, opening=False)
 
-        stop_info = self._detect_stop_line(white_mask)
+        # The car starts close to the image centre and subsequently supplies
+        # the last accepted lane centre.  Restricting a marker row to this ego
+        # corridor prevents a zebra row on a perpendicular/adjacent road from
+        # opening an intersection episode.
+        anchor = self._valid_previous(previous_lane_x, width)
+        if anchor is None:
+            anchor = width * 0.5
+        stop_info = self._detect_stop_line(white_mask, anchor)
 
         # A stop row is deliberately excluded from lane fitting.
         lane_mask = white_mask.copy()
@@ -324,67 +302,42 @@ class SmartCityPerception(object):
             for label_id in stop_info["label_ids"]:
                 lane_mask[labels == label_id] = 0
 
-        # --- V3 LANE SYNTHESIS ---
-        lane_x_near, lane_x_far = None, None
-        near_confidence, far_confidence = 0.0, 0.0
-        near, far = (None, 0.0, None, None, 0), (None, 0.0, None, None, 0)
-        
-        if self.v3_enabled:
-            # Transform the existing lane_mask (without stop line) to BEV
-            bev_mask = self.bev_transform.warp_to_bev(lane_mask)
-            
-            # Detect lanes in BEV
-            results = self.detector.detect(bev_mask)
-            
-            # Synthesize Center Line from ANY detected lines
-            valid_lines = []
-            if results.left.detected: valid_lines.append(results.left)
-            if results.center.detected: valid_lines.append(results.center)
-            if results.right.detected: valid_lines.append(results.right)
-            
-            center_poly = None
-            if len(valid_lines) >= 2:
-                # Sort by x-intercept (leftmost first)
-                valid_lines.sort(key=lambda l: l.poly[2])
-                left_line = valid_lines[0]
-                right_line = valid_lines[-1]
-                center_poly = (left_line.poly + right_line.poly) / 2.0
-                confidence = (left_line.confidence + right_line.confidence) / 2.0
-            elif len(valid_lines) == 1:
-                line = valid_lines[0]
-                center_poly = line.poly.copy()
-                # If the line is on the left half of the BEV image, assume it's the left lane boundary
-                if line.poly[2] < self.v3_cfg.image_width / 2.0:
-                    center_poly[2] += self.v3_cfg.expected_lane_width_m * self.v3_cfg.px_per_meter_x / 2.0
-                else:
-                    center_poly[2] -= self.v3_cfg.expected_lane_width_m * self.v3_cfg.px_per_meter_x / 2.0
-                confidence = line.confidence
-            
-            if center_poly is not None:
-                # Sample near and far points in BEV
-                bev_y_near = self.v3_cfg.image_height * 0.8
-                bev_y_far = self.v3_cfg.image_height * 0.2
-                
-                bev_x_near = center_poly[0] * bev_y_near**2 + center_poly[1] * bev_y_near + center_poly[2]
-                bev_x_far = center_poly[0] * bev_y_far**2 + center_poly[1] * bev_y_far + center_poly[2]
-                
-                # Inverse transform back to perspective
-                pts_bev = np.array([[[bev_x_near, bev_y_near], [bev_x_far, bev_y_far]]], dtype=np.float32)
-                pts_persp = cv2.perspectiveTransform(pts_bev, self.bev_transform.M_inv)
-                
-                if pts_persp is not None and len(pts_persp) > 0:
-                    lane_x_near = float(pts_persp[0][0][0])
-                    lane_x_far = float(pts_persp[0][1][0])
-                    near_confidence = confidence
-                    far_confidence = confidence
-                    
-                    # Mock near and far tuples for green_metrics and debug_draw
-                    scan_y_near = int(pts_persp[0][0][1])
-                    scan_y_far = int(pts_persp[0][1][1])
-                    near = (lane_x_near, near_confidence, None, None, scan_y_near)
-                    far = (lane_x_far, far_confidence, None, None, scan_y_far)
-                    
-        # Fallback to lane_confidence logic
+        # Smart City lane geometry is intentionally independent from the Speed
+        # Track BEV calibration.  The two scan bands provide both lateral and
+        # heading error to the controller during normal following and recenter.
+        near_paint = self._find_lane_pair(
+            lane_mask,
+            self.scan_near_ratio,
+            anchor,
+            self.expected_near_width_ratio,
+        )
+        near_keepout = self._find_keepout_corridor(
+            green_mask,
+            self.scan_near_ratio,
+            anchor,
+            self.expected_near_width_ratio,
+        )
+        near = self._prefer_painted_lane(near_paint, near_keepout)
+        lane_x_near, near_confidence = near[0], near[1]
+
+        # Associate the far pair with the current near corridor when possible;
+        # this avoids jumping to the perpendicular road at an intersection.
+        far_anchor = lane_x_near if lane_x_near is not None else anchor
+        far_paint = self._find_lane_pair(
+            lane_mask,
+            self.scan_far_ratio,
+            far_anchor,
+            self.expected_far_width_ratio,
+        )
+        far_keepout = self._find_keepout_corridor(
+            green_mask,
+            self.scan_far_ratio,
+            far_anchor,
+            self.expected_far_width_ratio,
+        )
+        far = self._prefer_painted_lane(far_paint, far_keepout)
+        lane_x_far, far_confidence = far[0], far[1]
+
         if lane_x_near is None:
             lane_confidence = 0.0
         elif lane_x_far is None:
@@ -432,7 +385,14 @@ class SmartCityPerception(object):
             debug_frame=debug_frame,
         )
 
-    def _detect_stop_line(self, mask):
+    def _detect_stop_line(self, mask, anchor):
+        """Return one gate-proxy zebra row in the ego corridor.
+
+        One row of short, aligned bars is a complete marker observation.  The
+        detector never requires two rows.  If several valid longitudinal rows
+        are simultaneously visible, it selects the farther/later row as the
+        gate proxy while returning every row label for lane-mask suppression.
+        """
         height, width = mask.shape
         count, labels, stats, centroids = cv2.connectedComponentsWithStats(
             mask, 8
@@ -483,13 +443,23 @@ class SmartCityPerception(object):
 
         best = None
         best_score = 0.0
+        valid_rows = {}
         # Each candidate is tried as the row centre.  This avoids transitive
         # grouping (y=10 with 15, 15 with 20) creating a slanted fake row.
         for seed in candidates:
+            expected_width = self._expected_lane_width_at_y(
+                seed["cy"], height, width
+            )
+            # Include paint at both edges while staying inside the road which
+            # currently contains the car.  Adjacent/perpendicular road rows
+            # therefore cannot become our stop marker merely because they are
+            # visible in the same frame.
+            corridor_half_width = max(width * 0.12, expected_width * 0.56)
             group = [
                 item
                 for item in candidates
                 if abs(item["cy"] - seed["cy"]) <= tolerance
+                and abs(item["cx"] - anchor) <= corridor_half_width
             ]
             group.sort(key=lambda item: item["cx"])
             group = self._deduplicate_row_components(group, width)
@@ -500,6 +470,10 @@ class SmartCityPerception(object):
             right = max(item["x"] + item["w"] for item in group)
             span = max(0, right - left)
             if span < width * self.stop_min_span_ratio:
+                continue
+            # A valid zebra row crosses the projected car centre.  A partial
+            # row wholly on one side is treated as side-road evidence only.
+            if left > anchor or right < anchor:
                 continue
 
             centers_y = np.asarray([item["cy"] for item in group], dtype=np.float32)
@@ -516,9 +490,38 @@ class SmartCityPerception(object):
                 + 0.25 * alignment
                 + 0.10 * coverage_score
             )
-            if score > best_score:
+            if score >= self.stop_score_threshold:
+                signature = tuple(sorted(item["label"] for item in group))
+                previous = valid_rows.get(signature)
+                if previous is None or score > previous[0]:
+                    # Detection is deliberately restricted to the ego
+                    # corridor, but once a crossing row is valid, remove all
+                    # same-row bar components from lane fitting.  Otherwise
+                    # the outer zebra bars can be paired as two longitudinal
+                    # boundaries and fabricate a high-confidence lane.
+                    mask_group = [
+                        item for item in candidates
+                        if abs(item["cy"] - seed["cy"]) <= tolerance
+                    ]
+                    valid_rows[signature] = (score, mask_group)
+            if score > best_score or (
+                abs(score - best_score) <= 1e-9
+                and best is not None
+                and seed["cy"] > np.mean([item["cy"] for item in best])
+            ):
                 best, best_score = group, score
 
+        if valid_rows:
+            # When two longitudinal marker rows are visible, the row farther
+            # from the camera is the later row along the approach and is the
+            # better proxy for the actual junction gate.  With only one row it
+            # is selected unchanged; no row-count assumption is required.
+            best_score, best = min(
+                valid_rows.values(),
+                key=lambda item: float(np.mean([
+                    component["cy"] for component in item[1]
+                ])),
+            )
         detected = best is not None and best_score >= self.stop_score_threshold
         if not detected:
             best = []
@@ -526,14 +529,41 @@ class SmartCityPerception(object):
         stop_y = None
         if best:
             stop_y = int(round(float(np.mean([item["cy"] for item in best]))))
+        marker_label_ids = sorted({
+            item["label"]
+            for _score, row in valid_rows.values()
+            for item in row
+        })
         return {
             "detected": detected,
             "score": self._clamp(best_score, 0.0, 1.0),
             "y": stop_y,
             "components": best,
-            "label_ids": [item["label"] for item in best],
+            # Remove every valid zebra row from lane fitting.  When the camera
+            # sees two markers 20--45 cm apart, leaving the second row in the
+            # white mask could make its bars look like lane boundaries.
+            "label_ids": marker_label_ids,
             "labels_image": labels,
         }
+
+    def _expected_lane_width_at_y(self, y_value, image_height, image_width):
+        """Interpolate calibrated lane width between far and near scans."""
+        far_y = image_height * self.scan_far_ratio
+        near_y = image_height * self.scan_near_ratio
+        if abs(near_y - far_y) <= 1e-9:
+            progress = 1.0
+        else:
+            progress = self._clamp(
+                (float(y_value) - far_y) / float(near_y - far_y),
+                0.0,
+                1.0,
+            )
+        width_ratio = (
+            self.expected_far_width_ratio
+            + progress
+            * (self.expected_near_width_ratio - self.expected_far_width_ratio)
+        )
+        return image_width * width_ratio
 
     @staticmethod
     def _deduplicate_row_components(group, image_width):
@@ -641,6 +671,92 @@ class SmartCityPerception(object):
             float(best[2]),
             scan_y,
         )
+
+    def _find_keepout_corridor(
+        self, keepout_mask, scan_ratio, anchor, expected_width_ratio
+    ):
+        """Find the free corridor between the nearest forbidden boundaries.
+
+        Filled green islands and their red/orange outlines are already folded
+        into ``keepout_mask``.  The nearest occupied column on either side of
+        the tracked car centre therefore provides a useful lane fallback on
+        long road sections which have no white paint.
+        """
+        height, width = keepout_mask.shape
+        roi_top = int(round(height * self.lane_roi_top))
+        roi_bottom = int(round(height * self.lane_roi_bottom))
+        scan_y = int(round(height * scan_ratio))
+        half_height = max(3, int(round(height * self.scan_half_height_ratio)))
+        y0 = max(roi_top, scan_y - half_height)
+        y1 = min(roi_bottom, scan_y + half_height + 1)
+        empty = (None, 0.0, None, None, scan_y)
+        if y1 <= y0:
+            return empty
+
+        band = keepout_mask[y0:y1] > 0
+        column_support = np.count_nonzero(band, axis=0)
+        # A hard island/course boundary must persist through a meaningful
+        # portion of the longitudinal scan band.  The former 6% threshold let
+        # a few isolated coloured pixels at both scan rows fabricate a
+        # high-confidence lane and arm the vehicle on an otherwise blank road.
+        minimum_support = max(3, int(round((y1 - y0) * 0.30)))
+        occupied = column_support >= minimum_support
+
+        anchor_index = int(round(anchor))
+        anchor_index = max(0, min(width - 1, anchor_index))
+        if occupied[anchor_index]:
+            return empty
+
+        left_indices = np.flatnonzero(occupied[:anchor_index])
+        right_indices = np.flatnonzero(occupied[anchor_index + 1 :])
+        if left_indices.size == 0 or right_indices.size == 0:
+            return empty
+
+        left_x = int(left_indices[-1])
+        right_x = int(anchor_index + 1 + right_indices[0])
+        lane_width = right_x - left_x
+        min_width = width * self.lane_min_width_ratio
+        max_width = width * self.lane_max_width_ratio
+        if lane_width < min_width or lane_width > max_width:
+            return empty
+
+        expected_width = width * expected_width_ratio
+        width_score = max(
+            0.0,
+            1.0
+            - abs(lane_width - expected_width)
+            / max(1.0, max_width - min_width),
+        )
+        support_window = max(2, int(round(width * 0.012)))
+        left_support = np.max(
+            column_support[max(0, left_x - support_window + 1) : left_x + 1]
+        )
+        right_support = np.max(
+            column_support[right_x : min(width, right_x + support_window)]
+        )
+        support_score = min(
+            1.0,
+            min(left_support, right_support) / float(max(1, y1 - y0)),
+        )
+        confidence = self._clamp(
+            0.25 + 0.45 * width_score + 0.30 * support_score,
+            0.0,
+            1.0,
+        )
+        return (
+            0.5 * (left_x + right_x),
+            confidence,
+            float(left_x),
+            float(right_x),
+            scan_y,
+        )
+
+    @staticmethod
+    def _prefer_painted_lane(painted, keepout):
+        """Prefer explicit paint; use hard island/course edges as fallback."""
+        if painted[0] is not None:
+            return painted
+        return keepout
 
     def _cluster_lane_items(self, items, image_width):
         if not items:
