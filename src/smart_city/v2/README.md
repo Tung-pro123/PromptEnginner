@@ -172,6 +172,8 @@ trong `speed_track`, `core`, `config`, archive hoặc file không liên quan.
   đây, đúng thứ tự, chưa quá TTL.
 - Kết quả có frame nguồn trước khi vào `WAIT_DECISION` không được dùng cho giao
   lộ hiện tại.
+- Checkpoint YOLO semantic cục bộ chạy bằng worker latest-frame-only; inference
+  chậm không được phép khóa vòng control/watchdog.
 
 ## 6. Hợp đồng AI
 
@@ -205,8 +207,13 @@ Quy tắc:
 - Live luôn bắt buộc `--require-ai`: chỉ có biển mà thiếu kênh đèn vẫn phải đứng;
   cần GREEN mới, đủ confidence/debounce và đúng source frame mới được đi.
 
-`models/best.pt` đang có là YOLO lane/crosswalk, **không phải** model semantic
-biển/đèn và không được đưa vào giao diện AI nói trên.
+`models/best.pt` đang có là YOLO lane/crosswalk, **không phải** model semantic.
+Model đội AI mới được giữ riêng tại `models/smart_city_semantic_best.pt` và nối
+qua `v2/yolo_semantic.py`. Adapter chỉ dùng `Forbidden`, `Green_Light`,
+`Red_Light`, `Left`, `Right`, `straight`; bỏ `Corner`, `Decision`, `Interact`.
+Tâm bbox của `Forbidden` ở trái/giữa/phải lần lượt thành
+`NO_LEFT/NO_STRAIGHT/NO_RIGHT`; vùng giáp ranh trả rỗng để FSM giữ xe. RED luôn
+thắng nếu model đồng thời trả cả RED và GREEN.
 
 Policy đèn đỏ/vàng: tín hiệu nhận được trong `WAIT_DECISION` hoặc lúc xe mới
 `NUDGE` tới cổng sẽ giữ xe. Sau lần giữ này phải xác nhận lại đủ số message
@@ -316,6 +323,12 @@ Replay video shadow:
 python -B src\smart_city\main_smart_city_v2.py --video VIDEO_CSI.mp4 --scenario src\smart_city\v2\scenario_example.json --display --log smart_city_shadow.csv
 ```
 
+Replay với model semantic mới:
+
+```powershell
+python -B src\smart_city\main_smart_city_v2.py --video VIDEO_CSI.mp4 --semantic-model models\smart_city_semantic_best.pt --require-ai --scenario src\smart_city\v2\scenario_example.json --display --log smart_city_ai_shadow.csv
+```
+
 ## 9. Cách check kết quả shadow
 
 Overlay cần xem:
@@ -371,7 +384,8 @@ Shadow trước, không motor:
 python3 src/smart_city/main_smart_city_v2.py \
   --ros --use-lidar \
   --scenario src/smart_city/v2/scenario_example.json \
-  --display --log smart_city_shadow.csv
+  --semantic-model models/smart_city_semantic_best.pt --require-ai \
+  --display --log smart_city_ai_shadow.csv
 ```
 
 Live chỉ sau calibration, nâng bánh trước:

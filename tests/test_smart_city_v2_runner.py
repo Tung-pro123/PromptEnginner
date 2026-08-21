@@ -397,6 +397,7 @@ class RunnerSafetyTests(unittest.TestCase):
                 scenario=scenario_path,
                 use_lidar=True,
                 semantic_topic="/smart_city/semantic",
+                semantic_model=None,
                 require_ai=True,
                 mock_sign=None,
                 mock_signal=None,
@@ -404,6 +405,9 @@ class RunnerSafetyTests(unittest.TestCase):
             self.assertIsNone(validate_live_inputs(args, config))
 
             args.semantic_topic = None
+            args.semantic_model = "models/smart_city_semantic_best.pt"
+            self.assertIsNone(validate_live_inputs(args, config))
+            args.semantic_model = None
             with self.assertRaises(ValueError):
                 validate_live_inputs(args, config)
             args.semantic_topic = "/smart_city/semantic"

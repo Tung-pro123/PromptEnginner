@@ -146,6 +146,18 @@ python3 src/smart_city/main_smart_city_v2.py \
   --web-port 8080 --log smart_city_shadow.csv
 ```
 
+ROS shadow với checkpoint semantic mới (inference chạy ở worker riêng, không
+khóa control loop):
+
+```bash
+python3 -B src/smart_city/main_smart_city_v2.py \
+  --ros \
+  --semantic-model models/smart_city_semantic_best.pt --require-ai \
+  --scenario src/smart_city/v2/scenario_example.json \
+  --config src/smart_city/v2/config_example.json \
+  --web-port 8080 --log smart_city_ai_shadow.csv
+```
+
 Chỉ sau khi shadow replay đúng và đã nâng bánh khỏi mặt đất mới thử actuator:
 
 ```bash
@@ -251,11 +263,36 @@ Kết quả chứa `steering`, `throttle`,
 `speed`, `motor`, `servo`, `action`, `exit`, `crosswalk` hoặc geometry sẽ bị từ
 chối.
 
+V2 cũng có adapter cục bộ `yolo_semantic.py` cho checkpoint do đội AI bàn giao.
+Khi dùng `--semantic-model`, YOLO chạy trong worker một luồng với hàng đợi
+latest-frame-only. Kết quả vẫn mang sequence/timestamp của frame nguồn và đi qua
+cùng kiểm tra TTL/out-of-order như semantic topic. Nếu inference lỗi hoặc quá
+`semantic_ttl_seconds`, nhãn cũ bị thu hồi và FSM giữ xe.
+
+Mapping checkpoint hiện tại:
+
+- `Red_Light` → `RED`; `Green_Light` → `GREEN`. Nếu cùng thấy cả hai, RED thắng.
+- `Left`, `Right`, `straight` → lệnh biển `LEFT`, `RIGHT`, `STRAIGHT`.
+- `Forbidden` dùng tâm bbox: bên trái → `NO_LEFT`, giữa → `NO_STRAIGHT`, bên
+  phải → `NO_RIGHT`. Hai dải giáp ranh được coi là mơ hồ và không đoán hướng.
+- `Corner`, `Decision`, `Interact` bị bỏ hoàn toàn; không được tác động topology,
+  vạch qua đường, steering hay throttle.
+
 Khung thi chỉ có một mặt đèn quay về phía xe ở mỗi hướng tiếp cận, nên contract
 không bắt buộc bounding box. Nên crop ROI cố định đã calibrate rồi phân loại
 `RED/GREEN/OFF/UNKNOWN`; bbox có thể giữ riêng để debug nhưng FSM không dùng nó.
-File `models/best.pt` hiện tại nhận lane/crosswalk, **không phải** model semantic
-biển/đèn và không được nối vào contract này.
+`models/best.pt` hiện tại nhận lane/crosswalk, **không phải** model semantic.
+Checkpoint semantic mới phải giữ tên riêng
+`models/smart_city_semantic_best.pt` để không ghi đè model cũ. File bàn giao chỉ
+có `.pt`, chưa có ONNX/TensorRT; phải xác nhận phiên bản Ultralytics/PyTorch trên
+Jetson và đo latency shadow trước khi cân nhắc motor.
+
+Audit checkpoint ngày 2026-08-21: model load/infer được, nhưng trên toàn bộ 47
+ảnh test bàn giao nó không sinh box `Green_Light`, `Red_Light` hoặc `Left` ngay
+cả ở raw confidence 0,01 và `imgsz=960`. Vì vậy model hiện chỉ được dùng shadow;
+`--require-ai` sẽ giữ xe tại vạch do thiếu GREEN. Xem chi tiết trong
+`models/README_SMART_CITY_SEMANTIC.md`; cần bổ sung dữ liệu các lớp này và train
+lại, không hạ confidence để ép xe chạy.
 
 ## Calibration bắt buộc trên camera gắn xe
 

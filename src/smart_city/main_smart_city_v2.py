@@ -37,6 +37,10 @@ from src.smart_city.v2.controller import DriveCommand, SmartCityFSM, SmartCitySt
 from src.smart_city.v2.decision import ScenarioDecisionProvider
 from src.smart_city.v2.perception import SmartCityPerception
 from src.smart_city.v2.semantic import ManualSemanticDetector, SemanticObservation
+from src.smart_city.v2.yolo_semantic import (
+    LatestFrameSemanticWorker,
+    YoloSemanticDetector,
+)
 
 
 DEFAULT_SCENARIO = os.path.join(
@@ -885,23 +889,23 @@ def handle_key(key, runtime, detector, now, allow_rearm=True):
         runtime.fsm.reset_stop(now=now)
     elif key == ord("a") and allow_rearm:
         runtime.fsm.arm(now=now)
-    elif key == ord("1"):
+    elif key == ord("1") and hasattr(detector, "set_signal"):
         detector.set_signal("RED")
-    elif key == ord("2"):
+    elif key == ord("2") and hasattr(detector, "set_signal"):
         detector.set_signal("YELLOW")
-    elif key == ord("3"):
+    elif key == ord("3") and hasattr(detector, "set_signal"):
         detector.set_signal("GREEN")
-    elif key == ord("c"):
+    elif key == ord("c") and hasattr(detector, "clear"):
         detector.clear()
-    elif key == ord("j"):
+    elif key == ord("j") and hasattr(detector, "set_sign"):
         detector.set_sign("TURN_LEFT")
-    elif key == ord("i"):
+    elif key == ord("i") and hasattr(detector, "set_sign"):
         detector.set_sign("GO_STRAIGHT")
-    elif key == ord("k"):
+    elif key == ord("k") and hasattr(detector, "set_sign"):
         detector.set_sign("TURN_RIGHT")
-    elif key == ord("u"):
+    elif key == ord("u") and hasattr(detector, "set_sign"):
         detector.set_sign("NO_LEFT")
-    elif key == ord("o"):
+    elif key == ord("o") and hasattr(detector, "set_sign"):
         detector.set_sign("NO_RIGHT")
     return True
 
@@ -1013,6 +1017,12 @@ def run_ros(args, config, actuator, telemetry, detector):
     processed = 0
     last_debug = None
     bench_started_at = None
+    semantic_worker = (
+        LatestFrameSemanticWorker(detector)
+        if getattr(args, "semantic_model", None) else None
+    )
+    last_semantic_submit_seq = None
+    last_semantic_error_seq = None
     loop_period = 1.0 / max(1.0, config.loop_hz)
 
     rospy.loginfo("Smart City V2 started in %s mode" % (
@@ -1026,7 +1036,7 @@ def run_ros(args, config, actuator, telemetry, detector):
         while not rospy.is_shutdown():
             now = time.monotonic()
             (frame, frame_stamp, seq, front_distance, lidar_stamp,
-             topic_semantic, semantic_stamp, semantic_seq, arm_requests,
+             topic_semantic, semantic_stamp, topic_semantic_seq, arm_requests,
              arm_request_stamp, estop_latched) = buffers.snapshot()
 
             if estop_latched:
@@ -1074,6 +1084,7 @@ def run_ros(args, config, actuator, telemetry, detector):
                 break
 
             semantic = None
+            selected_semantic_seq = None
             if args.semantic_topic:
                 if (
                     semantic_stamp is not None
@@ -1082,6 +1093,25 @@ def run_ros(args, config, actuator, telemetry, detector):
                     semantic = topic_semantic
                 else:
                     semantic = SemanticObservation()
+                selected_semantic_seq = topic_semantic_seq
+            elif semantic_worker is not None:
+                if seq != last_semantic_submit_seq:
+                    semantic_worker.submit(
+                        frame,
+                        source_local_seq=seq,
+                        source_arrival_stamp=frame_stamp,
+                    )
+                    last_semantic_submit_seq = seq
+                semantic, worker_seq, worker_error = semantic_worker.snapshot()
+                # Reserve sequence 1 for the initial empty observation.  Every
+                # completed inference, including failures, advances it.
+                selected_semantic_seq = worker_seq + 1
+                if (
+                    worker_error is not None
+                    and worker_seq != last_semantic_error_seq
+                ):
+                    rospy.logwarn("Semantic inference failed: %s" % worker_error)
+                    last_semantic_error_seq = worker_seq
 
             command, last_debug = runtime.step(
                 frame,
@@ -1090,7 +1120,10 @@ def run_ros(args, config, actuator, telemetry, detector):
                 camera_age=camera_age,
                 front_distance=front_distance if args.use_lidar else None,
                 external_semantic=semantic,
-                semantic_seq=semantic_seq if args.semantic_topic else seq,
+                semantic_seq=(
+                    selected_semantic_seq
+                    if selected_semantic_seq is not None else seq
+                ),
             )
             processed += 1
 
@@ -1120,6 +1153,8 @@ def run_ros(args, config, actuator, telemetry, detector):
                 break
             time.sleep(loop_period)
     finally:
+        if semantic_worker is not None:
+            semantic_worker.close()
         actuator.close()
         cv2.destroyAllWindows()
     return 0
@@ -1138,8 +1173,13 @@ def load_config(path):
 
 def validate_live_inputs(args, config):
     """Refuse motor mode until route and calibration were explicitly signed."""
-    if not getattr(args, "semantic_topic", None):
-        raise ValueError("motor mode requires a live --semantic-topic")
+    if not (
+        getattr(args, "semantic_topic", None)
+        or getattr(args, "semantic_model", None)
+    ):
+        raise ValueError(
+            "motor mode requires --semantic-topic or --semantic-model"
+        )
     if getattr(args, "require_ai", False) is not True:
         raise ValueError("motor mode requires --require-ai")
     if (
@@ -1200,6 +1240,8 @@ def validate_camera_bench_inputs(args, config):
         raise ValueError("camera bench is camera-only; remove --use-lidar")
     if getattr(args, "semantic_topic", None):
         raise ValueError("camera bench refuses --semantic-topic")
+    if getattr(args, "semantic_model", None):
+        raise ValueError("camera bench refuses --semantic-model")
     if getattr(args, "require_ai", False):
         raise ValueError("camera bench refuses --require-ai")
     if (
@@ -1310,8 +1352,23 @@ def build_parser():
     )
     parser.add_argument("--use-lidar", action="store_true")
 
-    parser.add_argument("--semantic-topic",
-                        help="ROS std_msgs/String JSON produced by the AI node")
+    semantic_source = parser.add_mutually_exclusive_group()
+    semantic_source.add_argument(
+        "--semantic-topic",
+        help="ROS std_msgs/String JSON produced by an external AI node",
+    )
+    semantic_source.add_argument(
+        "--semantic-model",
+        help="local YOLO detect checkpoint for signs/lights",
+    )
+    parser.add_argument(
+        "--semantic-device",
+        help="Ultralytics device, for example 0 or cpu (default: auto)",
+    )
+    parser.add_argument(
+        "--semantic-imgsz", type=int, default=640,
+        help="YOLO inference size (default: 640)",
+    )
     parser.add_argument("--require-ai", action="store_true",
                         help="hold at junction until a fresh traffic-light result exists")
     parser.add_argument("--mock-sign")
@@ -1330,9 +1387,14 @@ def main(argv=None):
     if args.semantic_topic and not args.ros:
         raise SystemExit("--semantic-topic requires --ros")
     if args.require_ai and not (
-        args.semantic_topic or args.mock_sign or args.mock_signal
+        args.semantic_topic or args.semantic_model
+        or args.mock_sign or args.mock_signal
     ):
-        raise SystemExit("--require-ai needs --semantic-topic or a mock label")
+        raise SystemExit(
+            "--require-ai needs --semantic-topic, --semantic-model or a mock label"
+        )
+    if args.semantic_model and (args.mock_sign or args.mock_signal):
+        raise SystemExit("--semantic-model cannot be combined with mock labels")
 
     config = load_config(args.config)
     if args.bench_camera_only:
@@ -1346,10 +1408,21 @@ def main(argv=None):
         except (IOError, OSError, TypeError, ValueError) as exc:
             raise SystemExit("live safety check failed: %s" % exc)
     telemetry = CsvTelemetry(args.log)
-    detector = ManualSemanticDetector(
-        sign_label=args.mock_sign,
-        signal_label=args.mock_signal,
-    )
+    if args.semantic_model:
+        try:
+            detector = YoloSemanticDetector(
+                model_path=args.semantic_model,
+                min_confidence=config.ai_min_confidence,
+                image_size=args.semantic_imgsz,
+                device=args.semantic_device,
+            )
+        except (IOError, ImportError, RuntimeError, TypeError, ValueError) as exc:
+            raise SystemExit("cannot load semantic model: %s" % exc)
+    else:
+        detector = ManualSemanticDetector(
+            sign_label=args.mock_sign,
+            signal_label=args.mock_signal,
+        )
     # ROS hardware is constructed inside run_ros, after rospy.init_node().
     actuator = None if args.enable_motors else NullActuator()
 
