@@ -173,6 +173,9 @@ class DecisionModule:
         # Tọa độ neo (anchor) - tâm dưới cùng của ảnh
         self.anchor_x = self.img_width / 2
         self.anchor_y = self.img_height
+        
+        # Lưu ID đang được track cho từng loại node
+        self.tracked_nodes = {}
 
     def update_resolution(self, width, height):
         self.img_width = width
@@ -182,8 +185,8 @@ class DecisionModule:
 
     def make_decision(self, detections):
         """
-        Input: list of detections, e.g., [{"label": "decision", "x": 320, "y": 400}, ...]
-        Labels: decision, interact, corner, forbidden (cấm), turn_left, turn_right
+        Input: list of detections, e.g., [{"label": "Decision", "x": 320, "y": 400}, ...]
+        Labels: Decision, Interact, Corner, Forbidden, turn_left, turn_right
         Output: (action, target_node, speed, steering, steps) 
                 action có thể là: "straight", "turn_left", "turn_right"
                 steps là list các chuỗi mô tả quá trình suy luận
@@ -195,6 +198,54 @@ class DecisionModule:
         interacts = [d for d in detections if d["label"] == "Interact"]
         corners = [d for d in detections if d["label"] == "Corner"]
         
+        # Lọc các node dựa trên Tracking ID để duy trì mục tiêu ổn định
+        def get_best_tracked_node(nodes_list, label):
+            if not nodes_list:
+                return None
+            tracked_id = self.tracked_nodes.get(label)
+            # Nếu có node trùng ID đang track, ưu tiên lấy
+            if tracked_id is not None:
+                matched = [n for n in nodes_list if n.get("id", -1) == tracked_id]
+                if matched:
+                    return matched[0]
+            # Nếu không tìm thấy ID cũ hoặc ID bị mất, lấy node gần xe nhất (y lớn nhất)
+            best_node = max(nodes_list, key=lambda n: n["y"])
+            self.tracked_nodes[label] = best_node.get("id", -1)
+            return best_node
+
+        target_dec = get_best_tracked_node(decisions, "Decision")
+        target_int = get_best_tracked_node(interacts, "Interact")
+        target_cor = get_best_tracked_node(corners, "Corner")
+        
+        # Chỉ giữ lại các node mục tiêu duy nhất
+        decisions = [target_dec] if target_dec else []
+        interacts = [target_int] if target_int else []
+        corners = [target_cor] if target_cor else []
+        
+        # Ràng buộc: Interact, Corner node phải nằm sau (hoặc ngang bằng) Decision node.
+        # Hệ trục Y hướng xuống (y=0 ở trên cùng, y=max ở dưới cùng gần xe).
+        # Tức là y_node <= y_decision
+        if decisions:
+            y_dec = decisions[0]["y"]
+            
+            if interacts:
+                valid_interacts = []
+                for i in interacts:
+                    if i["y"] <= y_dec + 15:
+                        valid_interacts.append(i)
+                    else:
+                        steps.append(f"Loại bỏ Interact (y={i['y']:.0f}) do nằm trước Decision (y={y_dec:.0f}).")
+                interacts = valid_interacts
+                
+            if corners:
+                valid_corners = []
+                for c in corners:
+                    if c["y"] <= y_dec + 15:
+                        valid_corners.append(c)
+                    else:
+                        steps.append(f"Loại bỏ Corner (y={c['y']:.0f}) do nằm trước Decision (y={y_dec:.0f}).")
+                corners = valid_corners
+                
         signs = {d["label"]: d for d in detections if d["label"] in ["Forbidden", "turn_left", "turn_right"]}
         if signs:
             steps.append(f"Nhận diện biển báo: {list(signs.keys())}")
@@ -235,18 +286,20 @@ class DecisionModule:
                 
         elif label == "Corner":
             distance_estimated = self.img_height - closest_node["y"]
-            steps.append(f"Đang ở corner. Khoảng cách ước lượng (theo Y): {distance_estimated:.0f}px")
+            steps.append(f"Đang ở corner. Khoảng cách: {distance_estimated:.0f}px")
+            
+            future_turn = "Rẽ Trái" if closest_node["x"] < (self.img_width / 2) else "Rẽ Phải"
             
             if distance_estimated < (self.img_height * 0.4): 
                 if closest_node["x"] < (self.img_width / 2):
-                    action = "turn_right"
-                    steps.append(f"Đã đủ gần corner (lệch trái) -> Quyết định Rẽ Phải.")
-                else:
                     action = "turn_left"
-                    steps.append(f"Đã đủ gần corner (lệch phải) -> Quyết định Rẽ Trái.")
+                    steps.append(f"Đã tới gần corner -> Thực thi {future_turn}.")
+                else:
+                    action = "turn_right"
+                    steps.append(f"Đã tới gần corner -> Thực thi {future_turn}.")
             else:
                 action = "straight"
-                steps.append("Corner còn xa -> Quyết định Đi Thẳng hướng tới corner.")
+                steps.append(f"Corner còn xa -> Dự định {future_turn}, hiện tại đi thẳng tới góc cua.")
                 
         elif label == "Decision":
             action = "straight"

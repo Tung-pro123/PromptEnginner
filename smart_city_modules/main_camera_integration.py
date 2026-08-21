@@ -80,45 +80,55 @@ class SmartCityCameraRunner:
         if not hasattr(self, 'has_model') or not self.has_model:
             return [], frame.copy()
 
-        # Tăng confidence lên 0.5 để lọc nhiễu
-        results = self.model.predict(frame, conf=0.5, verbose=False)
+        # Sử dụng tracking để theo dõi đối tượng liên tục
+        results = self.model.track(frame, conf=0.25, persist=True, verbose=False)
         detections = []
         annotated_frame = frame.copy()
         
         if len(results) > 0:
             result = results[0]
             
-            # Lọc nhiễu: giữ lại duy nhất 1 dự đoán có độ tin cậy cao nhất cho mỗi class
+            # Lọc các box ảo (Interact/Corner nằm trước Decision) trước khi hiển thị
             if len(result.boxes) > 0:
-                best_idx_per_class = {}
-                for i in range(len(result.boxes)):
-                    cls_idx = int(result.boxes.cls[i].item())
-                    conf = result.boxes.conf[i].item()
-                    if cls_idx not in best_idx_per_class or conf > best_idx_per_class[cls_idx][1]:
-                        best_idx_per_class[cls_idx] = (i, conf)
+                keep_indices = list(range(len(result.boxes)))
                 
-                keep_indices = [v[0] for v in best_idx_per_class.values()]
+                dec_cls_idx = next((k for k, v in self.model.names.items() if v == "Decision"), None)
+                int_cls_idx = next((k for k, v in self.model.names.items() if v == "Interact"), None)
+                cor_cls_idx = next((k for k, v in self.model.names.items() if v == "Corner"), None)
+                
+                dec_indices = [i for i in keep_indices if int(result.boxes.cls[i].item()) == dec_cls_idx]
+                if dec_indices:
+                    best_dec_i = max(dec_indices, key=lambda i: result.boxes.xywh[i][1].item())
+                    y_dec = result.boxes.xywh[best_dec_i][1].item()
+                    
+                    for i in [idx for idx in keep_indices if int(result.boxes.cls[idx].item()) in (int_cls_idx, cor_cls_idx)]:
+                        if result.boxes.xywh[i][1].item() > y_dec + 15:
+                            keep_indices.remove(i)
+                            
                 result = result[keep_indices]
                 
             annotated_frame = result.plot()
                 
-            if result.masks is not None:
-                # Nếu model là segmentation
-                for box, mask, cls in zip(result.boxes, result.masks, result.boxes.cls):
-                    label = self.model.names[int(cls)]
-                    # Tính tâm của mask (đơn giản bằng cách lấy trung bình toạ độ xy)
-                    xy = mask.xy[0]
-                    if len(xy) > 0:
-                        x = np.mean(xy[:, 0])
-                        y = np.mean(xy[:, 1])
-                        detections.append({"label": label, "x": float(x), "y": float(y)})
-            else:
-                # Nếu model chỉ là object detection (bounding box)
-                for box, cls in zip(result.boxes, result.boxes.cls):
-                    label = self.model.names[int(cls)]
-                    # Tâm của bounding box
-                    x, y, w, h = box.xywh[0]
-                    detections.append({"label": label, "x": float(x), "y": float(y)})
+            if len(result.boxes) > 0:
+                ids = result.boxes.id.int().cpu().tolist() if result.boxes.id is not None else [-1] * len(result.boxes)
+                
+                if result.masks is not None:
+                    # Nếu model là segmentation
+                    for box, mask, cls, track_id in zip(result.boxes, result.masks, result.boxes.cls, ids):
+                        label = self.model.names[int(cls)]
+                        # Tính tâm của mask
+                        xy = mask.xy[0]
+                        if len(xy) > 0:
+                            x = np.mean(xy[:, 0])
+                            y = np.mean(xy[:, 1])
+                            detections.append({"label": label, "x": float(x), "y": float(y), "id": track_id})
+                else:
+                    # Nếu model chỉ là object detection (bounding box)
+                    for box, cls, track_id in zip(result.boxes, result.boxes.cls, ids):
+                        label = self.model.names[int(cls)]
+                        # Tâm của bounding box
+                        x, y, w, h = box.xywh[0]
+                        detections.append({"label": label, "x": float(x), "y": float(y), "id": track_id})
 
         return detections, annotated_frame
 

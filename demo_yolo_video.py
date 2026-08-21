@@ -63,40 +63,49 @@ def run_demo():
         if not ret:
             break
             
-        # Chạy inference với confidence cao hơn (vd: 0.5)
-        results = model.predict(frame, conf=0.5, verbose=False)
+        # Chạy inference với tracking (thay vì predict) để gán ID cho đối tượng
+        results = model.track(frame, conf=0.25, persist=True, verbose=False)
         r = results[0]
         
-        # Lọc để mỗi class (decision, interact, corner, v.v.) chỉ giữ lại 1 box có confidence cao nhất
+        # Lọc các box ảo (Interact/Corner nằm trước Decision) trước khi hiển thị
         if len(r.boxes) > 0:
-            best_idx_per_class = {}
-            for i in range(len(r.boxes)):
-                cls_idx = int(r.boxes.cls[i].item())
-                conf = r.boxes.conf[i].item()
-                if cls_idx not in best_idx_per_class or conf > best_idx_per_class[cls_idx][1]:
-                    best_idx_per_class[cls_idx] = (i, conf)
+            keep_indices = list(range(len(r.boxes)))
             
-            keep_indices = [v[0] for v in best_idx_per_class.values()]
-            r = r[keep_indices] # Giữ lại các box tốt nhất
+            dec_cls_idx = next((k for k, v in model.names.items() if v == "Decision"), None)
+            int_cls_idx = next((k for k, v in model.names.items() if v == "Interact"), None)
+            cor_cls_idx = next((k for k, v in model.names.items() if v == "Corner"), None)
+            
+            dec_indices = [i for i in keep_indices if int(r.boxes.cls[i].item()) == dec_cls_idx]
+            if dec_indices:
+                best_dec_i = max(dec_indices, key=lambda i: r.boxes.xywh[i][1].item())
+                y_dec = r.boxes.xywh[best_dec_i][1].item()
+                
+                for i in [idx for idx in keep_indices if int(r.boxes.cls[idx].item()) in (int_cls_idx, cor_cls_idx)]:
+                    if r.boxes.xywh[i][1].item() > y_dec + 15:
+                        keep_indices.remove(i)
+                        
+            r = r[keep_indices]
             
         annotated_frame = r.plot()
         
-        # Trích xuất detections để đẩy vào DecisionModule
+        # Trích xuất detections (kèm ID) để đẩy vào DecisionModule
         detections = []
         if len(r.boxes) > 0:
+            ids = r.boxes.id.int().cpu().tolist() if r.boxes.id is not None else [-1] * len(r.boxes)
+            
             if r.masks is not None:
-                for box, mask, cls in zip(r.boxes, r.masks, r.boxes.cls):
+                for box, mask, cls, track_id in zip(r.boxes, r.masks, r.boxes.cls, ids):
                     label = model.names[int(cls)]
                     xy = mask.xy[0]
                     if len(xy) > 0:
                         x = np.mean(xy[:, 0])
                         y = np.mean(xy[:, 1])
-                        detections.append({"label": label, "x": float(x), "y": float(y)})
+                        detections.append({"label": label, "x": float(x), "y": float(y), "id": track_id})
             else:
-                for box, cls in zip(r.boxes, r.boxes.cls):
+                for box, cls, track_id in zip(r.boxes, r.boxes.cls, ids):
                     label = model.names[int(cls)]
                     x, y, w, h = box.xywh[0]
-                    detections.append({"label": label, "x": float(x), "y": float(y)})
+                    detections.append({"label": label, "x": float(x), "y": float(y), "id": track_id})
         
         # Lấy quyết định từ DecisionModule
         action, target_node, raw_speed, raw_steering, steps = decision_module.make_decision(detections)
@@ -116,20 +125,21 @@ def run_demo():
             final_steering = raw_steering
             car_status = "GOING STRAIGHT"
         
-        # Vẽ Text trạng thái chính lên góc trái trên
+        # Vẽ đường nối từ xe đến target trên video gốc
         status_text = f"State: {car_status} | Speed: {final_speed:.2f} | Steer: {final_steering:.2f}"
         if target_node and car_status == "GOING STRAIGHT":
             status_text += f" | Target: {target_node['label']}"
-            # Vẽ đường nối từ xe đến target
             cv2.line(annotated_frame, (int(width/2), height), (int(target_node['x']), int(target_node['y'])), (0, 255, 0), 2)
             
-        cv2.putText(annotated_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        # Tạo màn hình debug riêng (nền đen)
+        debug_img = np.zeros((400, 800, 3), dtype=np.uint8)
+        cv2.putText(debug_img, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         
-        # In các bước quyết định ra màn hình console và vẽ lên video
-        y_offset = 60
+        # In các bước quyết định lên màn hình debug
+        y_offset = 70
         for step in steps:
-            cv2.putText(annotated_frame, f"- {step}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1)
-            y_offset += 20
+            cv2.putText(debug_img, f"- {step}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            y_offset += 25
             
         if frame_count % 15 == 0:
             print(f"--- Frame {frame_count} ---")
@@ -140,15 +150,24 @@ def run_demo():
         # Ghi frame đã được vẽ kết quả vào video đầu ra
         out.write(annotated_frame)
         
-        # Hiển thị ra màn hình cho dễ đánh giá cảm quan
+        # Hiển thị 2 cửa sổ độc lập
         cv2.imshow("Smart City Robot Demo", annotated_frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            print("Đã dừng phát video.")
-            break
+        cv2.imshow("Debug Info", debug_img)
+        
+        print(f"Frame {frame_count} - Nhấn SPACE để đi tiếp, nhấn 'q' để thoát...")
+        # Đợi phím space để qua frame
+        while True:
+            key = cv2.waitKey(0) & 0xFF
+            if key == ord(' '):  # Nhấn space để đi tiếp
+                break
+            elif key == ord('q'):
+                print("Đã dừng phát video.")
+                cap.release()
+                out.release()
+                cv2.destroyAllWindows()
+                sys.exit(0)
         
         frame_count += 1
-        if frame_count % 30 == 0:
-            print(f"Đã xử lý {frame_count} frames, last action: {action}")
 
     cap.release()
     out.release()
