@@ -26,7 +26,7 @@ class SmartCityCameraRunner:
         print("=== KHỞI TẠO HỆ THỐNG SMART CITY CAMERA ===")
         
         # Khởi tạo phần cứng xe
-        self.car = RacerController()
+        self.car = RacerController(config={"I2C_ADDRESS": 0x40})
         self.car.stop()
         
         # Khởi tạo 2 module thuật toán độc lập
@@ -35,6 +35,20 @@ class SmartCityCameraRunner:
         
         # Khởi tạo biến lưu trữ frame camera
         self.latest_frame = None
+
+        # Load mô hình YOLO
+        try:
+            from ultralytics import YOLO
+            model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'models', 'yolo.pt'))
+            self.model = YOLO(model_path)
+            self.has_model = True
+            print(f"Đã load mô hình YOLO từ: {model_path}")
+        except ImportError:
+            self.has_model = False
+            print("Cảnh báo: Không tìm thấy thư viện ultralytics. Bỏ qua nhận diện YOLO.")
+        except Exception as e:
+            self.has_model = False
+            print(f"Lỗi khi load mô hình YOLO: {e}")
         
         # Nếu có ROS, đăng ký lắng nghe topic camera
         if HAS_ROS:
@@ -61,23 +75,49 @@ class SmartCityCameraRunner:
 
     def run_yolo_inference(self, frame):
         """
-        [MÔ PHỎNG] Hàm này là nơi bạn đặt code chạy model YOLO-Segmentation.
-        Trả về danh sách dictionary theo format của module.
+        Chạy inference mô hình YOLO và trả về kết quả theo format dict cho module xe.
         """
-        # =====================================================================
-        # TODO: BẠN THAY ĐOẠN CODE NÀY BẰNG CODE INFERENCE CỦA BẠN (ultralytics)
-        # Ví dụ:
-        # results = model.predict(frame)
-        # detections = []
-        # for box, mask, cls in zip(results[0].boxes, results[0].masks, results[0].boxes.cls):
-        #     label = model.names[int(cls)]
-        #     x, y = get_center_from_mask(mask)
-        #     detections.append({"label": label, "x": x, "y": y})
-        # return detections
-        # =====================================================================
+        if not hasattr(self, 'has_model') or not self.has_model:
+            return []
+
+        # Tăng confidence lên 0.5 để lọc nhiễu
+        results = self.model.predict(frame, conf=0.5, verbose=False)
+        detections = []
         
-        # Tạm thời trả về danh sách rỗng để code không bị lỗi
-        return []
+        if len(results) > 0:
+            result = results[0]
+            
+            # Lọc nhiễu: giữ lại duy nhất 1 dự đoán có độ tin cậy cao nhất cho mỗi class
+            if len(result.boxes) > 0:
+                best_idx_per_class = {}
+                for i in range(len(result.boxes)):
+                    cls_idx = int(result.boxes.cls[i].item())
+                    conf = result.boxes.conf[i].item()
+                    if cls_idx not in best_idx_per_class or conf > best_idx_per_class[cls_idx][1]:
+                        best_idx_per_class[cls_idx] = (i, conf)
+                
+                keep_indices = [v[0] for v in best_idx_per_class.values()]
+                result = result[keep_indices]
+                
+            if result.masks is not None:
+                # Nếu model là segmentation
+                for box, mask, cls in zip(result.boxes, result.masks, result.boxes.cls):
+                    label = self.model.names[int(cls)]
+                    # Tính tâm của mask (đơn giản bằng cách lấy trung bình toạ độ xy)
+                    xy = mask.xy[0]
+                    if len(xy) > 0:
+                        x = np.mean(xy[:, 0])
+                        y = np.mean(xy[:, 1])
+                        detections.append({"label": label, "x": float(x), "y": float(y)})
+            else:
+                # Nếu model chỉ là object detection (bounding box)
+                for box, cls in zip(result.boxes, result.boxes.cls):
+                    label = self.model.names[int(cls)]
+                    # Tâm của bounding box
+                    x, y, w, h = box.xywh[0]
+                    detections.append({"label": label, "x": float(x), "y": float(y)})
+
+        return detections
 
     def run_loop(self):
         """Vòng lặp chính xử lý ảnh và điều khiển xe"""

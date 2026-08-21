@@ -82,7 +82,7 @@ class TurnModule:
     Module xử lý rẽ bẻ góc tối đa, full tốc độ trong 2.5s.
     Sử dụng State Machine (Non-blocking) để không làm treo vòng lặp ảnh camera.
     """
-    def __init__(self, img_width=640, turn_duration=2.5, max_speed=1.0, max_steering=1.0):
+    def __init__(self, img_width=640, turn_duration=1.6, max_speed=1.0, max_steering=1.0):
         self.img_width = img_width
         self.turn_duration = turn_duration
         self.max_speed = max_speed
@@ -160,3 +160,99 @@ class TurnModule:
         steering = -self.max_steering if self.current_direction == "left" else self.max_steering
         
         return speed, steering
+
+class DecisionModule:
+    """
+    Module ra quyết định hướng đi và tính toán lái dựa trên các node và biển báo.
+    """
+    def __init__(self, img_width=640, img_height=480, base_speed=0.3):
+        self.img_width = img_width
+        self.img_height = img_height
+        self.base_speed = base_speed
+
+        # Tọa độ neo (anchor) - tâm dưới cùng của ảnh
+        self.anchor_x = self.img_width / 2
+        self.anchor_y = self.img_height
+
+    def update_resolution(self, width, height):
+        self.img_width = width
+        self.img_height = height
+        self.anchor_x = self.img_width / 2
+        self.anchor_y = self.img_height
+
+    def make_decision(self, detections):
+        """
+        Input: list of detections, e.g., [{"label": "decision", "x": 320, "y": 400}, ...]
+        Labels: decision, interact, corner, forbidden (cấm), turn_left, turn_right
+        Output: (action, target_node, speed, steering) 
+                action có thể là: "straight", "turn_left", "turn_right"
+        """
+        # Phân loại detections
+        decisions = [d for d in detections if d["label"] == "decision"]
+        interacts = [d for d in detections if d["label"] == "interact"]
+        corners = [d for d in detections if d["label"] == "corner"]
+        
+        signs = {d["label"]: d for d in detections if d["label"] in ["forbidden", "turn_left", "turn_right"]}
+        
+        # 1. Thu thập tất cả các "node" có thể dùng để ra quyết định
+        nodes = decisions + interacts + corners
+        if not nodes:
+            return "straight", None, 0.0, 0.0 # Mặc định đi thẳng chậm hoặc dừng nếu không có thông tin
+            
+        # 2. Ưu tiên node gần nhất (có tọa độ y lớn nhất do y=0 ở đỉnh ảnh)
+        closest_node = max(nodes, key=lambda n: n["y"])
+        label = closest_node["label"]
+        
+        action = "straight"
+        
+        # 3. Logic ra quyết định dựa vào loại node gần nhất
+        if label == "interact":
+            if "turn_left" in signs:
+                action = "turn_left"
+            elif "turn_right" in signs:
+                action = "turn_right"
+            elif "forbidden" in signs:
+                # Gặp cấm ở interact node -> quyết định rẽ dựa trên đặc điểm node (vd vị trí x)
+                # Giả sử interact node lệch trái -> ngã rẽ ở phải, nên rẽ phải; lệch phải -> rẽ trái
+                if closest_node["x"] < (self.img_width / 2):
+                    action = "turn_right"
+                else:
+                    action = "turn_left"
+            else:
+                action = "straight"
+                
+        elif label == "corner":
+            # Tại corner, dựa trên ước lượng khoảng cách (y) và đặc điểm corner
+            distance_estimated = self.img_height - closest_node["y"]
+            
+            # Kiểm tra xem xe đã đến đủ gần corner chưa (ngưỡng 40% chiều cao ảnh)
+            if distance_estimated < (self.img_height * 0.4): 
+                if closest_node["x"] < (self.img_width / 2):
+                    action = "turn_right" # Corner bên trái -> đường rẽ ở bên phải
+                else:
+                    action = "turn_left" # Corner bên phải -> đường rẽ ở bên trái
+            else:
+                # Nếu còn xa corner thì vẫn giữ hướng đi thẳng về phía nó
+                action = "straight"
+                
+        elif label == "decision":
+            action = "straight"
+            
+        # 4. Tính toán góc lái (steering) nếu action là đi thẳng
+        speed = self.base_speed
+        steering = 0.0
+        
+        if action == "straight":
+            target_x = closest_node["x"]
+            target_y = closest_node["y"]
+            
+            error_x = target_x - self.anchor_x
+            dy = self.anchor_y - target_y
+            if dy <= 0: dy = 1
+            
+            angle_rad = math.atan(error_x / dy)
+            max_angle = math.pi / 4
+            steering_val = angle_rad / max_angle
+            steering = max(-1.0, min(1.0, steering_val))
+            
+        return action, closest_node, speed, steering

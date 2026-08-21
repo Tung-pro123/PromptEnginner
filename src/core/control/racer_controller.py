@@ -39,6 +39,9 @@ except ImportError:
 # CẤU HÌNH PHẦN CỨNG - ĐIỀU CHỈNH THEO XE THẬT
 # ============================================================
 DEFAULT_CONFIG = {
+    # --- I2C Config ---
+    "I2C_ADDRESS": 0x40,
+
     # --- Throttle (ga) ---
     "BASE_THROTTLE": 0.20,         # Tốc độ đi thẳng mặc định (0.0 → 1.0)
     "TURN_THROTTLE": 0.15,         # Tốc độ khi đang rẽ (chậm hơn)
@@ -88,33 +91,46 @@ class RacerController:
 
     def _initialize_hardware(self):
         """Khởi tạo phần cứng JetRacer."""
+        # Thử khởi tạo trực tiếp bằng adafruit_servokit (chống lỗi 0x60 của NvidiaRacecar gốc)
+        try:
+            from adafruit_servokit import ServoKit
+            i2c_addr = self.config.get("I2C_ADDRESS", 0x40)
+            self.kit = ServoKit(channels=16, address=i2c_addr)
+            # Thông thường Waveshare JetRacer: Channel 0 là lái (steering), Channel 1 là ga (throttle)
+            # Steering: góc từ 0 đến 180 độ (giữa là 90)
+            # Throttle: ESC nhận tín hiệu PWM như servo. 90 là đứng im, <90 là lùi, >90 là tới.
+            self.steering_channel = 0
+            self.throttle_channel = 1
+            
+            # Cài đặt giá trị mặc định cho ESC và Servo (chờ khởi động)
+            self.kit.servo[self.steering_channel].angle = 90
+            self.kit.servo[self.throttle_channel].angle = 90
+            
+            self._log(f"Khởi tạo trực tiếp PCA9685 (ServoKit) thành công ở địa chỉ {hex(i2c_addr)}.")
+            self.hardware_type = "direct_pca9685"
+            return
+        except Exception as e:
+            self._log(f"Không thể khởi tạo adafruit_servokit: {e}", level="warn")
+
         # Thử import jetracer (thư viện chính thức NVIDIA)
         try:
             from jetracer.nvidia_racecar import NvidiaRacecar
+            # Để tránh lỗi 0x60, có thể thử truyền i2c_address1 và i2c_address2
             self.car = NvidiaRacecar()
             self.car.steering = 0.0
             self.car.throttle = 0.0
             self._log("Khởi tạo JetRacer (NvidiaRacecar) thành công.")
+            self.hardware_type = "nvidia_racecar"
             return
         except Exception as e:
             self._log(f"Không tìm thấy jetracer library: {e}", level="warn")
-
-        # Thử import jetbot_pro (Waveshare variant)
-        try:
-            from jetbot import Robot
-            self.car = Robot()
-            self._mock = False
-            self._log("Khởi tạo JetBot Pro (fallback) thành công.")
-            self._log("LƯU Ý: Đang dùng JetBot API trên JetRacer - cần kiểm tra tương thích!", level="warn")
-            return
-        except Exception as e:
-            self._log(f"Không tìm thấy jetbot library: {e}", level="warn")
 
         # Mock mode (cho dev/test trên laptop)
         self._log("Không tìm thấy phần cứng → Chạy ở chế độ MÔ PHỎNG (Mock).", level="warn")
         from unittest.mock import Mock
         self.car = Mock()
         self._mock = True
+        self.hardware_type = "mock"
 
     # ============================================================
     # API CHÍNH - Điều khiển cơ bản
@@ -254,34 +270,31 @@ class RacerController:
     # ============================================================
 
     def _set_throttle(self, value):
-        """Set throttle, tương thích cả NvidiaRacecar và JetBot."""
+        """Set throttle, tương thích cả NvidiaRacecar và ServoKit."""
         value = self._clamp_throttle(value)
-        if hasattr(self.car, 'throttle'):
+        if hasattr(self, 'hardware_type') and self.hardware_type == "direct_pca9685":
+            # Chuyển đổi từ -1.0 -> 1.0 sang góc PWM từ 0 -> 180 (90 là đứng im)
+            # Motor tiến thường > 90, lùi < 90
+            angle = 90 + (value * 90)
+            self.kit.servo[self.throttle_channel].angle = max(0, min(180, angle))
+        elif hasattr(self.car, 'throttle'):
             # NvidiaRacecar API
             self.car.throttle = value
-        elif hasattr(self.car, 'set_motors'):
-            # JetBot API fallback - cả 2 motor cùng tốc
-            self.car.set_motors(value, value)
-        elif hasattr(self.car, 'forward'):
-            if value > 0:
-                self.car.forward(value)
-            elif value < 0:
-                self.car.backward(abs(value))
-            else:
-                self.car.stop()
 
     def _set_steering(self, value):
-        """Set steering, tương thích cả NvidiaRacecar và JetBot."""
+        """Set steering, tương thích cả NvidiaRacecar và ServoKit."""
         value = self._clamp_steering(value)
         value += self.config["STEERING_OFFSET"]
-        if hasattr(self.car, 'steering'):
+        
+        if hasattr(self, 'hardware_type') and self.hardware_type == "direct_pca9685":
+            # Góc 90 là đi thẳng. Steering trái thường là góc nhỏ (<90), phải là góc lớn (>90)
+            # value từ -1.0 (trái) -> 1.0 (phải)
+            # Lưu ý: Tuỳ cơ cấu servo xe, có thể bị ngược. Có thể sửa dấu trừ nếu lái bị ngược.
+            angle = 90 + (value * 90)
+            self.kit.servo[self.steering_channel].angle = max(0, min(180, angle))
+        elif hasattr(self.car, 'steering'):
             # NvidiaRacecar API
             self.car.steering = value
-        elif hasattr(self.car, 'set_motors') and not self._mock:
-            # JetBot API fallback - dùng chênh lệch tốc độ
-            # Lưu ý: Cách này chỉ hoạt động tương đối trên JetBot, 
-            # KHÔNG phản ánh đúng Ackermann steering
-            pass  # Steering sẽ được xử lý trong _set_throttle
 
     def _clamp_throttle(self, value):
         return max(-self.config["MAX_THROTTLE"], min(self.config["MAX_THROTTLE"], value))

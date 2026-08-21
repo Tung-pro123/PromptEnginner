@@ -38,7 +38,7 @@ def test_turn_interact(car):
     print("\n" + "="*50)
     print("--- 2. TEST TURN MODULE (INTERACT + BIỂN BÁO RẼ PHẢI) ---")
     # Khởi tạo module rẽ (giảm max_speed xuống 0.4 để test cho an toàn trên bàn/phòng thí nghiệm)
-    turn_ctrl = TurnModule(img_width=640, turn_duration=2.5, max_speed=0.4, max_steering=1.0)
+    turn_ctrl = TurnModule(img_width=640, turn_duration=2.0, max_speed=0.4, max_steering=1.0)
     
     # Kịch bản 2: Đến ngã tư có biển báo rẽ phải
     mock_detections = [
@@ -89,10 +89,17 @@ def test_turn_corner(car):
         print(">> Không thỏa mãn điều kiện rẽ.")
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Test các module điều khiển xe (Smart City).")
+    parser.add_argument('--test', type=str, default='all', 
+                        choices=['all', 'straight', 'interact', 'corner'],
+                        help="Chọn bài test: all, straight, interact, corner")
+    args = parser.parse_args()
+
     print("="*50)
     print("ĐANG KHỞI TẠO XE (RacerController)...")
     try:
-        car = RacerController()
+        car = RacerController(config={"I2C_ADDRESS": 0x40})
         print("Khởi tạo thành công!")
     except Exception as e:
         print("Lỗi khởi tạo xe:", e)
@@ -100,14 +107,17 @@ if __name__ == "__main__":
         
     time.sleep(1) # Chờ phần cứng ổn định
     
-    # Chạy các kịch bản test
-    test_go_straight(car)
-    time.sleep(1)
+    # Chạy các kịch bản test dựa trên tham số truyền vào
+    if args.test in ['all', 'straight']:
+        test_go_straight(car)
+        time.sleep(1)
     
-    test_turn_interact(car)
-    time.sleep(1)
+    if args.test in ['all', 'interact']:
+        test_turn_interact(car)
+        time.sleep(1)
     
-    test_turn_corner(car)
+    if args.test in ['all', 'corner']:
+        test_turn_corner(car)
     
     print("\n" + "="*50)
-    print("ĐÃ HOÀN TẤT TẤT CẢ CÁC BÀI TEST ĐỘC LẬP.")
+    print(f"ĐÃ HOÀN TẤT CHẾ ĐỘ TEST: {args.test.upper()}.")

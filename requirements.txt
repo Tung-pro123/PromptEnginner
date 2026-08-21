@@ -5,3 +5,4 @@ pyserial
 rospkg
 catkin_pkg
 netifaces
+ultralytics
