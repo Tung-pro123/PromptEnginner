@@ -243,8 +243,7 @@ class SpeedRacingV3:
                 area_ratio = (area_left - area_right) / total_area
                 
                 # Áp dụng trực tiếp tỷ lệ diện tích thành lực bẻ lái bù trừ
-                k_area = 0.15 
-                steer_filtered += k_area * area_ratio
+                steer_filtered += cfg.area_k * area_ratio
                 
             # Đảm bảo steering không vượt ngưỡng [-1.0, 1.0]
             steer_filtered = max(-1.0, min(1.0, steer_filtered))

@@ -111,18 +111,13 @@ def make_v31_config():
     cfg.ransac_max_trials = 15          # 30 → 15 (save 50% RANSAC time, because we now sample only 3 points)
 
     # ---- Speed boost (Predictive logic allows higher speeds) ----
-    cfg.max_speed = 0.70                # 0.55 → 0.70 (straight line max)
-    cfg.cruise_speed = 0.70             # 0.48 → 0.70
-    cfg.a_lat_max = 2.5                 # 2.0 → 2.5 (RC car can handle more)
+    # Đã xoá ghi đè cứng. Mọi thông số tốc độ được sử dụng trực tiếp từ config.py.
 
     # ---- Speed-adaptive steering ----
-    cfg.high_speed_steer_gain = 0.65    # Reduce steering 35% at max speed
-    cfg.steer_lpf_alpha = 0.85          # Slight smoothing (was 1.0 = raw)
+    # Đã xoá ghi đè cứng. Mọi thông số steering được sử dụng trực tiếp từ config.py.
 
     # ---- Curvature-history speed (Disabled for multi-curve tracks) ----
-    cfg.curvature_history_size = 10     # Track last 10 frames
-    cfg.curvature_stability_bonus = 1.0   # 1.15 → 1.0 (no oval bonus)
-    cfg.curvature_stability_thresh = 0.1  # std threshold
+    # Đã xoá ghi đè cứng. Mọi thông số sử dụng trực tiếp từ config.py.
 
     # ---- Predictive Braking & Horizon Scanner ----
     # Bật lại Horizon Scanner để phanh sớm cuối đường thẳng.
@@ -438,7 +433,7 @@ class SpeedRacingV31:
                     area_ratio = 0.0
 
                 # V3.1: Speed-dependent gain — less correction at high speed
-                speed_factor = 1.0 - 0.5 * (self.current_throttle / cfg.max_speed) \
+                speed_factor = 1.0 - cfg.area_high_speed_penalty * (self.current_throttle / cfg.max_speed) \
                     if cfg.max_speed > 0 else 1.0
 
                 area_steer = cfg.area_k * area_ratio * speed_factor

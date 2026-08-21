@@ -94,21 +94,21 @@ class SpeedController:
             # Nhìn thấy cua gắt phía xa -> TRỞ VỀ BÁM ĐƯỜNG BÌNH THƯỜNG (không ép đi chậm)
             # Hệ thống sẽ dùng vận tốc bám đường (v_curve) vốn rất ổn định.
             pass
-        elif horizon_state == "STRAIGHT" and effective_curvature < 0.3:
+        elif horizon_state == "STRAIGHT" and effective_curvature < cfg.straight_curvature_thresh:
             # Nhìn thấy đường thẳng tắp VÀ gầm xe cũng đã thoát cua -> Đặt mục tiêu tốc độ tối đa!
             v_target = cfg.max_speed
 
         # Step 2: Confidence scaling
         if confidence < cfg.speed_confidence_thresh:
             # Linear reduction: at confidence=0 → v_target * 0
-            scale = max(0.3, confidence / cfg.speed_confidence_thresh)
+            scale = max(cfg.min_speed_scale, confidence / cfg.speed_confidence_thresh)
             v_target *= scale
 
         # Step 3: State machine speed limits
         if tracking_state == TrackingState.SEARCH:
             v_target = cfg.min_speed
         elif tracking_state == TrackingState.UNCERTAIN:
-            v_target = min(v_target, cfg.cruise_speed * 0.7)
+            v_target = min(v_target, cfg.cruise_speed * cfg.uncertain_speed_penalty)
         elif tracking_state == TrackingState.PREDICTING:
             v_target = cfg.min_speed
         elif tracking_state == TrackingState.RECOVERY:
@@ -141,9 +141,9 @@ class SpeedController:
 
         # Tăng ga từ từ (alpha nhỏ), nhưng hạ ga thật nhanh khi gặp cua (alpha lớn)
         if target_throttle > self.current_throttle:
-            alpha = 0.05 # Tăng ga mượt mà
+            alpha = cfg.throttle_smooth_accel # Tăng ga mượt mà
         else:
-            alpha = 0.3  # Hạ ga nhanh để an toàn
+            alpha = cfg.throttle_smooth_brake  # Hạ ga nhanh để an toàn
             
         self.current_throttle = (1.0 - alpha) * self.current_throttle + alpha * target_throttle
 

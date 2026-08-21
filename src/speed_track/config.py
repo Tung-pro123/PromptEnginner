@@ -200,6 +200,13 @@ class V3Config:
     speed_confidence_thresh: float = 0.5   # reduce speed below this confidence
     speed_to_throttle_factor: float = 1.0  # [CALIBRATE] TĂNG HỆ SỐ NÀY ĐỂ XE BỐC HƠN (v(m/s) → throttle)
 
+    # Advanced Speed Tuning
+    straight_curvature_thresh: float = 0.3 # ngưỡng cong để nhận dạng đoạn thẳng
+    min_speed_scale: float = 0.3           # tỷ lệ giảm tốc tối đa khi lane_confidence thấp
+    uncertain_speed_penalty: float = 0.7   # giảm tốc độ khi tracking_state là UNCERTAIN
+    throttle_smooth_accel: float = 0.05    # hệ số mượt khi tăng ga (alpha)
+    throttle_smooth_brake: float = 0.3     # hệ số mượt khi giảm ga (nhanh hơn để phanh)
+
     # Speed PID (for encoder feedback)
     speed_pid_kp: float = 0.5
     speed_pid_ki: float = 0.0
@@ -231,7 +238,7 @@ class V3Config:
     video_fps: int = 5
     log_csv: bool = True
     loop_rate: int = 20                    # Hz
-    debug_mode: bool = True                # [V3.1] True = render visualizer, False = skip (faster)
+    debug_mode: bool = False                # [V3.1] True = render visualizer, False = skip (faster)
 
     # ================================================================
     # ROS TOPICS
@@ -255,6 +262,7 @@ class V3Config:
     # Area heuristic V2
     area_k: float = 0.15                   # [V3.1] area correction gain (V3 default)
     area_deadband: float = 0.0             # [V3.1] ignore area_ratio below this (V3 = 0)
+    area_high_speed_penalty: float = 0.5   # [V3.1] giảm tác động area khi chạy tốc độ cao
 
     # Early Horizon Scanner
     horizon_warning_enabled: bool = True   # [V3.1] Enable scanning above BEV for curves
