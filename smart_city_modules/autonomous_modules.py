@@ -6,7 +6,7 @@ class GoStraightModule:
     Module xử lý xe đi thẳng dựa vào tọa độ từ YOLO-Segmentation.
     Lấy tọa độ x_center, y_center so với tâm dưới cùng của ảnh.
     """
-    def __init__(self, img_width=640, img_height=480, base_speed=0.3):
+    def __init__(self, img_width=640, img_height=480, base_speed=0.6):  # Tăng tốc độ cơ sở (base_speed) từ 0.3 lên 0.6
         self.img_width = img_width
         self.img_height = img_height
         self.base_speed = base_speed
@@ -14,6 +14,10 @@ class GoStraightModule:
         # Tọa độ neo (anchor) - tâm dưới cùng của ảnh
         self.anchor_x = self.img_width / 2
         self.anchor_y = self.img_height
+        
+        # PD Controller variables
+        self.prev_error_x = 0
+        self.last_time = time.time()
 
     def update_resolution(self, width, height):
         self.img_width = width
@@ -24,57 +28,66 @@ class GoStraightModule:
     def calculate_command(self, detections):
         """
         Xử lý list detections trả về từ YOLO và xuất ra lệnh lái.
-        Format detection mong đợi:
-        [
-            {"label": "decision", "x": 320, "y": 400},
-            {"label": "corner", "x": 100, "y": 200},
-            ...
-        ]
         """
         corners = [d for d in detections if d["label"] == "Corner"]
         decisions = [d for d in detections if d["label"] == "Decision"]
         
         target_node = None
 
-        # Quy tắc: Nếu có cả hai, nếu corner xa hơn decision (y_corner < y_decision) 
-        # -> ưu tiên lấy decision (vì decision đang gần xe hơn, hệ tọa độ ảnh y=0 ở trên cùng)
         if len(decisions) > 0 and len(corners) > 0:
             closest_decision = max(decisions, key=lambda d: d["y"])
             closest_corner = max(corners, key=lambda c: c["y"])
-            
             if closest_corner["y"] < closest_decision["y"]:
                 target_node = closest_decision
             else:
                 target_node = closest_corner
-                
         elif len(decisions) > 0:
             target_node = max(decisions, key=lambda d: d["y"])
         elif len(corners) > 0:
             target_node = max(corners, key=lambda c: c["y"])
 
         if target_node is None:
-            return None, None # Không có đối tượng mục tiêu
+            # Không thấy đường, chạy chậm hoặc dò đường
+            return self.base_speed * 0.5, 0.0
 
-        # Tính toán sai số
         target_x = target_node["x"]
-        target_y = target_node["y"]
+        
+        # ==========================================
+        # BÀI TOÁN BÁM DECISION - TỐI ƯU PD CONTROLLER
+        # ==========================================
+        # Thuật toán cũ: atan(dx/dy) dễ bị nhiễu và bẻ gắt (oversteer) khi Decision lại gần đáy ảnh (dy -> 0).
+        # Khắc phục: Dùng sai số ngang dx (chuẩn hoá) kết hợp thuật toán PD.
         
         error_x = target_x - self.anchor_x
-        dy = self.anchor_y - target_y
-        if dy <= 0: dy = 1  # Tránh chia cho 0 hoặc âm
-
-        # Tính góc radian
-        angle_rad = math.atan(error_x / dy)
+        normalized_error = error_x / self.anchor_x  # Range: -1.0 to 1.0
         
-        # Mapping góc sang dải giá trị lái (giả sử góc max là ~45 độ -> pi/4)
-        # Giá trị trả về từ -1.0 (trái) đến 1.0 (phải)
-        max_angle = math.pi / 4
-        steering_val = angle_rad / max_angle
+        # Tính delta time
+        current_time = time.time()
+        dt = current_time - self.last_time
+        if dt <= 0: dt = 0.001
         
-        # Clamp giá trị -1.0 đến 1.0
+        # Tính đạo hàm của sai số (Derivative)
+        derivative = (normalized_error - self.prev_error_x) / dt
+        
+        # Hệ số PID (Có thể tinh chỉnh)
+        Kp = 0.8  # Phản hồi tức thời với độ lệch
+        Kd = 0.1  # Hãm chống dao động lắc qua lại
+        
+        steering_val = (Kp * normalized_error) + (Kd * derivative)
+        
+        # Cập nhật trạng thái
+        self.prev_error_x = normalized_error
+        self.last_time = current_time
+        
+        # Clamp giá trị góc lái -1.0 đến 1.0
         steering_val = max(-1.0, min(1.0, steering_val))
-
-        return self.base_speed, steering_val
+        
+        # Điều tốc: Nếu đang bẻ lái gắt, tự động giảm tốc độ để không bị trượt bánh (Slip)
+        dynamic_speed = self.base_speed
+        if abs(steering_val) > 0.4:
+            dynamic_speed = self.base_speed * 0.7  # Giảm 30% tốc độ khi ôm cua gắt
+            
+        return dynamic_speed, steering_val
 
 
 class TurnModule:

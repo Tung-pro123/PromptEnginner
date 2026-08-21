@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-import sys
 import os
+import sys
+
+# Khắc phục lỗi Illegal instruction (core dumped) phổ biến trên Jetson Nano
+os.environ["OPENBLAS_CORETYPE"] = "ARMV8"
+
 import time
 import cv2
 import numpy as np
@@ -29,26 +33,30 @@ class SmartCityCameraRunner:
         self.car = RacerController(config={"I2C_ADDRESS": 0x40})
         self.car.stop()
         
-        # Khởi tạo 2 module thuật toán độc lập
-        self.go_straight_ctrl = GoStraightModule(img_width=640, img_height=480, base_speed=0.3)
-        self.turn_ctrl = TurnModule(img_width=640, turn_duration=1.5, max_speed=0.4, max_steering=1.0)
+        # Khởi tạo 2 module thuật toán độc lập (Đã tăng tốc độ)
+        self.go_straight_ctrl = GoStraightModule(img_width=640, img_height=480, base_speed=0.6)
+        self.turn_ctrl = TurnModule(img_width=640, turn_duration=1.5, max_speed=0.5, max_steering=1.0)
         
         # Khởi tạo biến lưu trữ frame camera
         self.latest_frame = None
 
-        # Load mô hình YOLO
+        # Load mô hình YOLO ONNX
         try:
-            from ultralytics import YOLO
-            model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'models', 'yolo.pt'))
-            self.model = YOLO(model_path)
+            from smart_city_modules.yolo_onnx import YoloONNX
+            model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'models', 'yolo.onnx'))
+            
+            # Khai báo mảng tên class tương ứng với model huấn luyện của bạn
+            class_names = ['Corner', 'Decision', 'Forbidden', 'Green_Light', 'Interact', 'turn_left', 'Red_Light', 'turn_right', 'straight']
+            
+            self.model = YoloONNX(model_path, class_names)
             self.has_model = True
-            print(f"Đã load mô hình YOLO từ: {model_path}")
+            print(f"Đã load mô hình ONNX từ: {model_path}")
         except ImportError:
             self.has_model = False
-            print("Cảnh báo: Không tìm thấy thư viện ultralytics. Bỏ qua nhận diện YOLO.")
+            print("Cảnh báo: Không tìm thấy thư viện. Bỏ qua nhận diện YOLO.")
         except Exception as e:
             self.has_model = False
-            print(f"Lỗi khi load mô hình YOLO: {e}")
+            print(f"Lỗi khi load mô hình YOLO ONNX: {e}")
         
         # Nếu có ROS, đăng ký lắng nghe topic camera
         if HAS_ROS:
@@ -75,61 +83,14 @@ class SmartCityCameraRunner:
 
     def run_yolo_inference(self, frame):
         """
-        Chạy inference mô hình YOLO và trả về kết quả theo format dict cho module xe kèm theo frame đã vẽ label.
+        Chạy inference mô hình ONNX và trả về kết quả theo format dict cho module xe kèm theo frame đã vẽ label.
         """
         if not hasattr(self, 'has_model') or not self.has_model:
             return [], frame.copy()
 
-        # Sử dụng tracking để theo dõi đối tượng liên tục
-        results = self.model.track(frame, conf=0.25, persist=True, verbose=False)
-        detections = []
-        annotated_frame = frame.copy()
+        # Gọi module YoloONNX tự code
+        detections, annotated_frame = self.model.infer_and_track(frame, conf_threshold=0.25)
         
-        if len(results) > 0:
-            result = results[0]
-            
-            # Lọc các box ảo (Interact/Corner nằm trước Decision) trước khi hiển thị
-            if len(result.boxes) > 0:
-                keep_indices = list(range(len(result.boxes)))
-                
-                dec_cls_idx = next((k for k, v in self.model.names.items() if v == "Decision"), None)
-                int_cls_idx = next((k for k, v in self.model.names.items() if v == "Interact"), None)
-                cor_cls_idx = next((k for k, v in self.model.names.items() if v == "Corner"), None)
-                
-                dec_indices = [i for i in keep_indices if int(result.boxes.cls[i].item()) == dec_cls_idx]
-                if dec_indices:
-                    best_dec_i = max(dec_indices, key=lambda i: result.boxes.xywh[i][1].item())
-                    y_dec = result.boxes.xywh[best_dec_i][1].item()
-                    
-                    for i in [idx for idx in keep_indices if int(result.boxes.cls[idx].item()) in (int_cls_idx, cor_cls_idx)]:
-                        if result.boxes.xywh[i][1].item() > y_dec + 15:
-                            keep_indices.remove(i)
-                            
-                result = result[keep_indices]
-                
-            annotated_frame = result.plot()
-                
-            if len(result.boxes) > 0:
-                ids = result.boxes.id.int().cpu().tolist() if result.boxes.id is not None else [-1] * len(result.boxes)
-                
-                if result.masks is not None:
-                    # Nếu model là segmentation
-                    for box, mask, cls, track_id in zip(result.boxes, result.masks, result.boxes.cls, ids):
-                        label = self.model.names[int(cls)]
-                        # Tính tâm của mask
-                        xy = mask.xy[0]
-                        if len(xy) > 0:
-                            x = np.mean(xy[:, 0])
-                            y = np.mean(xy[:, 1])
-                            detections.append({"label": label, "x": float(x), "y": float(y), "id": track_id})
-                else:
-                    # Nếu model chỉ là object detection (bounding box)
-                    for box, cls, track_id in zip(result.boxes, result.boxes.cls, ids):
-                        label = self.model.names[int(cls)]
-                        # Tâm của bounding box
-                        x, y, w, h = box.xywh[0]
-                        detections.append({"label": label, "x": float(x), "y": float(y), "id": track_id})
-
         return detections, annotated_frame
 
     def run_loop(self):
