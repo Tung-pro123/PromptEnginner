@@ -33,7 +33,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from src.smart_city.v2.config import SmartCityConfig
-from src.smart_city.v2.controller import SmartCityFSM, SmartCityState
+from src.smart_city.v2.controller import DriveCommand, SmartCityFSM, SmartCityState
 from src.smart_city.v2.decision import ScenarioDecisionProvider
 from src.smart_city.v2.perception import SmartCityPerception
 from src.smart_city.v2.semantic import ManualSemanticDetector, SemanticObservation
@@ -591,7 +591,7 @@ class RosBuffers(object):
 
 class Runtime(object):
     def __init__(self, config, scenario, actuator, telemetry, detector,
-                 require_ai=False):
+                 require_ai=False, stop_after_intersections=0):
         self.config = config
         self.perception = SmartCityPerception(config)
         self.provider = ScenarioDecisionProvider(scenario)
@@ -600,6 +600,9 @@ class Runtime(object):
         self.telemetry = telemetry
         self.detector = detector
         self.require_ai = require_ai
+        self.stop_after_intersections = int(stop_after_intersections)
+        if self.stop_after_intersections < 0:
+            raise ValueError("stop_after_intersections must be non-negative")
         self.previous_lane_x = None
         self.last_perception = None
         self.last_semantic = SemanticObservation()
@@ -647,6 +650,25 @@ class Runtime(object):
             semantic_seq=seq if semantic_seq is None else semantic_seq,
             semantic_source_frame_seq=semantic.source_local_seq,
         )
+        # A camera-only hardware bench route must stop immediately after the
+        # second intersection has been fully exited and its new lane is
+        # stable.  Replace the positive intersection-cleared command before it
+        # ever reaches the actuator, then latch the stop for the process.
+        if (
+            self.stop_after_intersections > 0
+            and self.provider.consumed >= self.stop_after_intersections
+            and command.reason == "intersection_cleared"
+        ):
+            self.fsm.emergency_stop("bench_route_complete", now=now)
+            command = DriveCommand(
+                0.0,
+                0.0,
+                SmartCityState.E_STOP,
+                reason="bench_route_complete",
+                action=command.action,
+                intersection_id=command.intersection_id,
+                timestamp=now,
+            )
         if command.state == SmartCityState.E_STOP:
             self.actuator.emergency_stop()
         else:
@@ -886,7 +908,10 @@ def handle_key(key, runtime, detector, now, allow_rearm=True):
 
 def run_offline(args, config, actuator, telemetry, detector):
     runtime = Runtime(config, args.scenario, actuator, telemetry, detector,
-                      require_ai=args.require_ai)
+                      require_ai=args.require_ai,
+                      stop_after_intersections=(
+                          2 if args.bench_camera_only else 0
+                      ))
 
     single_image = None
     capture = None
@@ -972,18 +997,30 @@ def run_ros(args, config, actuator, telemetry, detector):
             semantic_topic=args.semantic_topic,
             emergency_stop_callback=actuator.emergency_stop,
         )
-        runtime = Runtime(config, args.scenario, actuator, telemetry, detector,
-                          require_ai=args.require_ai)
+        runtime = Runtime(
+            config,
+            args.scenario,
+            actuator,
+            telemetry,
+            detector,
+            require_ai=args.require_ai,
+            stop_after_intersections=(2 if args.bench_camera_only else 0),
+        )
     except Exception:
         actuator.close()
         raise
     armed = False
     processed = 0
     last_debug = None
+    bench_started_at = None
     loop_period = 1.0 / max(1.0, config.loop_hz)
 
     rospy.loginfo("Smart City V2 started in %s mode" % (
-        "MOTOR" if args.enable_motors else "SHADOW"
+        (
+            "CAMERA BENCH MOTOR"
+            if args.enable_motors and args.bench_camera_only
+            else "MOTOR" if args.enable_motors else "SHADOW"
+        )
     ))
     try:
         while not rospy.is_shutdown():
@@ -1022,6 +1059,19 @@ def run_ros(args, config, actuator, telemetry, detector):
                 )
                 if should_arm:
                     armed = runtime.arm(now)
+                    if armed and args.bench_camera_only:
+                        bench_started_at = now
+
+            if (
+                args.bench_camera_only
+                and bench_started_at is not None
+                and now - bench_started_at
+                >= config.bench_max_runtime_seconds
+            ):
+                runtime.fsm.emergency_stop("bench_runtime_timeout", now)
+                actuator.emergency_stop()
+                rospy.logerr("Camera-only bench runtime limit reached; stopped")
+                break
 
             semantic = None
             if args.semantic_topic:
@@ -1059,6 +1109,14 @@ def run_ros(args, config, actuator, telemetry, detector):
                 ):
                     break
             if args.max_frames and processed >= args.max_frames:
+                break
+            if (
+                args.bench_camera_only
+                and command.reason == "bench_route_complete"
+            ):
+                rospy.loginfo(
+                    "Camera bench LEFT-then-RIGHT route completed; motors latched off"
+                )
                 break
             time.sleep(loop_period)
     finally:
@@ -1126,6 +1184,79 @@ def validate_live_inputs(args, config):
         raise ValueError("motor mode requires --use-lidar")
 
 
+def validate_camera_bench_inputs(args, config):
+    """Validate the deliberately narrow camera-only motor bench.
+
+    This is not a shortcut into competition live mode. It accepts exactly two
+    scripted intersections (LEFT then RIGHT), no AI/mock/LiDAR inputs, and a
+    bench-only configuration with its own hard motion envelope.
+    """
+    if not args.config:
+        raise ValueError("camera bench requires an explicit config JSON")
+    config.validate_camera_bench()
+    if os.path.abspath(args.scenario) == os.path.abspath(DEFAULT_SCENARIO):
+        raise ValueError("camera bench refuses scenario_example.json")
+    if getattr(args, "use_lidar", False):
+        raise ValueError("camera bench is camera-only; remove --use-lidar")
+    if getattr(args, "semantic_topic", None):
+        raise ValueError("camera bench refuses --semantic-topic")
+    if getattr(args, "require_ai", False):
+        raise ValueError("camera bench refuses --require-ai")
+    if (
+        getattr(args, "mock_sign", None) is not None
+        or getattr(args, "mock_signal", None) is not None
+    ):
+        raise ValueError("camera bench refuses mock sign/signal labels")
+
+    with open(args.scenario, "r", encoding="utf-8") as scenario_file:
+        document = json.load(scenario_file)
+    if not isinstance(document, dict):
+        raise ValueError("camera bench scenario root must be an object")
+    if document.get("bench_only") is not True:
+        raise ValueError("camera bench scenario needs bench_only=true")
+    if document.get("validated_for_live") is not False:
+        raise ValueError(
+            "camera bench scenario must keep validated_for_live=false"
+        )
+    route_id = document.get("route_id")
+    if not isinstance(route_id, str) or not route_id.strip():
+        raise ValueError("camera bench scenario needs a non-empty route_id")
+
+    intersections = document.get("intersections")
+    if not isinstance(intersections, list) or len(intersections) != 2:
+        raise ValueError("camera bench needs exactly two intersections")
+    expected_actions = ("LEFT", "RIGHT")
+    for index, expected in enumerate(expected_actions):
+        entry = intersections[index]
+        if not isinstance(entry, dict):
+            raise ValueError("camera bench intersection must be an object")
+        intersection_id = entry.get("id")
+        if not isinstance(intersection_id, str) or not intersection_id.strip():
+            raise ValueError("camera bench intersection needs a non-empty id")
+        action = entry.get("action")
+        if not isinstance(action, str) or action.strip().upper() != expected:
+            raise ValueError(
+                "camera bench action %d must be %s" % (index + 1, expected)
+            )
+        allowed = entry.get("allowed")
+        if not isinstance(allowed, list):
+            raise ValueError("camera bench allowed exits must be an array")
+        normalised_allowed = []
+        for value in allowed:
+            if not isinstance(value, str):
+                raise ValueError("camera bench allowed exit must be a string")
+            direction = value.strip().upper()
+            if direction not in ("LEFT", "STRAIGHT", "RIGHT"):
+                raise ValueError("camera bench contains an invalid exit")
+            normalised_allowed.append(direction)
+        if expected not in normalised_allowed:
+            raise ValueError("camera bench action is not an allowed exit")
+        if any(key in entry for key in (
+            "mock_sign", "mock_signal", "requires_sign",
+        )):
+            raise ValueError("camera bench intersections must be scripted only")
+
+
 def should_arm_runtime(enable_motors, arm_requests, arm_request_stamp,
                        now, request_ttl, estop_latched):
     """Return whether this tick may arm without a startup auto-arm race.
@@ -1162,6 +1293,14 @@ def build_parser():
 
     parser.add_argument("--enable-motors", action="store_true")
     parser.add_argument(
+        "--bench-camera-only",
+        action="store_true",
+        help=(
+            "supervised low-speed LEFT-then-RIGHT hardware bench; no AI or "
+            "LiDAR and never valid for competition"
+        ),
+    )
+    parser.add_argument(
         "--arm",
         action="store_true",
         help=(
@@ -1182,6 +1321,8 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.bench_camera_only and not args.ros:
+        raise SystemExit("--bench-camera-only is allowed only with --ros")
     if args.enable_motors and not args.ros:
         raise SystemExit("--enable-motors is allowed only with --ros")
     if args.enable_motors and not args.arm:
@@ -1194,7 +1335,12 @@ def main(argv=None):
         raise SystemExit("--require-ai needs --semantic-topic or a mock label")
 
     config = load_config(args.config)
-    if args.enable_motors:
+    if args.bench_camera_only:
+        try:
+            validate_camera_bench_inputs(args, config)
+        except (IOError, OSError, TypeError, ValueError) as exc:
+            raise SystemExit("camera bench safety check failed: %s" % exc)
+    elif args.enable_motors:
         try:
             validate_live_inputs(args, config)
         except (IOError, OSError, TypeError, ValueError) as exc:

@@ -21,12 +21,16 @@ from src.smart_city.main_smart_city_v2 import (
     RosBuffers,
     Runtime,
     VehicleActuator,
+    build_parser,
     camera_message_identity,
+    load_config,
     ros_image_to_bgr,
     should_arm_runtime,
+    validate_camera_bench_inputs,
     validate_live_inputs,
 )
 from src.smart_city.v2.config import SmartCityConfig
+from src.smart_city.v2.controller import DriveCommand, SmartCityState
 from src.smart_city.v2.semantic import SemanticObservation
 
 
@@ -456,6 +460,93 @@ class RunnerSafetyTests(unittest.TestCase):
             args.scenario = DEFAULT_SCENARIO
             with self.assertRaises(ValueError):
                 validate_live_inputs(args, config)
+
+    def test_camera_bench_accepts_only_left_then_right_route(self):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_path = os.path.join(
+            project_root, "src", "smart_city", "v2", "config_turn_bench.json"
+        )
+        scenario_path = os.path.join(
+            project_root, "src", "smart_city", "v2",
+            "scenario_turn_bench.json",
+        )
+        config = load_config(config_path)
+        args = types.SimpleNamespace(
+            config=config_path,
+            scenario=scenario_path,
+            use_lidar=False,
+            semantic_topic=None,
+            require_ai=False,
+            mock_sign=None,
+            mock_signal=None,
+        )
+        self.assertIsNone(validate_camera_bench_inputs(args, config))
+
+        parser_args = build_parser().parse_args([
+            "--ros", "--bench-camera-only",
+            "--scenario", scenario_path,
+            "--config", config_path,
+        ])
+        self.assertTrue(parser_args.bench_camera_only)
+
+        with tempfile.TemporaryDirectory() as directory:
+            invalid_path = os.path.join(directory, "wrong-order.json")
+            with open(invalid_path, "w", encoding="utf-8") as output:
+                json.dump({
+                    "bench_only": True,
+                    "validated_for_live": False,
+                    "route_id": "wrong-order",
+                    "intersections": [
+                        {"id": "I1", "allowed": ["RIGHT"],
+                         "action": "RIGHT"},
+                        {"id": "I2", "allowed": ["LEFT"],
+                         "action": "LEFT"},
+                    ],
+                }, output)
+            args.scenario = invalid_path
+            with self.assertRaises(ValueError):
+                validate_camera_bench_inputs(args, config)
+
+        config.cruise_throttle = 0.13
+        with self.assertRaises(ValueError):
+            config.validate_camera_bench()
+
+    def test_camera_bench_latches_stop_after_second_cleared_exit(self):
+        actuator = NullActuator()
+        runtime = Runtime(
+            SmartCityConfig(),
+            {
+                "intersections": [
+                    {"id": "I1", "allowed": ["LEFT"], "action": "LEFT"},
+                    {"id": "I2", "allowed": ["RIGHT"], "action": "RIGHT"},
+                ],
+            },
+            actuator,
+            FakeTelemetry(),
+            FakeDetector(),
+            stop_after_intersections=2,
+        )
+        runtime.provider._index = 2
+        cleared = DriveCommand(
+            0.1,
+            0.1,
+            SmartCityState.LANE_FOLLOW,
+            reason="intersection_cleared",
+            action="RIGHT",
+            intersection_id="I2",
+            timestamp=1.0,
+        )
+        runtime.fsm.update = mock.Mock(return_value=cleared)
+        command, _debug = runtime.step(
+            np.zeros((480, 640, 3), dtype=np.uint8),
+            now=1.0,
+            seq=1,
+        )
+        self.assertEqual(SmartCityState.E_STOP, command.state)
+        self.assertEqual("bench_route_complete", command.reason)
+        self.assertEqual(0.0, command.throttle)
+        self.assertEqual(0.0, command.steering)
+        self.assertIsNone(actuator.last_command)
 
     def test_motor_mode_never_auto_arms_from_startup_flag(self):
         self.assertTrue(

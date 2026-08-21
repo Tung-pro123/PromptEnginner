@@ -119,6 +119,13 @@ class SmartCityConfig(object):
         # changed.  Keep live semantic freshness close to the camera watchdog.
         self.semantic_ttl_seconds = 0.35
 
+        # Explicitly isolated camera-only hardware bench mode.  This is not a
+        # live-course calibration: the runner accepts it only with the
+        # dedicated --bench-camera-only flag and enforces a short wall-clock
+        # runtime plus a fixed two-turn scenario.
+        self.bench_only = False
+        self.bench_max_runtime_seconds = 25.0
+
         # Integration defaults.
         self.camera_topic = "/csi_cam_0/image_raw"
         self.lidar_topic = "/scan"
@@ -154,7 +161,7 @@ class SmartCityConfig(object):
             "camera_topic", "lidar_topic", "arm_topic", "estop_topic",
             "calibration_id",
         )
-        bool_fields = ("orange_keepout_enabled", "calibrated")
+        bool_fields = ("orange_keepout_enabled", "calibrated", "bench_only")
         hsv_fields = (
             "white_hsv_lower", "white_hsv_upper", "green_hsv_lower",
             "green_hsv_upper", "orange_hsv_lower_1", "orange_hsv_upper_1",
@@ -249,6 +256,7 @@ class SmartCityConfig(object):
             "turn_nominal_seconds", "straight_cross_seconds",
             "steering_slew_per_second", "lidar_stop_distance_m",
             "lidar_timeout_seconds", "lidar_guard_half_angle_deg",
+            "bench_max_runtime_seconds",
         )
         for name in positive:
             if float(getattr(self, name)) <= 0.0:
@@ -300,6 +308,8 @@ class SmartCityConfig(object):
     def validate_live(self):
         """Independent hard envelope for motor-enabled experiments."""
         self.validate()
+        if self.bench_only:
+            raise ValueError("bench-only config cannot be used for live competition")
         if self.calibrated is not True or not str(self.calibration_id).strip():
             raise ValueError(
                 "live config needs calibrated=true and a calibration_id"
@@ -410,6 +420,83 @@ class SmartCityConfig(object):
         for name, minimum in minima:
             if int(getattr(self, name)) < minimum:
                 raise ValueError("live %s must be >= %d" % (name, minimum))
+        return self
+
+    def validate_camera_bench(self):
+        """Hard envelope for a supervised LEFT-then-RIGHT camera-only test.
+
+        This mode intentionally does not claim that the course is calibrated.
+        It permits no AI/LiDAR fallback and therefore uses stricter throttle,
+        timing and total-runtime caps than normal live validation.
+        """
+        self.validate()
+        if self.bench_only is not True:
+            raise ValueError("camera bench config needs bench_only=true")
+        if self.calibrated is not False:
+            raise ValueError("camera bench config must not claim calibrated=true")
+        if float(self.bench_max_runtime_seconds) > 30.0:
+            raise ValueError("camera bench runtime exceeds 30 second hard cap")
+        for name in (
+            "cruise_throttle", "approach_throttle", "turn_throttle",
+            "reacquire_throttle", "straight_throttle",
+        ):
+            if float(getattr(self, name)) > 0.12:
+                raise ValueError("camera bench throttle exceeds 0.12: %s" % name)
+        if float(self.max_lane_steering) > 0.80:
+            raise ValueError("camera bench lane steering exceeds 0.80")
+        if abs(float(self.turn_steering_left)) > 0.80:
+            raise ValueError("camera bench left steering exceeds 0.80")
+        if abs(float(self.turn_steering_right)) > 0.80:
+            raise ValueError("camera bench right steering exceeds 0.80")
+        if not float(self.turn_steering_left) <= -0.30:
+            raise ValueError("camera bench LEFT steering must be <= -0.30")
+        if not float(self.turn_steering_right) >= 0.30:
+            raise ValueError("camera bench RIGHT steering must be >= 0.30")
+        if not 10.0 <= float(self.loop_hz) <= 40.0:
+            raise ValueError("camera bench loop_hz must be in [10, 40]")
+        if not 0.40 <= float(self.stop_hold_seconds) <= 1.50:
+            raise ValueError("camera bench stop hold must be in [0.40, 1.50]")
+        for name in ("nudge_left_seconds", "nudge_right_seconds"):
+            if float(getattr(self, name)) > 0.50:
+                raise ValueError("camera bench nudge exceeds 0.50: %s" % name)
+        if float(self.turn_max_seconds) > 1.80:
+            raise ValueError("camera bench turn timeout exceeds 1.80 seconds")
+        if float(self.nudge_max_seconds) > 1.50:
+            raise ValueError("camera bench nudge timeout exceeds 1.50 seconds")
+        if float(self.reacquire_timeout_seconds) > 2.50:
+            raise ValueError("camera bench reacquire timeout exceeds 2.50 seconds")
+        if float(self.exit_lockout_max_seconds) > 4.00:
+            raise ValueError("camera bench exit lockout exceeds 4.00 seconds")
+        if float(self.camera_timeout_seconds) > 0.30:
+            raise ValueError("camera bench camera timeout exceeds 0.30 second")
+        if not 0.05 <= float(self.actuator_watchdog_seconds) <= 0.20:
+            raise ValueError("camera bench actuator watchdog must be [0.05, 0.20]")
+        if float(self.lane_loss_estop_seconds) > 0.80:
+            raise ValueError("camera bench lane-loss timeout exceeds 0.80 second")
+        if not 0.10 <= float(self.lane_min_confidence) <= 0.80:
+            raise ValueError("camera bench lane confidence must be in [0.10, 0.80]")
+        if not 0.01 <= float(self.green_danger_ratio) <= 0.30:
+            raise ValueError("camera bench green danger ratio is invalid")
+        if not (
+            float(self.green_danger_ratio)
+            <= float(self.turn_green_hard_stop_ratio)
+            <= 0.30
+        ):
+            raise ValueError("camera bench green hard-stop ratio is invalid")
+        if int(self.initial_lane_stable_frames) < 5:
+            raise ValueError("camera bench needs at least 5 stable lane frames")
+        if int(self.stop_confirm_frames) < 3:
+            raise ValueError("camera bench needs at least 3 stop-marker frames")
+        for name, minimum in (
+            ("nudge_marker_clear_frames", 3),
+            ("reacquire_stable_frames", 3),
+            ("exit_clear_frames", 3),
+            ("green_danger_confirm_frames", 2),
+        ):
+            if int(getattr(self, name)) < minimum:
+                raise ValueError(
+                    "camera bench %s must be >= %d" % (name, minimum)
+                )
         return self
 
 

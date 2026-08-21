@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "bench_only": true,
+  "validated_for_live": false,
+  "route_id": "BENCH_LEFT_THEN_RIGHT_V1",
+  "description": "Supervised camera-only motor bench; stop after LEFT then RIGHT.",
+  "preference": ["STRAIGHT", "RIGHT", "LEFT"],
+  "intersections": [
+    {
+      "id": "BENCH_I01_LEFT",
+      "allowed": ["LEFT", "STRAIGHT", "RIGHT"],
+      "action": "LEFT"
+    },
+    {
+      "id": "BENCH_I02_RIGHT",
+      "allowed": ["LEFT", "STRAIGHT", "RIGHT"],
+      "action": "RIGHT"
+    }
+  ]
+}
