@@ -31,8 +31,8 @@ class GoStraightModule:
             ...
         ]
         """
-        corners = [d for d in detections if d["label"] == "corner"]
-        decisions = [d for d in detections if d["label"] == "decision"]
+        corners = [d for d in detections if d["label"] == "Corner"]
+        decisions = [d for d in detections if d["label"] == "Decision"]
         
         target_node = None
 
@@ -103,9 +103,9 @@ class TurnModule:
         if self.is_turning:
             return False # Đang rẽ rồi thì không trigger lại
 
-        corners = [d for d in detections if d["label"] == "corner"]
-        interacts = [d for d in detections if d["label"] == "interact"]
-        signs = [d for d in detections if d["label"] in ["turn_left", "turn_right", "forbidden"]]
+        corners = [d for d in detections if d["label"] == "Corner"]
+        interacts = [d for d in detections if d["label"] == "Interact"]
+        signs = [d for d in detections if d["label"] in ["turn_left", "turn_right", "Forbidden"]]
 
         turn_dir = None
 
@@ -184,59 +184,73 @@ class DecisionModule:
         """
         Input: list of detections, e.g., [{"label": "decision", "x": 320, "y": 400}, ...]
         Labels: decision, interact, corner, forbidden (cấm), turn_left, turn_right
-        Output: (action, target_node, speed, steering) 
+        Output: (action, target_node, speed, steering, steps) 
                 action có thể là: "straight", "turn_left", "turn_right"
+                steps là list các chuỗi mô tả quá trình suy luận
         """
-        # Phân loại detections
-        decisions = [d for d in detections if d["label"] == "decision"]
-        interacts = [d for d in detections if d["label"] == "interact"]
-        corners = [d for d in detections if d["label"] == "corner"]
+        steps = []
         
-        signs = {d["label"]: d for d in detections if d["label"] in ["forbidden", "turn_left", "turn_right"]}
+        # Phân loại detections
+        decisions = [d for d in detections if d["label"] == "Decision"]
+        interacts = [d for d in detections if d["label"] == "Interact"]
+        corners = [d for d in detections if d["label"] == "Corner"]
+        
+        signs = {d["label"]: d for d in detections if d["label"] in ["Forbidden", "turn_left", "turn_right"]}
+        if signs:
+            steps.append(f"Nhận diện biển báo: {list(signs.keys())}")
         
         # 1. Thu thập tất cả các "node" có thể dùng để ra quyết định
         nodes = decisions + interacts + corners
         if not nodes:
-            return "straight", None, 0.0, 0.0 # Mặc định đi thẳng chậm hoặc dừng nếu không có thông tin
+            steps.append("Không thấy node nào -> mặc định đi thẳng chậm (dừng).")
+            return "straight", None, 0.0, 0.0, steps
             
+        steps.append(f"Tìm thấy {len(nodes)} nodes. Đang chọn node gần nhất.")
+        
         # 2. Ưu tiên node gần nhất (có tọa độ y lớn nhất do y=0 ở đỉnh ảnh)
         closest_node = max(nodes, key=lambda n: n["y"])
         label = closest_node["label"]
+        steps.append(f"Node gần nhất là: {label} (x={closest_node['x']:.0f}, y={closest_node['y']:.0f})")
         
         action = "straight"
         
         # 3. Logic ra quyết định dựa vào loại node gần nhất
-        if label == "interact":
+        if label == "Interact":
             if "turn_left" in signs:
                 action = "turn_left"
+                steps.append("Đang ở interact node + gặp biển rẽ trái -> Quyết định Rẽ Trái.")
             elif "turn_right" in signs:
                 action = "turn_right"
-            elif "forbidden" in signs:
-                # Gặp cấm ở interact node -> quyết định rẽ dựa trên đặc điểm node (vd vị trí x)
-                # Giả sử interact node lệch trái -> ngã rẽ ở phải, nên rẽ phải; lệch phải -> rẽ trái
+                steps.append("Đang ở interact node + gặp biển rẽ phải -> Quyết định Rẽ Phải.")
+            elif "Forbidden" in signs:
                 if closest_node["x"] < (self.img_width / 2):
                     action = "turn_right"
+                    steps.append("Interact node lệch trái + gặp biển CẤM -> Quyết định Rẽ Phải.")
                 else:
                     action = "turn_left"
+                    steps.append("Interact node lệch phải + gặp biển CẤM -> Quyết định Rẽ Trái.")
             else:
                 action = "straight"
+                steps.append("Interact node không có biển báo -> Quyết định Đi Thẳng.")
                 
-        elif label == "corner":
-            # Tại corner, dựa trên ước lượng khoảng cách (y) và đặc điểm corner
+        elif label == "Corner":
             distance_estimated = self.img_height - closest_node["y"]
+            steps.append(f"Đang ở corner. Khoảng cách ước lượng (theo Y): {distance_estimated:.0f}px")
             
-            # Kiểm tra xem xe đã đến đủ gần corner chưa (ngưỡng 40% chiều cao ảnh)
             if distance_estimated < (self.img_height * 0.4): 
                 if closest_node["x"] < (self.img_width / 2):
-                    action = "turn_right" # Corner bên trái -> đường rẽ ở bên phải
+                    action = "turn_right"
+                    steps.append(f"Đã đủ gần corner (lệch trái) -> Quyết định Rẽ Phải.")
                 else:
-                    action = "turn_left" # Corner bên phải -> đường rẽ ở bên trái
+                    action = "turn_left"
+                    steps.append(f"Đã đủ gần corner (lệch phải) -> Quyết định Rẽ Trái.")
             else:
-                # Nếu còn xa corner thì vẫn giữ hướng đi thẳng về phía nó
                 action = "straight"
+                steps.append("Corner còn xa -> Quyết định Đi Thẳng hướng tới corner.")
                 
-        elif label == "decision":
+        elif label == "Decision":
             action = "straight"
+            steps.append("Đang bám theo decision node -> Quyết định Đi Thẳng.")
             
         # 4. Tính toán góc lái (steering) nếu action là đi thẳng
         speed = self.base_speed
@@ -254,5 +268,6 @@ class DecisionModule:
             max_angle = math.pi / 4
             steering_val = angle_rad / max_angle
             steering = max(-1.0, min(1.0, steering_val))
+            steps.append(f"Tính toán Steering: ErrorX={error_x:.0f}, dy={dy:.0f} => Góc lái: {steering:.2f}")
             
-        return action, closest_node, speed, steering
+        return action, closest_node, speed, steering, steps

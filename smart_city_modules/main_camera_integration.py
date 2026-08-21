@@ -75,14 +75,15 @@ class SmartCityCameraRunner:
 
     def run_yolo_inference(self, frame):
         """
-        Chạy inference mô hình YOLO và trả về kết quả theo format dict cho module xe.
+        Chạy inference mô hình YOLO và trả về kết quả theo format dict cho module xe kèm theo frame đã vẽ label.
         """
         if not hasattr(self, 'has_model') or not self.has_model:
-            return []
+            return [], frame.copy()
 
         # Tăng confidence lên 0.5 để lọc nhiễu
         results = self.model.predict(frame, conf=0.5, verbose=False)
         detections = []
+        annotated_frame = frame.copy()
         
         if len(results) > 0:
             result = results[0]
@@ -98,6 +99,8 @@ class SmartCityCameraRunner:
                 
                 keep_indices = [v[0] for v in best_idx_per_class.values()]
                 result = result[keep_indices]
+                
+            annotated_frame = result.plot()
                 
             if result.masks is not None:
                 # Nếu model là segmentation
@@ -117,7 +120,7 @@ class SmartCityCameraRunner:
                     x, y, w, h = box.xywh[0]
                     detections.append({"label": label, "x": float(x), "y": float(y)})
 
-        return detections
+        return detections, annotated_frame
 
     def run_loop(self):
         """Vòng lặp chính xử lý ảnh và điều khiển xe"""
@@ -125,6 +128,16 @@ class SmartCityCameraRunner:
         
         # Cho ROS rate khoảng 20Hz (20 fps)
         rate = rospy.Rate(20) if HAS_ROS else None
+        
+        # Cấu hình lưu video log
+        video_writer = None
+        log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'logs'))
+        os.makedirs(log_dir, exist_ok=True)
+        video_path = os.path.join(log_dir, f'run_log_{int(time.time())}.mp4')
+        
+        # Biến đếm FPS và log
+        prev_time = time.time()
+        frame_count = 0
         
         while (not HAS_ROS) or (not rospy.is_shutdown()):
             if self.latest_frame is None:
@@ -134,8 +147,25 @@ class SmartCityCameraRunner:
             
             frame_to_process = self.latest_frame.copy()
             
+            # Tính FPS
+            current_time = time.time()
+            fps = 1.0 / (current_time - prev_time + 1e-6)
+            prev_time = current_time
+            frame_count += 1
+            
+            # Khởi tạo VideoWriter khi có frame đầu tiên để biết kích thước
+            if video_writer is None:
+                h, w = frame_to_process.shape[:2]
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                video_writer = cv2.VideoWriter(video_path, fourcc, 20.0, (w, h))
+                print(f"Bắt đầu ghi log video tại: {video_path}")
+            
             # 1. Chạy AI lấy kết quả
-            detections = self.run_yolo_inference(frame_to_process)
+            detections, annotated_frame = self.run_yolo_inference(frame_to_process)
+            
+            # Ghi frame vào video log
+            if video_writer is not None:
+                video_writer.write(annotated_frame)
             
             # 2. Xử lý thuật toán rẽ trước (Ưu tiên)
             # Kiểm tra xem có cần trigger rẽ (ngã tư, góc cua)
@@ -158,6 +188,21 @@ class SmartCityCameraRunner:
                     # self.car.stop()
                     pass
             
+            # Log ra màn hình mỗi 10 frame (tránh trôi log)
+            if frame_count % 10 == 0:
+                labels = [d["label"] for d in detections]
+                signs_count = len([l for l in labels if l in ["turn_left", "turn_right", "Forbidden"]])
+                nodes_count = len([l for l in labels if l in ["Decision", "Interact", "Corner"]])
+                
+                status_msg = f"[LOG] FPS: {fps:.1f} | Nodes: {nodes_count} | Biển báo: {signs_count} | Labels: {labels}"
+                
+                if self.turn_ctrl.is_turning:
+                    status_msg += f" | Status: Đang rẽ {self.turn_ctrl.current_direction}"
+                else:
+                    status_msg += " | Status: Đi thẳng"
+                    
+                print(status_msg)
+            
             # Chờ frame tiếp theo
             if HAS_ROS:
                 rate.sleep()
@@ -165,6 +210,9 @@ class SmartCityCameraRunner:
                 time.sleep(0.05)
                 
         # Khi kết thúc
+        if video_writer is not None:
+            video_writer.release()
+            print(f"Đã lưu log video tại: {video_path}")
         self.car.stop()
 
 if __name__ == "__main__":
