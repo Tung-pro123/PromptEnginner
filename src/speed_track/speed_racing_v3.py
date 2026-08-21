@@ -64,6 +64,7 @@ from src.speed_track.control.pure_pursuit import PurePursuitController
 from src.speed_track.control.stanley import StanleyController
 from src.speed_track.control.steering_filter import SteeringFilter
 from src.speed_track.control.speed_controller import SpeedController
+from src.speed_track.control.sector_manager import TrackSectorManager, TrackPhase, TrackSector
 from src.speed_track.debug.visualizer import DebugVisualizer
 from src.speed_track.debug.logger import V3Logger
 
@@ -92,10 +93,11 @@ class SpeedRacingV3:
         self.stanley_controller = StanleyController(self.cfg)
         self.steering_filter = SteeringFilter(self.cfg)
         self.speed_controller = SpeedController(self.cfg)
+        self.sector_manager = TrackSectorManager(self.cfg)
         self.visualizer = DebugVisualizer(self.cfg)
 
         # ---- Hardware ----
-        self.racer = RacerController()
+        self.racer = RacerController({"MAX_THROTTLE": 1.0, "BASE_THROTTLE": self.cfg.cruise_speed})
         self.racer.stop()
 
         # ---- ROS ----
@@ -210,7 +212,15 @@ class SpeedRacingV3:
         # ---- 8. Trajectory generation ----
         traj = self.trajectory_gen.generate(lane_state, self.current_speed)
 
-        # ---- 9. Lateral controller ----
+        # ---- 8.5. Topological Track Sector Profile (Quy tắc phân đoạn sa bàn) ----
+        heading_deg = math.degrees(lane_state.heading_error) if lane_state.heading_error is not None else 0.0
+        sector_profile = self.sector_manager.update(
+            curvature=traj.curvature,
+            max_upcoming_curvature=traj.max_upcoming_curvature,
+            heading_error_deg=heading_deg
+        )
+
+        # ---- 9. Lateral controller (Áp dụng quy tắc Lookahead & Giới hạn lái theo Sector) ----
         if cfg.stanley_enabled and lane_state.tracking_state == TrackingState.TRACKING:
             steer_raw = self.stanley_controller.compute(
                 lane_state.heading_error,
@@ -219,51 +229,37 @@ class SpeedRacingV3:
                 self.current_speed
             )
         else:
-            # Pure Pursuit (default)
+            # Pure Pursuit with Curvature Feedforward (áp dụng lookahead và bù lái từ Sector)
             if traj.target is not None:
-                steer_raw = self.pp_controller.compute(traj.target, traj.lookahead_m)
+                lookahead = sector_profile.lookahead_m if sector_profile else traj.lookahead_m
+                k_ff = sector_profile.feedforward_gain if sector_profile else None
+                steer_raw = self.pp_controller.compute(traj.target, lookahead, curvature=traj.curvature, k_ff=k_ff)
+                
+                # Giới hạn góc bẻ lái theo sector
+                if sector_profile:
+                    steer_raw = max(-sector_profile.max_steer_limit, min(sector_profile.max_steer_limit, steer_raw))
+            elif lane_state.tracking_state == TrackingState.PREDICTING and self._last_valid_steer is not None:
+                # Dead Reckoning: Giữ nguyên góc lái đang cua khi mất vạch ngắn hạn
+                steer_raw = self._last_valid_steer
             else:
                 steer_raw = 0.0
 
         # ---- 10. Steering filter ----
         steer_filtered = self.steering_filter.filter(steer_raw)
+        steer_filtered = max(-1.0, min(1.0, steer_filtered))
 
-        # ---- 10.5. Area Heuristic (Ý TƯỞNG 2: Mạng lưới an toàn diện tích) ----
-        # ---- 10.5. Area Heuristic (Ý TƯỞNG 2: Mạng lưới an toàn diện tích hình học) ----
-        if lane_state.centerline_poly is not None:
-            # Không đếm pixel trắng nữa. 
-            # Xem vạch vàng là ranh giới chia cắt hoàn toàn bức ảnh BEV thành 2 vùng Trái/Phải.
-            y_vals = np.arange(0, self.cfg.image_height)
-            poly_x = np.polyval(lane_state.centerline_poly, y_vals)
-            
-            # Cắt giá trị X nằm trong khung hình (0 -> W)
-            poly_x_clipped = np.clip(poly_x, 0, self.cfg.image_width)
-            
-            # Diện tích vùng Trái chính là tích phân (tổng) khoảng cách từ mép trái (x=0) đến vạch vàng (poly_x)
-            area_left = np.sum(poly_x_clipped)
-            
-            # Diện tích vùng Phải là phần còn lại của bức ảnh
-            total_area = self.cfg.image_width * self.cfg.image_height
-            area_right = total_area - area_left
-            
-            if total_area > 0:
-                # delta_area > 0 (Trái rộng hơn Phải) -> Vạch vàng nằm bên Phải -> Xe đang ở bên Trái -> Cần bẻ Phải (+)
-                area_ratio = (area_left - area_right) / total_area
-                
-                # Áp dụng trực tiếp tỷ lệ diện tích thành lực bẻ lái bù trừ
-                k_area = 0.15 
-                steer_filtered += k_area * area_ratio
-                
-            # Đảm bảo steering không vượt ngưỡng [-1.0, 1.0]
-            steer_filtered = max(-1.0, min(1.0, steer_filtered))
-
-        # ---- 11. Speed controller ----
-        throttle = self.speed_controller.compute(
-            traj.curvature,
-            lane_state.confidence,
-            lane_state.tracking_state,
-            actual_speed=None  # TODO: encoder feedback
-        )
+        # ---- 11. Speed controller (Đồng bộ ga tối ưu theo Sector) ----
+        if sector_profile and lane_state.tracking_state == TrackingState.TRACKING:
+            throttle = sector_profile.target_throttle
+        else:
+            throttle = self.speed_controller.compute(
+                traj.curvature,
+                lane_state.confidence,
+                lane_state.tracking_state,
+                actual_speed=None,  # TODO: encoder feedback
+                max_upcoming_curvature=traj.max_upcoming_curvature,
+                heading_error=lane_state.heading_error
+            )
 
         # ---- SMART RECOVERY FSM (V3.3: Lùi cứu nguy khi kẹt cua gắt) ----
         if lane_state.confidence >= 0.40 and lane_state.tracking_state not in [TrackingState.RECOVERY, TrackingState.E_STOP]:
@@ -304,12 +300,14 @@ class SpeedRacingV3:
                     self.lane_detector._locked_center_poly = None  # Quét mới
                 print("✅ [SAFETY FSM] Hoàn thành lùi cứu nguy -> Khóa lại vạch giữa và tiếp tục đua.")
 
-        # ---- 12. Debug visualization ----
-        dashboard = self.visualizer.render(
-            frame, bev_mask, detection, lane_state, traj,
-            steer_raw, steer_filtered, throttle,
-            self.current_fps
-        )
+        # ---- 12. Debug visualization (Chỉ render khi chạy offline hoặc có quay video) ----
+        dashboard = None
+        if self.video_writer is not None or not HAS_ROS or self.video_path is not None:
+            dashboard = self.visualizer.render(
+                frame, bev_mask, detection, lane_state, traj,
+                steer_raw, steer_filtered, throttle,
+                self.current_fps
+            )
 
         # ---- 13. Logging ----
         if self.logger:

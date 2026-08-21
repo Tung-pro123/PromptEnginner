@@ -40,9 +40,9 @@ except ImportError:
 # ============================================================
 DEFAULT_CONFIG = {
     # --- Throttle (ga) ---
-    "BASE_THROTTLE": 0.20,         # Tốc độ đi thẳng mặc định (0.0 → 1.0)
-    "TURN_THROTTLE": 0.15,         # Tốc độ khi đang rẽ (chậm hơn)
-    "MAX_THROTTLE": 0.40,          # Giới hạn tốc độ tối đa (an toàn)
+    "BASE_THROTTLE": 0.60,         # Tốc độ đi thẳng mặc định (0.0 → 1.0)
+    "TURN_THROTTLE": 0.45,         # Tốc độ khi đang rẽ
+    "MAX_THROTTLE": 1.00,          # Giới hạn tốc độ tối đa (Mở 100% công suất đua thực thụ)
 
     # --- Steering (lái) ---
     "STEERING_GAIN": 0.8,          # Hệ số khuếch đại góc lái khi bám line
@@ -88,26 +88,73 @@ class RacerController:
         self._initialize_hardware()
 
     def _initialize_hardware(self):
-        """Khởi tạo phần cứng JetRacer."""
-        # Thử import jetracer (thư viện chính thức NVIDIA)
+        """Khởi tạo phần cứng JetRacer (Tự động thích ứng 0x40 / 0x60)."""
+        # 1. Thử import jetracer (NvidiaRacecar)
         try:
             from jetracer.nvidia_racecar import NvidiaRacecar
-            # Khởi tạo với i2c_address (thường mạch mở rộng dùng 0x40 thay vì 0x60)
-            self.car = NvidiaRacecar(i2c_address=self.i2c_address)
+            try:
+                if hasattr(NvidiaRacecar, 'i2c_address'):
+                    NvidiaRacecar.i2c_address.default_value = self.i2c_address
+                self.car = NvidiaRacecar(i2c_address=self.i2c_address)
+            except Exception:
+                self.car = NvidiaRacecar()
             self.car.steering = 0.0
             self.car.throttle = 0.0
-            self._log("Khởi tạo JetRacer (NvidiaRacecar) thành công.")
+            self._log(f"Khởi tạo JetRacer (NvidiaRacecar) thành công tại 0x{self.i2c_address:02X}.")
             return
         except Exception as e:
-            self._log(f"Không tìm thấy jetracer library: {e}", level="warn")
+            self._log(f"NvidiaRacecar mặc định không mở được: {e}", level="warn")
 
-        # Thử import jetbot_pro (Waveshare variant)
+        # 2. Thử trực tiếp qua Adafruit ServoKit (PCA9685 @ 0x40 - Chuẩn cho Waveshare JetRacer)
+        try:
+            from adafruit_servokit import ServoKit
+            class DirectRacecar:
+                def __init__(self, address=0x40):
+                    self.kit = ServoKit(channels=16, address=address)
+                    self.steering_gain = -0.65
+                    self.steering_offset = 0.0
+                    self.steering_channel = 0
+                    self.throttle_gain = 1.0
+                    self.throttle_channel = 1
+                    self._steering = 0.0
+                    self._throttle = 0.0
+
+                @property
+                def steering(self):
+                    return self._steering
+
+                @steering.setter
+                def steering(self, value):
+                    self._steering = float(value)
+                    angle = (self._steering * self.steering_gain + self.steering_offset + 1.0) * 90.0
+                    angle = max(0.0, min(180.0, angle))
+                    self.kit.servo[self.steering_channel].angle = angle
+
+                @property
+                def throttle(self):
+                    return self._throttle
+
+                @throttle.setter
+                def throttle(self, value):
+                    self._throttle = float(value)
+                    t = self._throttle * self.throttle_gain
+                    t = max(-1.0, min(1.0, t))
+                    self.kit.continuous_servo[self.throttle_channel].throttle = t
+
+            self.car = DirectRacecar(address=self.i2c_address)
+            self.car.steering = 0.0
+            self.car.throttle = 0.0
+            self._log(f"✅ Khởi tạo phần cứng PCA9685 trực tiếp tại 0x{self.i2c_address:02X} THÀNH CÔNG!")
+            return
+        except Exception as e:
+            self._log(f"Thử trực tiếp Adafruit ServoKit không thành công: {e}", level="warn")
+
+        # 3. Thử import jetbot_pro (Waveshare variant)
         try:
             from jetbot import Robot
             self.car = Robot()
             self._mock = False
             self._log("Khởi tạo JetBot Pro (fallback) thành công.")
-            self._log("LƯU Ý: Đang dùng JetBot API trên JetRacer - cần kiểm tra tương thích!", level="warn")
             return
         except Exception as e:
             self._log(f"Không tìm thấy jetbot library: {e}", level="warn")

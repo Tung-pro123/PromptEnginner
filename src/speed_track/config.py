@@ -114,10 +114,10 @@ class V3Config:
     # SLIDING WINDOW LANE DETECTION
     # ================================================================
     sw_n_windows: int = 12          # number of sliding windows per line
-    sw_margin: int = 50             # half-width of window (pixels)
-    sw_min_pix: int = 30            # minimum pixels to recenter window
-    sw_min_peak_height: int = 50    # minimum histogram peak height (increased to avoid noise specks)
-    sw_min_peak_distance: int = 60  # minimum distance between peaks (pixels)
+    sw_margin: int = 70             # half-width of window (pixels)
+    sw_min_pix: int = 25            # minimum pixels to recenter window
+    sw_min_peak_height: int = 35    # [TUNE] 35 - Bắt nhạy vạch nét đứt ngay cả khi xe nghiêng trong cua gắt
+    sw_min_peak_distance: int = 50  # minimum distance between peaks (pixels)
 
     # ================================================================
     # RANSAC POLYNOMIAL FITTING
@@ -141,9 +141,9 @@ class V3Config:
     # LOCKED-ON DASHED CENTERLINE TRACKING (V3.3)
     # ================================================================
     center_lock_enabled: bool = True         # Luôn ưu tiên khóa và bám vạch giữa nét đứt
-    center_corridor_margin: int = 45          # Bề rộng hành lang tìm kiếm bám đuôi (pixels)
-    gap_bridge_max_empty: int = 3             # Số window rỗng tối đa được phép vượt qua khi gặp khoảng đứt
-    center_lock_min_pts: int = 60             # Số điểm ảnh tối thiểu để công nhận vạch giữa hợp lệ
+    center_corridor_margin: int = 60          # Bề rộng hành lang tìm kiếm bám đuôi (pixels)
+    gap_bridge_max_empty: int = 4             # [TUNE] Vượt tối đa 4 window rỗng khi gặp khoảng đứt xa
+    center_lock_min_pts: int = 40             # [TUNE] 40 điểm ảnh để công nhận và khóa vạch nét đứt siêu nhạy
     center_poly_ema_alpha: float = 0.35       # Hệ số làm mượt đa thức chống giật lái (EMA)
     single_line_offset_m: float = 0.225       # Nửa bề rộng làn chuẩn khi buộc phải dùng 1 vạch biên
 
@@ -165,27 +165,29 @@ class V3Config:
     confidence_decay: float = 0.95  # per-frame decay when no measurement
 
     # ================================================================
-    # MEASUREMENT GATING
+    # MEASUREMENT GATING (Chấp nhận đảo chiều chữ S, chặn bắt nhầm làn lân cận)
     # ================================================================
-    max_lateral_jump_m: float = 0.40       # [TUNE] meters (increased to prevent false rejections)
-    max_curvature_jump: float = 2.0        # [TUNE] 1/m (increased to allow RANSAC wiggles)
+    max_lateral_jump_m: float = 0.40       # [TUNE] Chặn bước nhảy ngang bất thường sang làn bên cạnh
+    max_curvature_jump: float = 12.0       # [TUNE] Cho phép đảo chiều độ cong từ +4 sang -4 mà không bị reject
     min_confidence_gate: float = 0.15      # reject observations below this
 
     # ================================================================
     # TRAJECTORY — Look-ahead
     # ================================================================
     n_lookahead_points: int = 10
-    lookahead_L0: float = 0.20      # [TUNE] base lookahead distance (m)
-    lookahead_kv: float = 0.5       # [TUNE] speed gain (m per m/s)
-    lookahead_kk: float = 0.1       # [TUNE] curvature gain (m per 1/m)
-    lookahead_Lmin: float = 0.15    # minimum lookahead (m)
-    lookahead_Lmax: float = 0.60    # maximum lookahead (m)
+    lookahead_L0: float = 0.30      # [TUNE] base lookahead distance (m) - Giữ xe bám chắc vạch giữa đường thẳng
+    lookahead_kv: float = 0.45      # [TUNE] speed gain - nhìn xa 0.8m trên đường thẳng
+    lookahead_kk: float = 0.08      # [TUNE] curvature gain
+    lookahead_Lmin: float = 0.24    # minimum lookahead (m) - 24cm giúp ôm cua chữ S mượt mà, không giật lắc
+    lookahead_Lmax: float = 0.85    # maximum lookahead (m) - phóng tầm mắt trên đường thẳng [05] -> [04]
 
     # ================================================================
     # PURE PURSUIT CONTROLLER (V1 — baseline)
     # ================================================================
     wheelbase: float = 0.16                # [CALIBRATE] meters (axle-to-axle)
-    max_steer_angle_rad: float = 0.8       # [TUNE] TĂNG số này lên để vô lăng bẻ êm hơn (không bị max 1.0 ngay lập tức)
+    max_steer_angle_rad: float = 0.80      # [TUNE] Chuẩn hóa dải bẻ lái servo 0.80 rad
+    curvature_feedforward_gain: float = 0.40 # [V3.3] Bù góc lái 40% - Trợ lực mượt mà, không giật cục
+    curvature_feedforward_deadzone: float = 0.50 # [V3.3] Vùng chết: Chỉ kích hoạt bù lái khi độ cong >= 0.50
 
     # ================================================================
     # STANLEY CONTROLLER (V2 — after PP is stable)
@@ -194,22 +196,22 @@ class V3Config:
     stanley_enabled: bool = False          # DO NOT enable until PP is validated
 
     # ================================================================
-    # STEERING FILTER
+    # STEERING FILTER (Bộ lọc khử giật lắc / Anti-Hunting Filter)
     # ================================================================
-    max_steer_rate: float = 1.0           # [TUNE] Trả lại 1.0: Không giới hạn tốc độ bẻ lái để vào cua gắt
-    steer_lpf_alpha: float = 1.0          # [TUNE] Trả lại 1.0: Phản hồi vô lăng tức thì, không bị trễ
-    high_speed_steer_gain: float = 1.0    # [V3.1] gain tại max_speed (1.0 = no change, 0.65 = reduce 35%)
+    max_steer_rate: float = 1.0           # [TUNE] Không giới hạn tốc độ servo khi đảo chiều cua
+    steer_lpf_alpha: float = 0.82         # [TUNE] Lọc 82% phản hồi - 18% giữ mượt
+    high_speed_steer_gain: float = 1.0    # [V3.1] gain tại max_speed
 
     # ================================================================
-    # SPEED CONTROL & PREDICTIVE CORNER BRAKING (V3.3)
+    # SPEED CONTROL & PREDICTIVE CORNER BRAKING (V3.3 - MAXIMUM ATTACK)
     # ================================================================
-    max_speed: float = 0.50                # [TUNE] throttle trên đường thẳng
-    min_speed: float = 0.18                # [TUNE]
-    cruise_speed: float = 0.40             # [TUNE] default speed
-    corner_brake_curvature_thresh: float = 0.75  # [TUNE] Ngưỡng độ cong (|kappa| >= 0.75) để phanh sớm
-    corner_safe_speed: float = 0.26        # [TUNE] Tốc độ an toàn tối đa khi vào cua gắt (tránh văng lốp)
-    a_lat_max: float = 2.0                 # [TUNE] lateral accel limit (m/s²)
-    speed_confidence_thresh: float = 0.5   # reduce speed below this confidence
+    max_speed: float = 1.00                # [TUNE] throttle trên đường thẳng (05 -> 04) - 100% CÔNG SUẤT TỐI ĐA
+    min_speed: float = 0.25                # [TUNE] tốc độ tối thiểu
+    cruise_speed: float = 0.65             # [TUNE] tốc độ ôm 2 vòng cung tròn [01] (65% GA ÔM CUA LƯỚT NHANH ĐẦM CHẮC)
+    corner_brake_curvature_thresh: float = 0.60  # [TUNE] Ngưỡng độ cong để phanh sớm chủ động trước cua gắt
+    corner_safe_speed: float = 0.35        # [TUNE] Tốc độ an toàn tối đa khi vào cua gắt/eo chữ S [03] (35% ga bám dính mặt sàn)
+    a_lat_max: float = 4.8                 # [TUNE] lateral accel limit (m/s²)
+    speed_confidence_thresh: float = 0.40  # reduce speed below this confidence
     speed_to_throttle_factor: float = 1.0  # [CALIBRATE] TĂNG HỆ SỐ NÀY ĐỂ XE BỐC HƠN (v(m/s) → throttle)
 
     # Speed PID (for encoder feedback)
@@ -221,8 +223,8 @@ class V3Config:
     # ================================================================
     # SMART REVERSE ESCAPE PROTOCOL (V3.3)
     # ================================================================
-    reverse_escape_enabled: bool = True     # Bật tính năng lùi cứu nguy khi kẹt cua gắt
-    reverse_trigger_timeout: float = 1.2    # Mất line liên tiếp quá 1.2s -> Kích hoạt lùi
+    reverse_escape_enabled: bool = False    # TẮT lùi cứu nguy khi đang đua tốc độ cao để tránh giật lùi đột ngột
+    reverse_trigger_timeout: float = 2.0    # Mất line liên tiếp quá 2.0s -> Kích hoạt lùi
     reverse_duration: float = 0.7           # Thời gian lùi xoay đầu xe (giây)
     reverse_throttle: float = -0.16         # Ga lùi êm ái (giá trị âm)
 
@@ -250,8 +252,8 @@ class V3Config:
     record_video: bool = False             # [TUNE] TẮT QUAY VIDEO ĐỂ XE CHẠY KHÔNG BỊ DELAY (Tăng FPS)
     video_fps: int = 5
     log_csv: bool = True
-    loop_rate: int = 20                    # Hz
-    debug_mode: bool = True                # [V3.1] True = render visualizer, False = skip (faster)
+    loop_rate: int = 30                    # [TUNE] 30 Hz - Đồng bộ 1-1 với Camera CSI 30 FPS để phản xạ lái nhanh nhất
+    debug_mode: bool = False               # [TUNE] False = Tắt vẽ đồ họa để CPU tập trung 100% xử lý lái (Tiết kiệm 8ms CPU)
 
     # ================================================================
     # ROS TOPICS

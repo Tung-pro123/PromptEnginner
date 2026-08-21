@@ -2,7 +2,7 @@
 """
 CSI Camera ROS Publisher Node for Jetson Nano
 Sử dụng trực tiếp GStreamer fdsink qua Linux Pipe để bắn ảnh lên ROS topic /csi_cam_0/image_raw.
-Hoạt động độc lập, không phụ thuộc vào gói C++ gscam hay bản build OpenCV.
+Tối ưu hóa độ trễ thấp nhất (Zero latency) và tự động giải phóng tài nguyên nvargus-daemon.
 """
 
 import sys
@@ -28,10 +28,16 @@ def main():
     rospy.init_node('csi_camera_publisher', anonymous=False)
     pub = rospy.Publisher('/csi_cam_0/image_raw', Image, queue_size=1)
     
+    # Dọn sạch các tiến trình gst-launch bị treo trước đó
+    os.system("pkill -9 gst-launch-1.0 2>/dev/null")
+    time.sleep(0.5)
+    
+    sensor_id = rospy.get_param('~sensor_id', 0)
+    
     pipeline_cmd = [
         'gst-launch-1.0', '-q',
-        'nvarguscamerasrc', 'sensor-id=0', '!',
-        f'video/x-raw(memory:NVMM), width=1280, height=720, format=NV12, framerate={FPS}/1', '!',
+        'nvarguscamerasrc', f'sensor-id={sensor_id}', '!',
+        'video/x-raw(memory:NVMM), width=1280, height=720, format=NV12, framerate=30/1', '!',
         'nvvidconv', '!',
         f'video/x-raw, width={WIDTH}, height={HEIGHT}, format=BGRx', '!',
         'videoconvert', '!',
@@ -39,14 +45,17 @@ def main():
         'fdsink'
     ]
     
-    rospy.loginfo(f"Khởi động luồng Camera CSI GStreamer ({WIDTH}x{HEIGHT} @ {FPS} FPS)...")
+    rospy.loginfo(f"Khởi động luồng Camera CSI GStreamer sensor-id={sensor_id} ({WIDTH}x{HEIGHT} @ {FPS} FPS)...")
     
     proc = subprocess.Popen(pipeline_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=FRAME_BYTES * 2)
     
     def cleanup_handler(signum, frame):
         rospy.loginfo("Đang dừng luồng camera...")
-        proc.terminate()
-        proc.wait()
+        try:
+            proc.terminate()
+            proc.wait(timeout=1.0)
+        except Exception:
+            proc.kill()
         sys.exit(0)
         
     signal.signal(signal.SIGINT, cleanup_handler)
@@ -80,19 +89,20 @@ def main():
             pub.publish(img_msg)
             
             frame_count += 1
-            if frame_count % 90 == 0:
+            if frame_count % 150 == 0:
                 elapsed = time.time() - start_time
-                fps = frame_count / elapsed
-                rospy.loginfo(f"Camera streaming: {fps:.1f} FPS (Resolution: {WIDTH}x{HEIGHT})")
-                frame_count = 0
-                start_time = time.time()
+                fps_actual = frame_count / elapsed if elapsed > 0 else 0
+                rospy.loginfo(f"Camera CSI đang phát: {fps_actual:.1f} FPS (Frame #{frame_count})")
                 
-    except Exception as e:
-        rospy.logerr(f"Lỗi truyền camera: {e}")
+    except KeyboardInterrupt:
+        pass
     finally:
-        if proc.poll() is None:
+        try:
             proc.terminate()
-            proc.wait()
+            proc.wait(timeout=1.0)
+        except Exception:
+            proc.kill()
+
 
 if __name__ == '__main__':
     main()

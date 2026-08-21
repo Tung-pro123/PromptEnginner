@@ -24,10 +24,10 @@ import math
 
 
 class PurePursuitController:
-    """Pure Pursuit lateral controller.
+    """Pure Pursuit lateral controller with Curvature Feedforward.
 
-    Takes a target point from the trajectory generator and
-    computes a steering angle to drive toward it.
+    Takes a target point and road curvature to compute predictive steering
+    that never understeers in sharp hairpin chicanes.
     """
 
     def __init__(self, config):
@@ -37,14 +37,18 @@ class PurePursuitController:
         """
         self.wheelbase = config.wheelbase
         self.max_steer_rad = config.max_steer_angle_rad
+        self.k_ff = getattr(config, 'curvature_feedforward_gain', 0.50)
+        self.config = config
 
-    def compute(self, target_point, lookahead_m):
-        """Compute steering angle using Pure Pursuit.
+    def compute(self, target_point, lookahead_m, curvature=0.0, k_ff=None):
+        """Compute steering angle using Pure Pursuit + Curvature Feedforward.
 
         Args:
             target_point: TrajectoryPoint with x_m, y_m in vehicle frame.
                           x_m > 0 = right, y_m > 0 = forward
             lookahead_m: Lookahead distance (meters). Must be > 0.
+            curvature: Road curvature (1/m) at vehicle position (+ = right, - = left).
+            k_ff: Optional dynamic feedforward gain (from Sector Profile).
 
         Returns:
             Steering command in [-1.0, 1.0] (normalized for servo).
@@ -52,16 +56,23 @@ class PurePursuitController:
         if lookahead_m < 1e-6:
             return 0.0
 
-        # Pure Pursuit curvature
-        # The target point lateral offset is x_m (positive = right)
+        # Pure Pursuit feedback steering (bẻ lái sửa sai lệch tâm)
         x_target = target_point.x_m
         kappa_pp = 2.0 * x_target / (lookahead_m ** 2)
+        delta_fb = math.atan(self.wheelbase * kappa_pp)
 
-        # Steering angle
-        delta_rad = math.atan(self.wheelbase * kappa_pp)
+        # Curvature Feedforward with deadzone:
+        # Chỉ kích hoạt bù góc lái khi vào cua gắt (|kappa| >= deadzone), tuyệt đối không kích hoạt trên đường thẳng
+        effective_k_ff = k_ff if k_ff is not None else self.k_ff
+        ff_deadzone = getattr(self.config, 'curvature_feedforward_deadzone', 0.40)
+        if abs(curvature) >= ff_deadzone:
+            delta_ff = math.atan(self.wheelbase * curvature)
+        else:
+            delta_ff = 0.0
+
+        # Total steering command
+        delta_rad = delta_fb + effective_k_ff * delta_ff
 
         # Normalize to [-1, 1] for servo
         delta_norm = delta_rad / self.max_steer_rad
-        delta_norm = max(-1.0, min(1.0, delta_norm))
-
-        return delta_norm
+        return max(-1.0, min(1.0, delta_norm))

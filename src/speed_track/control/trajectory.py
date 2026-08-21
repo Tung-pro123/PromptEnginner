@@ -79,10 +79,9 @@ class TrajectoryGenerator:
         poly = lane_state.centerline_poly
         bev_h = self.cfg.image_height
 
-        # Sample points along the centerline in BEV pixel space
-        # From vehicle position (bottom) to far ahead (top)
+        # Sample points along the centerline in BEV pixel space (0m to ~1.2m ahead)
         n_pts = self.cfg.n_lookahead_points
-        y_values = np.linspace(bev_h, bev_h * 0.1, n_pts)
+        y_values = np.linspace(bev_h, bev_h * 0.35, n_pts)
 
         points = []
         for y_px in y_values:
@@ -96,7 +95,7 @@ class TrajectoryGenerator:
         kappa_func = self.bev.curvature_px_to_metric(poly)
         result.curvature = kappa_func(float(bev_h))
 
-        # V3.1: Predictive curvature (find max curvature along the trajectory)
+        # V3.1: Predictive curvature (chỉ lấy độ cong thực tế trong tầm nhìn 1.2m)
         kappas = [abs(kappa_func(y_px)) for y_px in y_values]
         if kappas:
             result.max_upcoming_curvature = max(kappas)
@@ -116,8 +115,8 @@ class TrajectoryGenerator:
         x_line_px = np.polyval(poly, float(bev_h))
         result.lateral_error_m = (x_line_px - x_center_px) / self.cfg.px_per_meter_x
 
-        # Adaptive lookahead distance
-        Ld = self._adaptive_lookahead(current_speed, result.curvature)
+        # Adaptive lookahead distance (Dựa trên tốc độ và độ cong thực tế tại xe để giữ vô lăng đầm chắc)
+        Ld = self._adaptive_lookahead(current_speed, abs(result.curvature))
         result.lookahead_m = Ld
 
         # Select target point at distance Ld along the trajectory

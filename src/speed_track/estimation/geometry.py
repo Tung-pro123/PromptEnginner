@@ -133,25 +133,25 @@ class LaneGeometry:
 
         elif has_L:
             # ƯU TIÊN SỐ 3a: Chỉ có vạch biên TRÁI -> Dịch sang PHẢI 1 khoảng cố định chuẩn
-            offset_m = getattr(self.cfg, 'single_line_offset_m', 0.225)
+            offset_m = getattr(self.cfg, 'single_line_offset_m', 0.20)
             offset_px = offset_m * self.cfg.px_per_meter_x
             obs.centerline_poly = left.poly.copy()
             obs.centerline_poly[-1] += offset_px  # Shift right
             obs.lane_width_px = self._prev_width_px
             obs.lane_width_m = self._prev_width_px / self.cfg.px_per_meter_x
-            obs.overall_confidence = left.confidence * 0.5
+            obs.overall_confidence = max(0.65, left.confidence * 0.85)
             obs.valid = True
             obs.method = 'L_only'
 
         elif has_R:
             # ƯU TIÊN SỐ 3b: Chỉ có vạch biên PHẢI -> Dịch sang TRÁI 1 khoảng cố định chuẩn
-            offset_m = getattr(self.cfg, 'single_line_offset_m', 0.225)
+            offset_m = getattr(self.cfg, 'single_line_offset_m', 0.20)
             offset_px = offset_m * self.cfg.px_per_meter_x
             obs.centerline_poly = right.poly.copy()
             obs.centerline_poly[-1] -= offset_px  # Shift left
             obs.lane_width_px = self._prev_width_px
             obs.lane_width_m = self._prev_width_px / self.cfg.px_per_meter_x
-            obs.overall_confidence = right.confidence * 0.5
+            obs.overall_confidence = max(0.65, right.confidence * 0.85)
             obs.valid = True
             obs.method = 'R_only'
 

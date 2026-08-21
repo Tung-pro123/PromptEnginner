@@ -100,7 +100,7 @@ class LaneStateEstimator:
         # Measurement gating
         if self.state.centerline_poly is not None:
             # We have a previous state — check for impossible jumps
-            if not self._passes_gating(obs_e_lat, obs_kappa, observation.overall_confidence):
+            if not self._passes_gating(obs_e_lat, obs_kappa, observation.overall_confidence, obs_e_psi):
                 # Observation rejected — predict instead
                 self._predict(now)
                 self._update_state_machine(now, measurement_accepted=False)
@@ -158,18 +158,10 @@ class LaneStateEstimator:
 
         return e_lat_m, e_psi, kappa
 
-    def _passes_gating(self, obs_e_lat, obs_kappa, obs_confidence):
+    def _passes_gating(self, obs_e_lat, obs_kappa, obs_confidence, obs_e_psi=0.0):
         """Check if a new observation is physically plausible.
 
-        Rejects observations that jump too far from the previous state.
-
-        Args:
-            obs_e_lat: Observed lateral error (meters).
-            obs_kappa: Observed curvature (1/m).
-            obs_confidence: Observation confidence [0,1].
-
-        Returns:
-            True if the observation passes all gates.
+        Rejects observations that jump too far from the previous state or belong to neighbor lanes.
         """
         prev = self.state
 
@@ -177,38 +169,39 @@ class LaneStateEstimator:
         if obs_confidence < self.cfg.min_confidence_gate:
             return False
 
-        # Gate 2: Lateral position jump
+        # Gate 2: Vạch nằm ngoài giới hạn vật lý của làn xe (tránh bắt nhầm làn đường bên cạnh)
+        if abs(obs_e_lat) > 0.35:
+            return False
+
+        # Gate 3: Góc lệch quá lớn (vạch cắt ngang của làn lân cận)
+        if abs(obs_e_psi) > math.radians(52.0):
+            return False
+
+        # Gate 4: Lateral position jump
         if abs(obs_e_lat - prev.lateral_error_m) > self.cfg.max_lateral_jump_m:
             return False
 
-        # Gate 3: Curvature jump
+        # Gate 5: Curvature jump
         if abs(obs_kappa - prev.curvature) > self.cfg.max_curvature_jump:
             return False
 
         return True
 
     def _ema_update(self, observation, e_lat, e_psi, kappa, now):
-        """Apply EMA (exponential moving average) update.
-
-        Blends the new observation with the previous state.
-
-        Args:
-            observation: GeometryObservation.
-            e_lat, e_psi, kappa: Computed errors from the observation.
-            now: Current timestamp.
-        """
+        """Apply EMA (exponential moving average) update."""
         cfg = self.cfg
-
-        if self.state.centerline_poly is None:
-            # First valid observation — initialize directly
+        if self.state.confidence < 1e-6:
+            # First measurement initialization
             self.state.centerline_poly = observation.centerline_poly.copy()
             self.state.lateral_error_m = e_lat
             self.state.heading_error = e_psi
             self.state.curvature = kappa
-            self.state.lane_width_m = observation.lane_width_m
+            self.state.lane_width_m = (
+                observation.lane_width_m if observation.lane_width_m > 0
+                else cfg.expected_lane_width_m
+            )
             self.state.confidence = observation.overall_confidence
         else:
-            # EMA blend
             a_pos = cfg.alpha_position
             a_head = cfg.alpha_heading
             a_curv = cfg.alpha_curvature
@@ -246,22 +239,17 @@ class LaneStateEstimator:
         self.state.timestamp = now
 
     def _predict(self, now):
-        """Predict lane state when no valid measurement is available.
-
-        Keeps the previous state but decays confidence and steers towards straight ahead.
-
-        Args:
-            now: Current timestamp.
-        """
+        """Predict lane state when no valid measurement is available."""
         self.state.confidence *= self.cfg.confidence_decay
         self.state.timestamp = now
         self.state.reconstruction_method = 'prediction'
         
-        # Ý TƯỞNG 1: Trả lái về thẳng khi mất vạch
-        # Từ từ đưa độ cong và độ lệch về 0 (nhân 0.8) để vô lăng nhả thẳng
-        self.state.curvature *= 0.8
-        self.state.lateral_error_m *= 0.8
-        self.state.heading_error *= 0.8
+        # Dead Reckoning: Giảm dần độ cong để không bị kẹt bẻ lái sai hướng ở điểm đổi góc chữ S
+        decay = 0.88
+            
+        self.state.curvature *= decay
+        self.state.lateral_error_m *= decay
+        self.state.heading_error *= decay
 
     def _update_state_machine(self, now, measurement_accepted):
         """Update the tracking state based on confidence and timing.
