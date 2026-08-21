@@ -124,19 +124,11 @@ class V3Config:
     # ================================================================
     # SLIDING WINDOW LANE DETECTION
     # ================================================================
-<<<<<<< HEAD
     sw_n_windows: int = 12          # number of sliding windows per line
     sw_margin: int = 70             # half-width of window (pixels)
     sw_min_pix: int = 25            # minimum pixels to recenter window
     sw_min_peak_height: int = 35    # [TUNE] 35 - Bắt nhạy vạch nét đứt ngay cả khi xe nghiêng trong cua gắt
     sw_min_peak_distance: int = 50  # minimum distance between peaks (pixels)
-=======
-    sw_n_windows: int = 9           # number of sliding windows per line
-    sw_margin: int = 50             # half-width of window (pixels)
-    sw_min_pix: int = 30            # minimum pixels to recenter window
-    sw_min_peak_height: int = 50    # minimum histogram peak height (increased to avoid noise specks)
-    sw_min_peak_distance: int = 60  # minimum distance between peaks (pixels)
->>>>>>> origin/speed_track_v4
 
     # ================================================================
     # RANSAC POLYNOMIAL FITTING
@@ -271,13 +263,8 @@ class V3Config:
     record_video: bool = False             # [TUNE] TẮT QUAY VIDEO ĐỂ XE CHẠY KHÔNG BỊ DELAY (Tăng FPS)
     video_fps: int = 5
     log_csv: bool = True
-<<<<<<< HEAD
     loop_rate: int = 30                    # [TUNE] 30 Hz - Đồng bộ 1-1 với Camera CSI 30 FPS để phản xạ lái nhanh nhất
     debug_mode: bool = False               # [TUNE] False = Tắt vẽ đồ họa để CPU tập trung 100% xử lý lái (Tiết kiệm 8ms CPU)
-=======
-    loop_rate: int = 30                    # Hz
-    debug_mode: bool = False               # [V3.1] True = render visualizer, False = skip (faster)
->>>>>>> origin/speed_track_v4
 
     # ================================================================
     # ROS TOPICS
