@@ -55,7 +55,7 @@ def run_demo():
     print(f"Bắt đầu xử lý video... Kết quả sẽ lưu tại: {output_path}")
     
     decision_module = DecisionModule(img_width=width, img_height=height)
-    turn_ctrl = TurnModule(img_width=width, turn_duration=2.0, max_speed=0.4, max_steering=1.0)
+    turn_ctrl = TurnModule(img_width=width, turn_duration=1.5, max_speed=0.4, max_steering=1.0)
     
     frame_count = 0
     while True:

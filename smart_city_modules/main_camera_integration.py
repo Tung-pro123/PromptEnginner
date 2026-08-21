@@ -31,7 +31,7 @@ class SmartCityCameraRunner:
         
         # Khởi tạo 2 module thuật toán độc lập
         self.go_straight_ctrl = GoStraightModule(img_width=640, img_height=480, base_speed=0.3)
-        self.turn_ctrl = TurnModule(img_width=640, turn_duration=2.5, max_speed=0.4, max_steering=1.0)
+        self.turn_ctrl = TurnModule(img_width=640, turn_duration=1.5, max_speed=0.4, max_steering=1.0)
         
         # Khởi tạo biến lưu trữ frame camera
         self.latest_frame = None
