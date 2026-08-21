@@ -35,7 +35,7 @@ class PhaseControlProfile:
     lookahead_m: float           # Khoảng cách ngắm Pure Pursuit
     feedforward_gain: float      # Hệ số bù góc lái
     feedforward_sign: float      # +1.0 (Phải), -1.0 (Trái), 0.0 (Thẳng)
-    max_steer_limit: float = 0.85 # Giới hạn góc bẻ lái tối đa
+    max_steer_limit: float = 1.00 # Giới hạn góc bẻ lái tối đa (100% công suất servo)
     status_desc: str = ""        # Mô tả
 
 
@@ -54,10 +54,10 @@ class TrackSectorManager:
         self._turn_debounce = 0
         self._debounce_required = 4
 
-        # Cấu hình ga
-        self.max_speed = getattr(config, 'max_speed', 1.0)
-        self.cruise_speed = getattr(config, 'cruise_speed', 0.60)
-        self.corner_safe_speed = getattr(config, 'corner_safe_speed', 0.35)
+        # Cấu hình ga tối đa (Lấy trực tiếp từ config)
+        self.max_speed = getattr(config, 'max_speed', 1.00)
+        self.cruise_speed = getattr(config, 'cruise_speed', 0.68)
+        self.corner_safe_speed = getattr(config, 'corner_safe_speed', 0.36)
 
     def update(self, curvature: float, max_upcoming_curvature: float = None, heading_error_deg: float = 0.0) -> PhaseControlProfile:
         """Chuyển pha dựa trên sự kiện đổi hướng độ cong thực tế của xe."""

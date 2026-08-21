@@ -261,6 +261,13 @@ class SpeedRacingV3:
                 heading_error=lane_state.heading_error
             )
 
+        # ---- DYNAMIC DRIFT BRAKE (Phanh dìm ga tự động chống văng ra vạch biên) ----
+        lat_err = abs(lane_state.lateral_error_m) if lane_state.lateral_error_m is not None else 0.0
+        if lat_err > 0.08 and lane_state.tracking_state == TrackingState.TRACKING:
+            # Khi xe trôi lệch tâm > 8cm, tự động dìm ga để lốp bám chặt và kéo về tim vạch
+            drift_scale = max(0.40, 1.0 - 4.5 * (lat_err - 0.08))
+            throttle *= drift_scale
+
         # ---- SMART RECOVERY FSM (V3.3: Lùi cứu nguy khi kẹt cua gắt) ----
         if lane_state.confidence >= 0.40 and lane_state.tracking_state not in [TrackingState.RECOVERY, TrackingState.E_STOP]:
             self._lost_line_start_time = None

@@ -61,6 +61,10 @@ class PurePursuitController:
         kappa_pp = 2.0 * x_target / (lookahead_m ** 2)
         delta_fb = math.atan(self.wheelbase * kappa_pp)
 
+        # ACTIVE DRIFT CORRECTION BOOST: Khi phát hiện lệch tim đường > 6cm, tăng lực bẻ lái +25%
+        if abs(x_target) > 0.06:
+            delta_fb *= 1.25
+
         # Curvature Feedforward with deadzone:
         # Chỉ kích hoạt bù góc lái khi vào cua gắt (|kappa| >= deadzone), tuyệt đối không kích hoạt trên đường thẳng
         effective_k_ff = k_ff if k_ff is not None else self.k_ff

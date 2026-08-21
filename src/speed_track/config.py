@@ -203,16 +203,16 @@ class V3Config:
     high_speed_steer_gain: float = 1.0    # [V3.1] gain tại max_speed
 
     # ================================================================
-    # SPEED CONTROL & PREDICTIVE CORNER BRAKING (V3.3 - MAXIMUM ATTACK)
+    # SPEED CONTROL & PREDICTIVE CORNER BRAKING (OPTIMIZED MAXIMUM ATTACK)
     # ================================================================
-    max_speed: float = 1.00                # [TUNE] throttle trên đường thẳng (05 -> 04) - 100% CÔNG SUẤT TỐI ĐA
-    min_speed: float = 0.25                # [TUNE] tốc độ tối thiểu
-    cruise_speed: float = 0.65             # [TUNE] tốc độ ôm 2 vòng cung tròn [01] (65% GA ÔM CUA LƯỚT NHANH ĐẦM CHẮC)
-    corner_brake_curvature_thresh: float = 0.60  # [TUNE] Ngưỡng độ cong để phanh sớm chủ động trước cua gắt
-    corner_safe_speed: float = 0.35        # [TUNE] Tốc độ an toàn tối đa khi vào cua gắt/eo chữ S [03] (35% ga bám dính mặt sàn)
-    a_lat_max: float = 4.8                 # [TUNE] lateral accel limit (m/s²)
+    max_speed: float = 1.00                # [MAX ATTACK] 100% ga đường thẳng (05 -> 04) - Xé gió tối đa
+    min_speed: float = 0.25                # tốc độ tối thiểu
+    cruise_speed: float = 0.68             # [MAX ATTACK] 68% ga ôm 2 cung tròn lớn [01] (Vận tốc ~1.8m/s)
+    corner_brake_curvature_thresh: float = 0.60  # Ngưỡng độ cong để phanh sớm chủ động
+    corner_safe_speed: float = 0.36        # [MAX ATTACK] 36% ga ghim cứng trong chữ S [02 -> 03 -> 02] (Vận tốc ~1.2m/s)
+    a_lat_max: float = 4.8                 # lateral accel limit (m/s²)
     speed_confidence_thresh: float = 0.40  # reduce speed below this confidence
-    speed_to_throttle_factor: float = 1.0  # [CALIBRATE] TĂNG HỆ SỐ NÀY ĐỂ XE BỐC HƠN (v(m/s) → throttle)
+    speed_to_throttle_factor: float = 1.0  # (v(m/s) → throttle)
 
     # Speed PID (for encoder feedback)
     speed_pid_kp: float = 0.5
