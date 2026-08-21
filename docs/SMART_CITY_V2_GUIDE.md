@@ -287,12 +287,12 @@ Checkpoint semantic mới phải giữ tên riêng
 có `.pt`, chưa có ONNX/TensorRT; phải xác nhận phiên bản Ultralytics/PyTorch trên
 Jetson và đo latency shadow trước khi cân nhắc motor.
 
-Audit checkpoint ngày 2026-08-21: model load/infer được, nhưng trên toàn bộ 47
-ảnh test bàn giao nó không sinh box `Green_Light`, `Red_Light` hoặc `Left` ngay
-cả ở raw confidence 0,01 và `imgsz=960`. Vì vậy model hiện chỉ được dùng shadow;
-`--require-ai` sẽ giữ xe tại vạch do thiếu GREEN. Xem chi tiết trong
-`models/README_SMART_CITY_SEMANTIC.md`; cần bổ sung dữ liệu các lớp này và train
-lại, không hạ confidence để ép xe chạy.
+Audit lại ngày 2026-08-21: checkpoint cũ không sinh box `Green_Light`,
+`Red_Light` hoặc `Left` vì dataset trộn box/polygon. Checkpoint 6 lớp hiện tại
+đã được train từ nhãn detection đồng nhất và nhận lại cả ba lớp; số liệu từng
+lớp và hash nằm trong `models/README_SMART_CITY_SEMANTIC.md`. Kết quả này mới
+đủ để chuyển sang replay/ROS shadow. Không hạ confidence để ép xe chạy nếu đèn
+quá nhỏ; thiếu GREEN vẫn phải giữ xe tại vạch.
 
 ## Calibration bắt buộc trên camera gắn xe
 

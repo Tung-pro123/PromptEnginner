@@ -24,6 +24,8 @@ desktop.ini
 
 # ONNX models (too large for git)
 models/*.onnx
+training/
+runs/
 
 # Logs
 *.log

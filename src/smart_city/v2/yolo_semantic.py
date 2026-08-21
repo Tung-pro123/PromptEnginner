@@ -20,17 +20,19 @@ import time
 from .semantic import SemanticObservation
 
 
-EXPECTED_CLASS_NAMES = frozenset((
-    "CORNER",
-    "DECISION",
+REQUIRED_CLASS_NAMES = frozenset((
     "FORBIDDEN",
     "GREEN_LIGHT",
-    "INTERACT",
     "LEFT",
     "RED_LIGHT",
     "RIGHT",
     "STRAIGHT",
 ))
+
+EXPECTED_CLASS_NAMES = frozenset(
+    tuple(REQUIRED_CLASS_NAMES)
+    + ("CORNER", "DECISION", "INTERACT")
+)
 
 IGNORED_GEOMETRY_CLASSES = frozenset(("CORNER", "DECISION", "INTERACT"))
 
@@ -251,7 +253,10 @@ class YoloSemanticDetector(object):
             name for name in (_normalise_class_name(value) for value in values)
             if name is not None
         )
-        missing = EXPECTED_CLASS_NAMES.difference(normalised)
+        # Accept both the original nine-class hand-off and a corrected
+        # semantic-only six-class checkpoint. Geometry classes are optional
+        # because the controller never consumes them.
+        missing = REQUIRED_CLASS_NAMES.difference(normalised)
         if missing:
             raise ValueError(
                 "semantic model is missing classes: %s"
@@ -424,6 +429,7 @@ class LatestFrameSemanticWorker(object):
 __all__ = (
     "EXPECTED_CLASS_NAMES",
     "IGNORED_GEOMETRY_CLASSES",
+    "REQUIRED_CLASS_NAMES",
     "LatestFrameSemanticWorker",
     "YoloSemanticDetector",
     "forbidden_bbox_to_label",

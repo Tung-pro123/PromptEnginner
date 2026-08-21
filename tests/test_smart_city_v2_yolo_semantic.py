@@ -181,6 +181,19 @@ class YoloDetectorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             YoloSemanticDetector(model=model)
 
+    def test_accepts_corrected_semantic_only_checkpoint(self):
+        model = FakeModel()
+        model.names = {
+            0: "Forbidden",
+            1: "Green_Light",
+            2: "Left",
+            3: "Red_Light",
+            4: "Right",
+            5: "straight",
+        }
+        detector = YoloSemanticDetector(model=model)
+        self.assertIs(model, detector.model)
+
 
 class FakeSemanticDetector(object):
     def detect(self, frame):

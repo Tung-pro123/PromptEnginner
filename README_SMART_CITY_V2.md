@@ -33,7 +33,7 @@ python3 -c "import ultralytics; print(ultralytics.__version__)"
 Hash checkpoint đúng:
 
 ```text
-e1cfa66871e03ab79f4a0d4bfeb1417bc57614f6c3079894b68a4594f376db3a
+f5fd08620edc8b7d5da26a5bd977a1ca17cf2c2a8e8bbc1874efb77af51512f2
 ```
 
 ## Chạy ROS shadow — không motor
@@ -54,11 +54,17 @@ python3 -B src/smart_city/main_smart_city_v2.py \
 
 Không thêm `--enable-motors` ở bước này.
 
-## Blocker hiện tại
+## Trạng thái model và blocker hiện tại
 
-Checkpoint load và inference được, nhưng không phát hiện `Green_Light`,
-`Red_Light` hoặc `Left` trên 47 ảnh test bàn giao, kể cả raw confidence 0.01.
-Do đó model hiện chỉ dùng shadow; `--require-ai` sẽ giữ xe an toàn khi thiếu
-GREEN. Ngoài ra actuator trực tiếp hiện chưa khớp phần cứng ROS/serial của xe.
-Xem `docs/SMART_CITY_V2_GUIDE.md` và
-`models/README_SMART_CITY_SEMANTIC.md` trước khi test thật.
+Checkpoint 6 lớp đã được train lại từ dataset sửa lỗi nhãn box/polygon. Trên
+validation, recall của `Green_Light`, `Left`, `Red_Light` lần lượt là 1,00;
+0,95; 0,60. Trên test độc lập là 1,00; 1,00; 0,50, nhưng test chỉ có hai mẫu
+đèn đỏ nên chưa đủ để kết luận khả năng tổng quát ngoài sân thật. Ở ngưỡng live
+0,60, model ưu tiên an toàn: đèn quá nhỏ có thể làm xe tiếp tục chờ thay vì đoán
+GREEN.
+
+Model vẫn phải qua ROS shadow bằng camera gắn xe trước khi bật motor. Blocker
+phần cứng lần gần nhất là actuator trực tiếp không thấy I2C `0x60` và rơi vào
+mock; cần nối runner với đúng driver ROS/serial đang điều khiển xe. Xem
+`docs/SMART_CITY_V2_GUIDE.md` và `models/README_SMART_CITY_SEMANTIC.md` trước
+khi test thật.
