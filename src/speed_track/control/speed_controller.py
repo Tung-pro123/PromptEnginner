@@ -47,6 +47,11 @@ class SpeedController:
         
         # Smooth Throttle Control
         self.current_throttle = config.min_speed
+        
+        # Straight Boost State (Debounce & Timeout)
+        self._straight_frames = 0
+        self._is_boosting = False
+        self._boost_start_time = 0.0
 
     def compute(self, curvature, confidence, tracking_state, actual_speed=None, horizon_state="STRAIGHT", max_upcoming_curvature=None, heading_error=None):
         """Compute target throttle with Inflection Point Protection.

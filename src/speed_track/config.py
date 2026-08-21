@@ -35,26 +35,37 @@ class V3Config:
     # ================================================================
     # Fraction of image height: crop [roi_y_start * H : roi_y_end * H]
     # Wide enough that lane markings aren't clipped during curves
-    roi_y_start: float = 0.30   # [TUNE] skip top 30% (sky / far noise)
+    # [V3.1 Archive] roi_y_start: float = 0.30
+    roi_y_start: float = 0.44   # [TUNE] New calibrated value
     roi_y_end: float = 1.00     # bottom of image
 
     # ================================================================
     # HSV COLOR SEGMENTATION — Red/orange lane markings
     # ================================================================
     # Two hue ranges for wrap-around (red sits at both ends of hue spectrum)
-    hsv_h1_min: int = 0         
-    hsv_h1_max: int = 179       
+    hsv_h1_min: int = 0        
+    hsv_h1_max: int = 179        
     hsv_h2_min: int = 39        
     hsv_h2_max: int = 179       
     
+    # Optional upper bounds for S and V (usually 255, but tunable)
+    hsv_s_max: int = 255        
+    hsv_v_max: int = 255        
+    
     # Near zone (strict - rejects noise)
-    hsv_s_min: int = 100        
-    hsv_v_min: int = 105        
+    # [V3.1 Archive] hsv_s_min = 100, hsv_v_min = 105
+    hsv_s_min: int = 50        
+    hsv_v_min: int = 118        
     
     # Far zone (loose - catches distant faded lines)
+    # [V3.1 Archive] hsv_s_min_far = 50, hsv_v_min_far = 80
     hsv_s_min_far: int = 50     
-    hsv_v_min_far: int = 80     
+    hsv_v_min_far: int = 117     
     hsv_far_y_split: float = 0.55 # Top 55% of image (Y=0 to 264) uses FAR filter (Covers Horizon Scanner 200-260)
+    
+    # LAB Constraint (Optional) to reject non-red colors that pass HSV
+    use_lab_constraint: bool = False   
+    lab_a_min: int = 0        
 
     # Use CLAHE preprocessing for lighting robustness
     use_clahe: bool = False #nếu dùng cân bằng ánh sáng cục bộ thì True
@@ -68,17 +79,17 @@ class V3Config:
 
     # LAB chromaticity constraint (rejects gray/white reflections)
     # In OpenCV LAB: a=128 is neutral, a>128 is red direction.
-    # Red/orange markings have a > ~135; gray floor reflections have a ≈ 128.
-    # [Tắt tạm thời vì video MP4 có thể làm mất kênh màu LAB]
-    use_lab_constraint: bool = False
-    lab_a_min: int = 135        # [TUNE] minimum LAB a-channel for red/orange
+    # [V3.1 Archive] use_lab_constraint: bool = False, lab_a_min: int = 135
+    use_lab_constraint: bool = False   
+    lab_a_min: int = 0        # [TUNE] New calibrated value
 
     # ================================================================
     # MORPHOLOGY — Light filtering only
     # ================================================================
     # OPEN only (erode then dilate) — removes noise dots
     # Do NOT use CLOSE — it connects the dashed center line
-    morph_kernel_size: int = 3
+    # [V3.1 Archive] morph_kernel_size: int = 3
+    morph_kernel_size: int = 5        
     morph_iterations: int = 1
 
     # ================================================================
@@ -113,18 +124,26 @@ class V3Config:
     # ================================================================
     # SLIDING WINDOW LANE DETECTION
     # ================================================================
+<<<<<<< HEAD
     sw_n_windows: int = 12          # number of sliding windows per line
     sw_margin: int = 70             # half-width of window (pixels)
     sw_min_pix: int = 25            # minimum pixels to recenter window
     sw_min_peak_height: int = 35    # [TUNE] 35 - Bắt nhạy vạch nét đứt ngay cả khi xe nghiêng trong cua gắt
     sw_min_peak_distance: int = 50  # minimum distance between peaks (pixels)
+=======
+    sw_n_windows: int = 9           # number of sliding windows per line
+    sw_margin: int = 50             # half-width of window (pixels)
+    sw_min_pix: int = 30            # minimum pixels to recenter window
+    sw_min_peak_height: int = 50    # minimum histogram peak height (increased to avoid noise specks)
+    sw_min_peak_distance: int = 60  # minimum distance between peaks (pixels)
+>>>>>>> origin/speed_track_v4
 
     # ================================================================
     # RANSAC POLYNOMIAL FITTING
     # ================================================================
     poly_degree: int = 2
     ransac_residual_threshold: float = 5.0    # pixels
-    ransac_max_trials: int = 50 # có thể tăng lên <= 100
+    ransac_max_trials: int = 15 # có thể tăng lên <= 100
     ransac_min_samples: int = 10
 
     # ================================================================
@@ -252,8 +271,13 @@ class V3Config:
     record_video: bool = False             # [TUNE] TẮT QUAY VIDEO ĐỂ XE CHẠY KHÔNG BỊ DELAY (Tăng FPS)
     video_fps: int = 5
     log_csv: bool = True
+<<<<<<< HEAD
     loop_rate: int = 30                    # [TUNE] 30 Hz - Đồng bộ 1-1 với Camera CSI 30 FPS để phản xạ lái nhanh nhất
     debug_mode: bool = False               # [TUNE] False = Tắt vẽ đồ họa để CPU tập trung 100% xử lý lái (Tiết kiệm 8ms CPU)
+=======
+    loop_rate: int = 30                    # Hz
+    debug_mode: bool = False               # [V3.1] True = render visualizer, False = skip (faster)
+>>>>>>> origin/speed_track_v4
 
     # ================================================================
     # ROS TOPICS
@@ -271,7 +295,7 @@ class V3Config:
 
     # Curvature history for oval stability bonus
     curvature_history_size: int = 10       # [V3.1] number of frames to track
-    curvature_stability_bonus: float = 1.15  # [V3.1] +15% speed when curvature stable
+    curvature_stability_bonus: float = 1.0   # [V3.1] +15% speed when curvature stable
     curvature_stability_thresh: float = 0.1  # [V3.1] std threshold for "stable"
 
     # Area heuristic V2
@@ -280,6 +304,9 @@ class V3Config:
 
     # Early Horizon Scanner
     horizon_warning_enabled: bool = True   # [V3.1] Enable scanning above BEV for curves
-    horizon_scan_y_start: int = 200        # scan from y=200
-    horizon_scan_y_end: int = 260          # to y=260
-    horizon_shift_thresh: float = 0.15     # trigger brake if centroid shifts > 15% off center
+    # [V3.1 Archive] horizon_scan_y_start = 200, horizon_scan_y_end = 280
+    horizon_scan_y_start: int = 219        
+    horizon_scan_y_end: int = 379        
+    horizon_angle_thresh: float = 18.00   # trigger brake if line angle > 15 degrees
+    horizon_center_zone: int = 147        # only consider lines within +-71px of center
+    horizon_pix_thresh: int = 50        # min pixels to consider a valid line

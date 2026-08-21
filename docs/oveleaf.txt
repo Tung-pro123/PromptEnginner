@@ -1,0 +1,262 @@
+\documentclass[10pt,twocolumn,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage{mathptmx}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage[margin=1in]{geometry}
+\usepackage{abstract}
+
+\title{\Large \textbf{A Hybrid Edge-Computing Architecture for Autonomous Racing: High-Speed Vision-Based Navigation and Event-Driven Semantic Automata}}
+
+\author{
+\textbf{Le Thanh Tung} \\
+\textit{FPT University} \\
+thanhtung22012006@gmail.com
+\and
+\textbf{Lo Thai Quyen} \\
+\textit{FPT University} \\
+quyenlothai@gmail.com
+\and
+\textbf{Huynh Nhat} \\
+\textit{FPT University} \\
+huynhnhatphuyentuyhoa@gmail.com
+\and
+\textbf{Nguyen Trung Tin} \\
+\textit{FPT University} \\
+trungtin1218@gmail.com
+\and
+\textbf{Nguyen Duc Bao Lam} \\
+\textit{FPT University} \\
+lam01662052827@gmail.com
+}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\textbf{Autonomous racing on edge devices requires highly optimized algorithms to overcome the latency constraints inherent to heavy deep learning models. This proposal presents a deterministic navigation architecture tailored for the Jetson AI Racer Challenge, divided into two distinct modules. For the Speed Track, we introduce the V3.1 High-Speed Vision architecture, which fuses Distance-Based CIE-LAB color constraints with Bird's Eye View (BEV) geometry and a Look-Ahead Horizon Automata to decouple continuous steering control from strategic speed planning. For the Smart City challenge, we employ an event-driven Finite State Machine (FSM) utilizing spatial distance metrics and semantic classification to navigate complex traffic intersections. By separating tactical trajectory tracking from discrete safety and intersection behaviors, the proposed architecture is designed to improve control stability, optimize lap times, and maintain real-time performance on edge-computing platforms.}
+\end{abstract}
+
+
+\vspace{1em}
+\noindent \textbf{Keywords:} Autonomous Racing, Bird's Eye View, PID Control, Look-Ahead Automata, Edge AI.
+
+% ---------------------------------------------------------
+\section{Introduction \& Motivation}
+Real-time navigation in autonomous miniature vehicles requires a delicate balance between perception accuracy and computational efficiency. The motivation for this research stems from the hardware constraints of edge computing platforms (e.g., NVIDIA Jetson), where executing complex semantic segmentation networks often leads to frame rate drops and thermal throttling. Consequently, this study proposes an optimized deterministic methodology relying on traditional geometric computer vision and structured control theory to achieve high-speed, robust autonomous racing.
+
+\subsection{Problem Statement \& Research Questions}
+The primary challenge is maintaining stable lane tracking at maximum possible speeds while safely decelerating for curves, alongside navigating complex urban intersections. This requires a reliable perception-to-control pipeline. This proposal addresses the following research questions:
+\begin{enumerate}
+    \item How does fusing Distance-Based CIE-LAB constraints with HSV improve the robustness of look-ahead feature extraction against track illumination anomalies compared to traditional methods?
+    \item How can a Look-Ahead Horizon Automata, when decoupled from tactical steering, optimize lap times without violating the vehicle's lateral acceleration limits?
+    \item To what extent does asymmetric Exponential Moving Average (EMA) speed filtering prevent traction loss during rapid state transitions in high-speed racing?
+\end{enumerate}
+
+% ---------------------------------------------------------
+\section{Related Work}
+Current approaches to autonomous edge navigation generally fall into two categories:
+\textbf{Deep Learning (End-to-End \& Segmentation):} Models like ResNet-18 or YOLOv8 offer robust generalization \cite{bojarski2016end}. However, even with TensorRT quantization, they consume significant VRAM and struggle with deterministic state transitions during sudden track variations.
+\textbf{Traditional CV, PID Control \& Sensor-Based Navigation:} Lightweight computer vision remains a practical solution for small-scale autonomous robots because it can support real-time lane tracking with lower computational cost. Shamoushaki and Ghasemi applied Gaussian Blur, masking, and image moments for line detection in differential-drive mobile robots \cite{shamoushaki2024image}. Similarly, Farkh and Aljaloud proposed a vision-navigation line tracking robot where the error between the camera frame center and the detected line contour center is used as input to a PID controller for steering \cite{farkh2023vision}. 
+
+\textit{Identified Gap:} Although previous works demonstrate effective lightweight vision processing and PID control, there is a lack of hybrid architectures that seamlessly integrate the spatial geometry of perspective-transformed vision with a decoupled strategic speed automata for high-speed curve anticipation, nor do they effectively address illumination vulnerabilities using localized color-space constraints.
+
+% ---------------------------------------------------------
+\section{Proposed Method}
+Our system architecture relies on the duality of continuous control loops for lane keeping and discrete state automata for safety transitions. The methodology is divided into two primary domains: High-Speed Navigation for the Speed Track, and Semantic Automata for the Smart City.
+
+\subsection{Speed Track: High-Speed Vision-Based Navigation (V3.1 Architecture)}
+For the Speed Track challenge, relying solely on end-to-end Deep Learning may introduce latency issues, while basic PID controllers often lack the predictive capability required for competitive high-speed racing. To optimize lap time while maintaining reliable stability, we propose the \textbf{V3.1 Architecture}, a structured, multi-stage hybrid pipeline.
+
+\subsubsection{Dual-Zone Color Space Fusion (HSV \& LAB)}
+Traditional HSV-based color segmentation can be susceptible to illumination degradation and floor glare in the distal (far) regions of the camera frame. To address this, we implement a \textbf{Distance-Based Dual-Zone Segmentation} mechanism based on the camera's extrinsic pitch angle:
+\begin{itemize}
+    \item \textbf{Proximal Zone (Bottom 45\%):} Utilizes a standard HSV threshold to extract lane markings. The physical shadow of the vehicle stabilizes lighting in this region.
+    \item \textbf{Distal Zone (Top 55\%):} Implements a relaxed HSV boundary paired with a \textbf{CIE-LAB Color Space Constraint}. Specifically, we isolate the $a^{*}$ channel (Green-Red opposition) and enforce an empirically derived threshold $a^{*} > 132$ to target the red/magenta track margins. Because the CIE-LAB conversion is computationally expensive, limiting it strictly to the distal zone optimizes the frame rate (FPS). This geometric intersection filters out neutral white/gray glare that typically bypasses standard HSV filters.
+\end{itemize}
+
+\subsubsection{Bird's Eye View Transform \& Trajectory Extraction}
+The segmented binary mask undergoes a Perspective Transform to generate a Bird's Eye View (BEV), geometrically aligning the lane markings to be approximately parallel. A Histogram-based Sliding Window algorithm extracts the spatial coordinates of the lane.
+Instead of merely calculating a static Cross-Track Error (CTE), the system derives the localized track curvature $\kappa$ using a second-order polynomial fit. The pixel-space coordinates are first converted into physical metric space ($x_m, y_m$) using camera-specific extrinsic scaling factors ($S_x, S_y$) to ensure physical validity:
+\begin{equation}
+    x_m = A y_m^2 + B y_m + C \implies \kappa = \frac{|2A|}{(1 + (2A y_m + B)^2)^{3/2}}
+\end{equation}
+This effective curvature $\kappa_{eff}$ represents the geometric track curvature in metric coordinates (1/m) and is buffered over a short rolling temporal window ($N=3$ frames) to suppress high-frequency noise while minimizing control delay.
+
+\subsubsection{Continuous PID Steering Control}
+The tactical steering angle $\delta(t)$ of the vehicle is regulated continuously by a Proportional-Integral-Derivative (PID) controller. The Cross-Track Error $e(t)$ is calculated as the lateral deviation from the desired lane center in the BEV space. To improve curve tracking, we introduce a curvature feed-forward term:
+\begin{equation}
+    \delta(t) = K_p \cdot e(t) + K_d \cdot \frac{de(t)}{dt} + K_{ff} \cdot \kappa_{eff}
+\end{equation}
+The integral term ($K_i$) is intentionally omitted to prevent integrator windup during high-speed oscillatory maneuvers.
+
+\subsubsection{Look-Ahead Horizon Scanner \& Fail-Safe Automata}
+To achieve competitive lap times, the vehicle must accelerate proactively on straightaways. To optimize computational efficiency on the Edge device while maximizing predictive capability, we introduce the \textbf{Distal Presence-Based Automata}. This ROI is empirically positioned far ahead of the vehicle ($Y \in [149, 233]$). 
+
+The geometric properties of perspective projection dictate that a straight track will converge and remain visible near the horizontal center of this high distal window. Conversely, if the track curves sharply, the lane markings will either exit the lateral bounds of the camera's Field of View or shift drastically before reaching this height. Thus, rather than fitting computationally expensive polynomials, the scanner evaluates both the raw pixel mass $\Sigma_{px}$ and its lateral centroid shift $\Delta_{shift}$ within the horizon mask. 
+
+For the vehicle to safely accelerate, the track must not only be visible in the distal window ($\Sigma_{px} > 50$) but the vehicle must also be aligned with the track axis, meaning the centroid must be constrained near the image center ($\Delta_{shift} \leq \tau_{shift}$). Because the distal window is heavily foreshortened, even a minor lateral shift indicates an impending curve. Thus, a tight threshold ($\tau_{shift} = 0.05$) is employed. A dynamic hysteresis band ($\pm 0.01$) is applied to prevent state chatter. The core operational state $S_{horizon}$ evaluates in $O(1)$ complexity as:
+\begin{equation}
+S_{horizon} = 
+\begin{cases} 
+\text{STRAIGHT}, & \text{if } \Sigma_{px} > 50 \textbf{ AND } \Delta_{shift} \leq 0.05 \text{ (or } 0.04 \text{ from CURVE)} \\
+\text{CURVE}, & \text{otherwise}
+\end{cases}
+\end{equation}
+Crucially, if lighting anomalies obliterate the distal features (resulting in $\Sigma_{px} \le 50$), the system defaults to the \texttt{CURVE} state rather than erroneously assuming a straight path, mitigating a potential fail-deadly acceleration into an unseen corner.
+
+\subsubsection{Curvature-Aware Speed Controller with Asymmetric LPF}
+The final longitudinal control bridges the steering geometry with the Horizon Scanner's strategic foresight. The baseline target velocity $v_{curve}$ is dictated by centripetal physics, aiming to keep the vehicle within its lateral acceleration limit $a_{lat\_max}$ (which is determined experimentally based on tire-surface friction):
+\begin{equation}
+    v_{curve} = \sqrt{\frac{a_{lat\_max}}{|\kappa_{eff}| + \epsilon}}
+\end{equation}
+
+The Horizon Automata dynamically overrides this baseline. If $S_{horizon} = \text{STRAIGHT}$ and the vehicle's current $\kappa_{eff} < 0.3$ (indicating structural stability on a straightaway), the target speed is increased to $v_{max}$. If $S_{horizon} = \text{CURVE}$, the system reverts to $v_{curve}$. Conversely, if $S_{horizon} = \texttt{UNKNOWN}$, the system clamps the speed to $\min(v_{curve}, v_{safe})$ to prevent hazardous acceleration when track curvature measurements are untrustworthy.
+
+To prevent traction loss during these sudden state transitions, the raw target velocity $v_{target}$ is passed through an Asymmetric Exponential Moving Average (EMA) Low-Pass Filter:
+\begin{equation}
+    v(t) = (1 - \alpha) \cdot v(t-1) + \alpha \cdot v_{target}
+\end{equation}
+We apply $\alpha = 0.05$ for acceleration and $\alpha = 0.30$ for deceleration. Under a loss of track condition (Emergency Stop), the filter is bypassed entirely ($\alpha = 1.0$) to facilitate rapid cessation of movement.
+
+
+% ---------------------------------------------------------
+\section{Approach 3: Smart City Perception and Event-Driven Intersection Automata}
+
+The ``Smart City'' navigation challenge demands a highly reliable cognitive workflow to handle complex structural road scenes containing traffic signs and signal lights. To preserve computational bandwidth on the edge platform, we formalize this task into a discrete Finite State Machine (FSM) governed by a multi-variable matrix: spatial distance and visual semantic classification.
+
+\subsection{State Space Taxonomy and Core Topology}
+The behavioral control of the vehicle at any intersection is dynamically mapped by monitoring two environmental vectors: Object Distance ($D \in \{\text{Far}, \text{Near}\}$) and Sign Attributes ($S \in \{\text{Position Known}, \text{Type Known}\}$). This combinatoric matrix yields four discrete operational states:
+\begin{itemize}
+    \item \textbf{State 1 ($S_1$: Far + Type Known):} The vehicle is physically distant from the intersection but successfully extracts the classification type or semantic meaning of the signpost.
+    \item \textbf{State 2 ($S_2$: Near + Position Known):} The vehicle has advanced close to the intersection, but due to severe perspective distortion, glare, or cropping, the camera can only track the physical coordinates/side of the signpost without verifying its category.
+    \item \textbf{State 3 ($S_3$: Far + Structural Baseline):} The exploratory starting state. The vehicle defaults to continuous PID lane keeping while continuously scanning the look-ahead horizon for upcoming traffic signs or light poles.
+    \item \textbf{State 4 ($S_4$: Near + Type Known):} The ultimate target state ($\geq 90\%$ spatial probability threshold). The vehicle is positioned precisely at the intersection node boundary, facing the signpost for final validation.
+\end{itemize}
+
+\subsection{Automata Transition Mechanics and Memory Registers}
+The operational workflow is systematically engineered to enforce convergence toward State 4. The structural lifecycle is formalized as follows:
+\begin{equation}
+S_3 \longrightarrow \{S_1 \text{ or } S_2\} \longrightarrow S_4
+\end{equation}
+
+As shown in Fig.~\ref{fig:smart_city_fsm}, the vehicle starts from the exploratory baseline state $S_3$, then transitions through either far-field semantic recognition ($S_1$) or near-field positional tracking ($S_2$), before reaching the final validation state $S_4$ at the intersection boundary.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\linewidth]{721144236_4538574843132885_8422374236532373294_n.png}
+    \caption{State space transition diagram for Smart City intersection automata.}
+    \label{fig:smart_city_fsm}
+\end{figure}
+
+Each individual state triggers a unique scheduling loop:
+
+In $S_3$, the vehicle performs normal lane-tracking operations. Once a peripheral object is identified, the system transitions to either $S_1$ or $S_2$. 
+
+When transitioning into $S_1$, the system processes the far-field visual data and instantiates a dynamic temporary guidance register, denoted as $V_{temp}$. The vehicle maintains its lane tracking sequence until the camera and localized topological node-detection algorithms signal arrival at the intersection entry boundary. 
+
+If sensory occlusion or illumination noise disrupts classification during the physical approach, the system falls back to $S_2$. In this fail-safe phase, the vehicle bypasses real-time classification and forces navigation commands by extracting the historical direction stored inside $V_{temp}$.
+
+Conversely, when the system moves from $S_1$ directly to $S_4$, the vehicle executes a pre-programmed spatial realignment, physically pivoting the camera directly toward the bounding coordinates of the signpost. The system executes a near-field classification, cross-referencing the result against $V_{temp}$. If the outputs match, the vehicle fulfills the instruction. If a structural conflict arises, the real-time classification at $S_4$ takes supreme priority.
+
+\subsection{Perception Multi-Tracking: Traditional Template Matching vs. Quantized YOLOv8-nano}
+To maximize tactical flexibility, this framework supports two independent perception pathways for sign decoding:
+
+\textit{Track A (Traditional Image Arithmetic):} Under $S_1$, the cropped image patch of the sign is compared against structural template directories pre-saved on the disk (e.g., categorized folders: \textit{``No Entry''}, \textit{``Turn Right''}, \textit{``Turn Left''}). The template yielding the highest normalized cross-correlation score defines the category and populates $V_{temp}$.
+
+\textit{Track B (Modern YOLOv8-nano):} Traditional matrix comparison is replaced by a lightweight object detection model. A specialized dataset featuring localized intersection semantics is collected, annotated, and trained. The resulting architecture executes identical state automata transitions under TensorRT quantization.
+
+\subsection{Preemptive Traffic Light Handling Hierarchy}
+Across all operational states, traffic light state registration runs with absolute execution priority. Upon converging at the intersection boundary ($S_4$), the system enforces a strict hierarchical policy before evaluating any signpost attributes:
+\begin{enumerate}
+    \item \textbf{Red Light Assertion:} The FSM instantly overrides steering commands and triggers immediate braking. The vehicle remains locked in a stationary read loop. Sign verification is suppressed until a Green light condition is met.
+    \item \textbf{Green Light Clearance:} The vehicle instantly transitions to sign-alignment, cross-references the semantic classification with $V_{temp}$, and executes the directional trajectory.
+\end{enumerate}
+
+% ---------------------------------------------------------
+\section{Experimental Plan}
+To validate the proposed architecture, we establish a rigorous testing framework on the physical Jetson platform.
+
+\subsection{Evaluation Metrics \& Baseline}
+\begin{itemize}
+    \item \textbf{Frames Per Second (FPS):} Must sustain $\geq 25$ FPS to satisfy real-time processing limits under edge-computing constraints.
+    \item \textbf{Cross-Track Error (CTE) \& Curvature ($\kappa$):} Evaluating the stability of the steering controller during high-speed cornering.
+    \item \textbf{Lap Time Optimization:} Measuring the time reduction achieved by the Horizon Scanner's predictive acceleration compared to static cruise speed.
+    \item \textbf{Task Success Rate:} Percentage of successful traffic sign recognitions and intersection handling.
+\end{itemize}
+\textbf{Baseline Method:} A purely reactive pipeline utilizing standard static OpenCV HSV masking with fixed-speed PID steering (Version 2.0).
+
+\subsection{Data Collection \& Log Analysis}
+A custom 3-panel visualizer (Raw Image, Color Mask, BEV Output) is developed to run in parallel with the vehicle control loop. Telemetry data (Curvature, $S_{horizon}$ state, EMA Throttle, and Steering Angle) will be logged to local CSV files. Post-run analysis will graph velocity transitions relative to track geometry to tune the EMA $\alpha$ parameters and shift thresholds.
+
+\subsection{Ablation Study}
+To rigorously quantify the contribution of each module, an ablation study will be conducted comparing four architectural variants:
+\begin{itemize}
+    \item \textbf{V2.0 Baseline:} Static HSV + Reactive PID + Fixed Speed.
+    \item \textbf{V3.0:} V2.0 + BEV Transform + Curvature-aware Speed ($v_{curve}$).
+    \item \textbf{V3.1-A:} V3.0 + Dual-Zone LAB Constraint + Look-Ahead Horizon Scanner.
+    \item \textbf{V3.1-B (Full):} V3.1-A + Asymmetric EMA Speed Filter.
+\end{itemize}
+We expect the full V3.1-B architecture to yield the lowest Lap Time while maintaining or reducing the overall CTE compared to the baseline.
+
+% ---------------------------------------------------------
+\section{Implementation Plan}
+The project will be executed over a 4-week agile sprint:
+\begin{itemize}
+    \item \textbf{Week 1:} Camera calibration, Perspective Transform (BEV), and Dual-Zone HSV+LAB segmentation tuning.
+    \item \textbf{Week 2:} Metric curvature extraction and Smart City sign template matching.
+    \item \textbf{Week 3:} Look-Ahead Horizon Scanner automata, Asymmetric EMA Speed Controller, and Traffic Light priority logic.
+    \item \textbf{Week 4:} Full system integration, 3-panel dashboard deployment, and physical sa-ban stress testing.
+\end{itemize}
+
+\textbf{Technical Risks \& Mitigation:}
+1) \textit{Illumination Anomalies:} Unpredictable glare causing false curve detections. \textit{Mitigation:} Implementation of the CIE-LAB $a^{*}$ constraint and the \texttt{UNKNOWN} fail-safe default state. 
+2) \textit{Thermal Throttling:} Overheating CPU/GPU causing FPS drops. \textit{Mitigation:} Enforce deterministic CV algorithms over heavy Neural Networks to keep utilization below 60\%, combined with active cooling.
+
+% ---------------------------------------------------------
+\section{Expected Outcome \& Limitation}
+\textbf{Expected Outcome:} A structured, low-latency navigation system capable of proactive acceleration on straightaways and controlled deceleration into curves. By fusing dual-zone color filtering and BEV geometry, the architecture is expected to outperform traditional reactive PID systems in both lap time and overall stability.
+
+\textbf{Limitations:} The Horizon Scanner relies on static pixel regions ($Y \in [215, 260]$). If the camera's physical pitch angle shifts due to vibration or impacts, the distal ROI mapping becomes misaligned, which may require mechanical recalibration. Furthermore, extreme motion blur at high speeds (e.g., $0.80$ m/s) may degrade the $a^{*}$ channel extraction, requiring appropriate shutter speed adjustments.
+
+% ---------------------------------------------------------
+\section{Conclusion}
+This proposal details a hybrid perception architecture decoupling strategic FSMs from tactical PID control. By mathematically formalizing the look-ahead heuristics and utilizing Dual-Zone vision, the system is designed to improve control stability and hardware efficiency, providing a robust foundation for the competition.
+
+% ---------------------------------------------------------
+\begin{thebibliography}{00}
+\bibitem{bojarski2016end} M. Bojarski et al., ``End to end learning for self-driving cars,'' \textit{arXiv preprint arXiv:1604.07316}, 2016.
+\bibitem{asvadi2016real} A. Asvadi, A. Garrote, C. Premebida, P. Peixoto, and U. J. Nunes, ``Multimodal vehicle detection: fusing 3D-LIDAR and color camera data,'' \textit{Pattern Recognition Letters}, vol. 115, pp. 20-29, 2018.
+\bibitem{canny1986computational} J. Canny, ``A computational approach to edge detection,'' \textit{IEEE Transactions on pattern analysis and machine intelligence}, no. 6, pp. 679-698, 1986.
+\bibitem{aastrom2006advanced} K. J. {\AA}str{\"o}m and T. H{\"a}gglund, \textit{Advanced PID control}. ISA-The Instrumentation, Systems, and Automation Society, 2006.
+
+\bibitem{shamoushaki2024image} M. Shamoushaki and M. H. Ghasemi, ``The Application of Image Moments and Gaussian Blur for Line Detection in Differential-Drive Mobile Robots,'' \textit{International Journal of Computer Applications}, vol. 186, no. 53, pp. 43--51, Dec. 2024, doi: 10.5120/ijca2024924218.
+
+\bibitem{farkh2023vision} R. Farkh and K. Aljaloud, ``Vision Navigation Based PID Control for Line Tracking Robot,'' \textit{Intelligent Automation \& Soft Computing}, vol. 35, no. 1, pp. 901--911, 2023, doi: 10.32604/iasc.2023.027614.
+
+\bibitem{chen2020realtime}
+W. Chen, J. Sun, W. Li, and D. Zhao, ``A real-time multi-constraints obstacle avoidance method using LiDAR,'' \textit{arXiv preprint arXiv:2006.00142}, 2020.
+
+\bibitem{szeliski2022}
+R. Szeliski,
+\textit{Computer Vision: Algorithms and Applications},
+2nd ed., Springer, 2022.
+
+\bibitem{kalman1960}
+R. E. Kalman,
+``A New Approach to Linear Filtering and Prediction Problems,''
+\textit{Journal of Basic Engineering},
+vol. 82,
+no. 1,
+pp. 35--45,
+1960.
+
+\end{thebibliography}
+
+\end{document}
