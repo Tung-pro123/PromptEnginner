@@ -86,8 +86,7 @@ class V3Config:
     # ================================================================
     # OPEN only (erode then dilate) — removes noise dots
     # Do NOT use CLOSE — it connects the dashed center line
-    # [V3.1 Archive] morph_kernel_size: int = 3
-    morph_kernel_size: int = 5        
+    morph_kernel_size: int = 3         # [TUNE] 3x3 kernel - Giữ trọn vẹn vạch nét đứt mỏng, không làm bào mòn vạch
     morph_iterations: int = 1
 
     # ================================================================
@@ -124,8 +123,8 @@ class V3Config:
     # ================================================================
     sw_n_windows: int = 12          # number of sliding windows per line
     sw_margin: int = 70             # half-width of window (pixels)
-    sw_min_pix: int = 25            # minimum pixels to recenter window
-    sw_min_peak_height: int = 35    # [TUNE] 35 - Bắt nhạy vạch nét đứt ngay cả khi xe nghiêng trong cua gắt
+    sw_min_pix: int = 15            # [TUNE] 15 pixels - Bắt nhạy từng mẩu vạch nét đứt nhỏ
+    sw_min_peak_height: int = 30    # [TUNE] 30 - Bắt nhạy vạch nét đứt ngay cả khi xe nghiêng trong cua gắt
     sw_min_peak_distance: int = 50  # minimum distance between peaks (pixels)
 
     # ================================================================
@@ -134,17 +133,17 @@ class V3Config:
     poly_degree: int = 2
     ransac_residual_threshold: float = 5.0    # pixels
     ransac_max_trials: int = 15 # có thể tăng lên <= 100
-    ransac_min_samples: int = 10
+    ransac_min_samples: int = 8
 
     # ================================================================
-    # CONFIDENCE SCORING
+    # CONFIDENCE SCORING (CALIBRATED FOR DASHED CENTERLINE)
     # ================================================================
-    min_inlier_count: int = 150     # below this → confidence ≈ 0 (increased from 50)
-    expected_inlier_count: int = 400  # above this → count component ≈ 1 (increased from 300)
+    min_inlier_count: int = 35      # [TUNE] 35 inliers - Vạch nét đứt có khoảng trống nên tổng inliers ~60-120
+    expected_inlier_count: int = 150 # [TUNE] 150 inliers đạt điểm tối đa
     max_fit_rmse: float = 8.0       # pixels; above this → rmse component ≈ 0
-    conf_weight_count: float = 0.6  # Give more weight to pixel count
-    conf_weight_rmse: float = 0.2
-    conf_weight_inlier_ratio: float = 0.2
+    conf_weight_count: float = 0.5  # Give balanced weight to pixel count
+    conf_weight_rmse: float = 0.25
+    conf_weight_inlier_ratio: float = 0.25
 
     # ================================================================
     # LOCKED-ON DASHED CENTERLINE TRACKING (V3.3)
