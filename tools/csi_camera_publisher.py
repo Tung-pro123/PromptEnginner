@@ -19,7 +19,7 @@ import signal
 import os
 
 WIDTH = 640
-HEIGHT = 360
+HEIGHT = 480
 FPS = 30
 CHANNELS = 3
 FRAME_BYTES = WIDTH * HEIGHT * CHANNELS

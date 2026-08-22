@@ -50,9 +50,9 @@ class TrackSectorManager:
         self.lap_start_time = time.time()
         self.last_lap_time = 0.0
 
-        # Debounce chống nhiễu chuyển pha (Cần ít nhất 4 frame liên tiếp nhận đúng chiều cua)
+        # Debounce chống nhiễu chuyển pha (Cần 2 frame liên tiếp nhận đúng chiều cua để phản xạ nhanh)
         self._turn_debounce = 0
-        self._debounce_required = 4
+        self._debounce_required = 2
 
         # Cấu hình ga
         self.max_speed = getattr(config, 'max_speed', 1.00)
@@ -64,6 +64,7 @@ class TrackSectorManager:
         now = time.time()
         time_in_phase = now - self.phase_start_time
         eff_k = max_upcoming_curvature if max_upcoming_curvature is not None else curvature
+        self._last_eff_k = eff_k
 
         # ------------------------------------------------------------------
         # MÁY CHUYỂN PHA TÔ-PÔ BẢO VỆ CHỐNG BẮT NHẦM VẠCH
@@ -71,8 +72,8 @@ class TrackSectorManager:
 
         # PHA 1: THẲNG XUẤT PHÁT [05 -> 04] ──► PHA 2: CUA TRÁI CUNG TRÊN [01]
         if self.current_phase == TrackPhase.PHASE_1_STRAIGHT:
-            # Nhận diện đường bắt đầu CUA TRÁI (curvature < -0.38)
-            if curvature < -0.38 or eff_k < -0.38:
+            # Nhận diện đường bắt đầu CUA TRÁI (curvature < -0.28)
+            if curvature < -0.28 or eff_k < -0.28:
                 self._turn_debounce += 1
                 if self._turn_debounce >= self._debounce_required:
                     self._switch_phase(TrackPhase.PHASE_2_TURN_LEFT_UPPER, now)
@@ -81,8 +82,8 @@ class TrackSectorManager:
 
         # PHA 2: CUA TRÁI CUNG TRÊN [01] ──► PHA 3: CUA PHẢI VÀO CHỮ S [02]
         elif self.current_phase == TrackPhase.PHASE_2_TURN_LEFT_UPPER:
-            # Nhận diện đảo dấu sang CUA PHẢI (curvature > +0.38)
-            if curvature > 0.38 or eff_k > 0.38:
+            # Nhận diện đảo dấu sang CUA PHẢI (curvature > +0.28)
+            if curvature > 0.28 or eff_k > 0.28:
                 self._turn_debounce += 1
                 if self._turn_debounce >= self._debounce_required:
                     self._switch_phase(TrackPhase.PHASE_3_TURN_RIGHT_S_ENTRY, now)
@@ -91,8 +92,8 @@ class TrackSectorManager:
 
         # PHA 3: CUA PHẢI VÀO CHỮ S [02] ──► PHA 4: CUA TRÁI THOÁT S & ÔM CUNG DƯỚI [03 -> 02 -> 01]
         elif self.current_phase == TrackPhase.PHASE_3_TURN_RIGHT_S_ENTRY:
-            # Nhận diện đảo dấu sang CUA TRÁI (curvature < -0.38)
-            if curvature < -0.38 or eff_k < -0.38:
+            # Nhận diện đảo dấu sang CUA TRÁI (curvature < -0.28)
+            if curvature < -0.28 or eff_k < -0.28:
                 self._turn_debounce += 1
                 if self._turn_debounce >= self._debounce_required:
                     self._switch_phase(TrackPhase.PHASE_4_TURN_LEFT_S_EXIT_LOWER, now)
@@ -101,8 +102,8 @@ class TrackSectorManager:
 
         # PHA 4: CUA TRÁI THOÁT S & ÔM CUNG DƯỚI ──► PHA 1: THẲNG XUẤT PHÁT (HOÀN THÀNH 1 VÒNG!)
         elif self.current_phase == TrackPhase.PHASE_4_TURN_LEFT_S_EXIT_LOWER:
-            # Chỉ cho phép cán đích khi xe đã qua hết cung dưới (> 2.0s) VÀ đường THẲNG tắp (|k| < 0.25)
-            if time_in_phase >= 2.0 and abs(curvature) < 0.25 and abs(heading_error_deg) < 12.0:
+            # Chỉ cho phép cán đích khi xe đã qua hết cung dưới (> 2.0s) VÀ đường THẲNG tắp (|k| < 0.22)
+            if time_in_phase >= 2.0 and abs(curvature) < 0.22 and abs(heading_error_deg) < 12.0:
                 self._turn_debounce += 1
                 if self._turn_debounce >= self._debounce_required:
                     self.lap_count += 1
@@ -113,7 +114,7 @@ class TrackSectorManager:
             else:
                 self._turn_debounce = 0
 
-        return self._get_profile(time_in_phase)
+        return self._get_profile(time_in_phase, eff_k)
 
     def _switch_phase(self, new_phase: TrackPhase, now: float):
         """Chuyển sang pha tiếp theo."""
@@ -122,20 +123,32 @@ class TrackSectorManager:
         self.phase_start_time = now
         self._turn_debounce = 0
 
-    def _get_profile(self, time_in_phase: float) -> PhaseControlProfile:
+    def _get_profile(self, time_in_phase: float, eff_k: float = 0.0) -> PhaseControlProfile:
         """Xuất quy tắc lái & ga cho từng pha chính xác."""
         p = self.current_phase
 
-        # 🚀 1. ĐOẠN THẲNG XUẤT PHÁT [05 -> 04]: 100% Ga xé gió, nhìn xa 0.80m, không bù lái ảo
+        # 🚀 1. ĐOẠN THẲNG XUẤT PHÁT [05 -> 04]:
+        # - Nếu thấy cua phía xa (eff_k < -0.28): Tự động kéo tầm nhìn về 0.32m, hạ ga 65%, bù lái Trái sớm
+        # - Nếu đường thẳng tắp: 100% ga xé gió, nhìn xa 0.80m
         if p == TrackPhase.PHASE_1_STRAIGHT:
-            return PhaseControlProfile(
-                phase=p,
-                target_throttle=self.max_speed,
-                lookahead_m=0.80,
-                feedforward_gain=0.0,
-                feedforward_sign=0.0,
-                status_desc="🚀 1. THẲNG 05->04 (100% GA)"
-            )
+            if eff_k < -0.28:
+                return PhaseControlProfile(
+                    phase=p,
+                    target_throttle=self.cruise_speed,
+                    lookahead_m=0.32,
+                    feedforward_gain=0.40,
+                    feedforward_sign=-1.0,
+                    status_desc="⚠️ 1. THẲNG ➔ CHUẨN BỊ VÀO CUA (HẠ GA 68%)"
+                )
+            else:
+                return PhaseControlProfile(
+                    phase=p,
+                    target_throttle=self.max_speed,
+                    lookahead_m=0.80,
+                    feedforward_gain=0.0,
+                    feedforward_sign=0.0,
+                    status_desc="🚀 1. THẲNG 05->04 (100% GA)"
+                )
 
         # 🔄 2. CUA TRÁI CUNG TRÊN [01]: 68% Ga ôm cua mượt, nhìn 0.30m, bù lái Trái 40%
         elif p == TrackPhase.PHASE_2_TURN_LEFT_UPPER:
