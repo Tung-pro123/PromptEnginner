@@ -72,10 +72,16 @@ class TrackSectorManager:
 
         # PHA 1: THẲNG XUẤT PHÁT [05 -> 04] ──► PHA 2: CUA TRÁI CUNG TRÊN [01]
         if self.current_phase == TrackPhase.PHASE_1_STRAIGHT:
-            # Nhận diện đường bắt đầu CUA TRÁI (curvature < -0.28)
-            if curvature < -0.28 or eff_k < -0.28:
+            # 1. Trigger thị giác: Độ cong âm hoặc góc lệch đầu xe nghiêng sang Trái
+            vision_left_turn = (curvature < -0.22 or eff_k < -0.22 or heading_error_deg < -6.0)
+            
+            # 2. Trigger không gian vật lý: Đoạn thẳng 04 chỉ dài ~3m (chạy hết trong 1.3s - 1.6s)
+            # Sau 1.3s nếu thấy cua nhẹ, hoặc sau 1.8s (chắc chắn hết đoạn thẳng) -> Bắt buộc chuyển Pha 2 ôm cua!
+            time_force_turn = (time_in_phase >= 1.3 and (curvature < -0.12 or eff_k < -0.12)) or (time_in_phase >= 1.8)
+
+            if vision_left_turn or time_force_turn:
                 self._turn_debounce += 1
-                if self._turn_debounce >= self._debounce_required:
+                if self._turn_debounce >= self._debounce_required or time_force_turn:
                     self._switch_phase(TrackPhase.PHASE_2_TURN_LEFT_UPPER, now)
             else:
                 self._turn_debounce = 0
