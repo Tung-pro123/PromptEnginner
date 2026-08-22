@@ -95,12 +95,16 @@ class TrajectoryGenerator:
         kappa_func = self.bev.curvature_px_to_metric(poly)
         result.curvature = kappa_func(float(bev_h))
 
-        # V3.1: Predictive curvature (chỉ lấy độ cong thực tế trong tầm nhìn 1.2m)
-        kappas = [abs(kappa_func(y_px)) for y_px in y_values]
-        if kappas:
-            result.max_upcoming_curvature = max(kappas)
+        # V3.1 / V3.3: Predictive curvature (Lấy cả dấu âm/dương và độ lớn trong tầm nhìn 1.2m)
+        raw_kappas = [float(kappa_func(y_px)) for y_px in y_values]
+        if raw_kappas:
+            # Điểm có độ cong lớn nhất phía trước
+            idx_max = int(np.argmax([abs(k) for k in raw_kappas]))
+            result.upcoming_curvature = raw_kappas[idx_max]             # Có dấu (+ Phải, - Trái)
+            result.max_upcoming_curvature = abs(raw_kappas[idx_max])     # Độ lớn dùng cho phanh
         else:
-            result.max_upcoming_curvature = abs(result.curvature)
+            result.upcoming_curvature = float(result.curvature)
+            result.max_upcoming_curvature = abs(float(result.curvature))
 
         # Compute heading error at vehicle position
         a, b = poly[0], poly[1]

@@ -216,7 +216,7 @@ class SpeedRacingV3:
         heading_deg = math.degrees(lane_state.heading_error) if lane_state.heading_error is not None else 0.0
         sector_profile = self.sector_manager.update(
             curvature=traj.curvature,
-            max_upcoming_curvature=traj.max_upcoming_curvature,
+            max_upcoming_curvature=getattr(traj, 'upcoming_curvature', traj.curvature),
             heading_error_deg=heading_deg
         )
 
