@@ -43,25 +43,23 @@ class V3Config:
     # HSV COLOR SEGMENTATION — Red/orange lane markings
     # ================================================================
     # Two hue ranges for wrap-around (red sits at both ends of hue spectrum)
-    hsv_h1_min: int = 0        
-    hsv_h1_max: int = 179        
-    hsv_h2_min: int = 39        
-    hsv_h2_max: int = 179       
+    hsv_h1_min: int = 0          # [Dải 1: Đỏ tươi / Cam]
+    hsv_h1_max: int = 22        
+    hsv_h2_min: int = 155        # [Dải 2: Đỏ đậm / Hồng tím wrap-around]
+    hsv_h2_max: int = 180       
     
     # Optional upper bounds for S and V (usually 255, but tunable)
     hsv_s_max: int = 255        
     hsv_v_max: int = 255        
     
-    # Near zone (strict - rejects noise)
-    # [V3.1 Archive] hsv_s_min = 100, hsv_v_min = 105
-    hsv_s_min: int = 50        
-    hsv_v_min: int = 118        
+    # Near zone (strict - lọc sạch phản quang sàn nhà)
+    hsv_s_min: int = 60        
+    hsv_v_min: int = 80        
     
-    # Far zone (loose - catches distant faded lines)
-    # [V3.1 Archive] hsv_s_min_far = 50, hsv_v_min_far = 80
-    hsv_s_min_far: int = 50     
-    hsv_v_min_far: int = 117     
-    hsv_far_y_split: float = 0.55 # Top 55% of image (Y=0 to 264) uses FAR filter (Covers Horizon Scanner 200-260)
+    # Far zone (loose - bắt vạch xa mờ)
+    hsv_s_min_far: int = 45     
+    hsv_v_min_far: int = 70     
+    hsv_far_y_split: float = 0.55 # Top 55% of image uses FAR filter
     
     # LAB Constraint (Optional) to reject non-red colors that pass HSV
     use_lab_constraint: bool = False   
