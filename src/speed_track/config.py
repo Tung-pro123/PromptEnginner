@@ -193,12 +193,12 @@ class V3Config:
     # ================================================================
     # SPEED CONTROL
     # ================================================================
-    max_speed: float = 0.50                # [TUNE] throttle
-    min_speed: float = 0.18                # [TUNE]
-    cruise_speed: float = 0.40             # [TUNE] default straight-line speed
-    a_lat_max: float = 2.0                 # [TUNE] lateral accel limit (m/s²)
-    speed_confidence_thresh: float = 0.5   # reduce speed below this confidence
-    speed_to_throttle_factor: float = 1.0  # [CALIBRATE] TĂNG HỆ SỐ NÀY ĐỂ XE BỐC HƠN (v(m/s) → throttle)
+    max_speed: float = 1                # [TUNE] Tốc độ BỨT TỐC đoạn thẳng. Tác dụng: Vận tốc trần cao nhất. Min: 0.5, Max: 1.5.
+    min_speed: float = 0.3                 # [TUNE] Tốc độ tối thiểu. Tác dụng: Đảm bảo xe có trớn đi tiếp không dừng hẳn khi rẽ hoặc tín hiệu kém. Min: 0.1, Max: 0.5.
+    cruise_speed: float = 0.6            # [TUNE] Tốc độ DUY TRÌ. Tác dụng: Vận tốc cơ bản của xe (Base Speed). **TĂNG THÔNG SỐ NÀY ĐỂ TĂNG TỐC ĐỘ BASE**. Min: 0.3, Max: 1.0.
+    a_lat_max: float = 3.3                 # [TUNE] Giới hạn gia tốc ngang. Tác dụng: Xe tự động hãm phanh khi vào cua gắt (chống lật). Tăng sẽ hãm ít, giảm sẽ hãm nhiều. Min: 1.0, Max: 5.0.
+    speed_confidence_thresh: float = 0.6   # Tác dụng: Ngưỡng tự tin. Nếu độ bám làn < số này, xe giảm tốc độ để dò làn an toàn. Min: 0.2, Max: 0.8.
+    speed_to_throttle_factor: float = 1.5
 
     # Advanced Speed Tuning
     straight_curvature_thresh: float = 0.3 # ngưỡng cong để nhận dạng đoạn thẳng
