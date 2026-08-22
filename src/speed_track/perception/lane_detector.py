@@ -86,10 +86,14 @@ class MultiLaneDetector:
 
         # ---- TẦNG 1: SEARCH CORRIDOR (Khóa bám vạch giữa từ đa thức frame trước) ----
         if getattr(self.cfg, 'center_lock_enabled', True) and self._locked_center_poly is not None:
-            corridor_margin = getattr(self.cfg, 'center_corridor_margin', 45)
+            corridor_margin = getattr(self.cfg, 'center_corridor_margin', 60)
+            # Nếu đang bị mất dấu nhẹ, mở rộng biên hành lang thêm 25px để đón vạch
+            if self._lost_center_count > 0:
+                corridor_margin += 25
+                
             center = self._search_corridor(bev_mask, self._locked_center_poly, corridor_margin)
             
-            min_pts = getattr(self.cfg, 'center_lock_min_pts', 60)
+            min_pts = getattr(self.cfg, 'center_lock_min_pts', 40)
             if center.detected and center.n_inliers >= min_pts and center.confidence >= 0.20:
                 # Cập nhật trơn đa thức vạch giữa (EMA)
                 alpha = getattr(self.cfg, 'center_poly_ema_alpha', 0.35)
@@ -100,16 +104,17 @@ class MultiLaneDetector:
                 center_locked_success = True
             else:
                 self._lost_center_count += 1
-                # Nếu mất quá 5 frame liên tiếp mới hủy khóa để tìm kiếm lại từ đầu
-                if self._lost_center_count > 5:
+                # Nếu mất quá 6 frame liên tiếp mới hủy khóa để tìm kiếm lại từ đầu
+                if self._lost_center_count > 6:
                     self._locked_center_poly = None
                     self._center_lock_count = 0
 
         # ---- TẦNG 2: HISTOGRAM PEAK SEARCH (Nếu chưa khóa được vạch giữa hoặc tìm 2 vạch biên) ----
-        histogram = np.sum(bev_mask[self.bev_h // 4:, :], axis=0)
+        # Trọng số cao hơn cho vùng sát mũi xe (y từ 150 đến 480)
+        histogram = np.sum(bev_mask[self.bev_h // 3:, :], axis=0)
         peaks = self._find_peaks(histogram)
 
-        # Gán đỉnh cho 3 vạch
+        # Gán đỉnh cho 3 vạch (Thông minh theo lịch sử xe)
         left_base, center_base, right_base = self._assign_peaks(peaks)
 
         # Quét 2 vạch biên bằng sliding window
@@ -201,12 +206,23 @@ class MultiLaneDetector:
                     
         elif len(peaks) == 1:
             p = peaks[0]
-            if p < self.bev_w * 0.35:
-                left = p
-            elif p > self.bev_w * 0.65:
-                right = p
+            # Nếu đã có vết vạch giữa từ trước, so sánh khoảng cách với vạch giữa trước
+            if self._locked_center_poly is not None:
+                expected_center_x = float(np.polyval(self._locked_center_poly, self.bev_h))
+                if abs(p - expected_center_x) < full_width * 0.40:
+                    center = p
+                elif p < expected_center_x:
+                    left = p
+                else:
+                    right = p
             else:
-                center = p
+                # Nếu chưa có vết, mở rộng dải chấp nhận vạch giữa từ 15% đến 85% chiều rộng ảnh
+                if p < self.bev_w * 0.15:
+                    left = p
+                elif p > self.bev_w * 0.85:
+                    right = p
+                else:
+                    center = p
                 
         elif len(peaks) > 3:
             # Nhiễu, ưu tiên 3 đỉnh gần tâm bức ảnh nhất
